@@ -1,0 +1,323 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // SmartLife data model:
+    // users/{uid}
+    // users/{uid}/{schedules|activities|notes|transactions|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
+    // users/{uid}/integrations/google-calendar
+    // Admin access is derived only from the trusted `admin` custom claim.
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.admin == true;
+    }
+
+    function userExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function hasValidCreateMeta(data, userId) {
+      return data.ownerId == userId
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    function hasValidUpdateMeta(data, userId) {
+      return data.ownerId == userId
+        && data.ownerId == resource.data.ownerId
+        && data.createdAt == resource.data.createdAt
+        && data.updatedAt == request.time;
+    }
+
+    function validColor(value) {
+      return value is string && value.matches('^#[0-9A-Fa-f]{6}$');
+    }
+
+    function validProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'avatarUrl', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'avatarUrl', 'role', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && data.uid is string
+        && data.email == request.auth.token.email
+        && data.email is string
+        && data.email.size() <= 254
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 80
+        && data.avatarUrl is string
+        && data.avatarUrl.size() <= 2048
+        && (data.avatarUrl == '' || data.avatarUrl.matches('^https://.*'))
+        && data.role == 'user'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function validSchedule(data, userId) {
+      return data.keys().hasAll(['ownerId', 'title', 'courseCode', 'startAt', 'endAt', 'location', 'color', 'source', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'title', 'courseCode', 'courseName', 'startAt', 'endAt', 'location', 'color', 'seriesId', 'source', 'googleCalendarId', 'googleEventId', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.courseCode is string && data.courseCode.size() <= 40
+        && (!('courseName' in data) || (data.courseName is string && data.courseName.size() <= 120))
+        && data.startAt is timestamp && data.endAt is timestamp && data.startAt < data.endAt
+        && data.location is string && data.location.size() <= 120
+        && (!('seriesId' in data) || (data.seriesId is string && data.seriesId.size() >= 1 && data.seriesId.size() <= 128))
+        && (!('googleCalendarId' in data) || (data.googleCalendarId is string && data.googleCalendarId.size() <= 128))
+        && (!('googleEventId' in data) || (data.googleEventId is string && data.googleEventId.size() <= 512))
+        && validColor(data.color)
+        && data.source in ['manual', 'ocr', 'google-calendar', 'university']
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validActivity(data, userId) {
+      return data.keys().hasAll(['ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.type in ['activity', 'task', 'appointment']
+        && data.startAt is timestamp && data.endAt is timestamp && data.startAt <= data.endAt
+        && data.location is string && data.location.size() <= 120
+        && validColor(data.color)
+        && data.status in ['planned', 'in-progress', 'completed', 'cancelled']
+        && data.source in ['manual', 'ai']
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validNote(data, userId) {
+      return data.keys().hasAll(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.content is string && data.content.size() <= 20000
+        && data.category in ['study', 'work', 'idea']
+        && data.relatedScheduleId is string && data.relatedScheduleId.size() <= 128
+        && validColor(data.color)
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validTransaction(data, userId) {
+      return data.keys().hasAll(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.type in ['income', 'expense']
+        && data.amount is number && data.amount > 0 && data.amount <= 1000000000
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && data.merchant is string && data.merchant.size() <= 160
+        && data.note is string && data.note.size() <= 1000
+        && data.occurredAt is timestamp
+        && data.receiptPath is string && data.receiptPath.size() <= 512
+        && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/receipts/.*'))
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validScanLog(data, userId) {
+      return data.keys().hasAll(['ownerId', 'kind', 'imagePath', 'status', 'extractedText', 'errorMessage', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'kind', 'imagePath', 'status', 'extractedText', 'errorMessage', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.kind in ['schedule', 'receipt']
+        && data.imagePath is string && data.imagePath.size() >= 1 && data.imagePath.size() <= 512
+        && data.imagePath.matches('^users/' + userId + '/(schedules|receipts)/.*')
+        && data.status in ['pending', 'processing', 'completed', 'failed']
+        && data.extractedText is string && data.extractedText.size() <= 30000
+        && data.errorMessage is string && data.errorMessage.size() <= 1000
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validFeedback(data, userId) {
+      return data.keys().hasAll(['ownerId', 'type', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'type', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.type in ['ai', 'schedule-scan', 'expense-category', 'other']
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 5000
+        && data.status == 'new'
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validGoogleCalendarIntegration(data, userId) {
+      return data.keys().hasAll(['ownerId', 'provider', 'connected', 'email', 'calendarId', 'connectedAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'provider', 'connected', 'email', 'calendarId', 'connectedAt', 'lastSyncedAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.provider == 'google'
+        && data.connected == true
+        && data.email is string && data.email.size() >= 1 && data.email.size() <= 254
+        && data.calendarId == 'primary'
+        && data.connectedAt is timestamp
+        && (!('lastSyncedAt' in data) || data.lastSyncedAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function validCategory(data) {
+      return data.keys().hasAll(['domain', 'labelTh', 'labelEn', 'icon', 'color', 'active', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['domain', 'labelTh', 'labelEn', 'icon', 'color', 'active', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.domain in ['note', 'expense', 'activity']
+        && data.labelTh is string && data.labelTh.size() >= 1 && data.labelTh.size() <= 80
+        && data.labelEn is string && data.labelEn.size() >= 1 && data.labelEn.size() <= 80
+        && data.icon is string && data.icon.size() <= 60
+        && validColor(data.color)
+        && data.active is bool
+        && data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validAnnouncement(data) {
+      return data.keys().hasAll(['title', 'message', 'kind', 'active', 'startAt', 'endAt', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'message', 'kind', 'active', 'startAt', 'endAt', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 3000
+        && data.kind in ['update', 'maintenance', 'feature', 'urgent']
+        && data.active is bool
+        && data.startAt is timestamp && data.endAt is timestamp && data.startAt < data.endAt
+        && data.createdBy is string && data.createdBy.size() > 0 && data.createdBy.size() <= 128
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId)
+        && validProfile(request.resource.data, userId)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isOwner(userId)
+        && validProfile(request.resource.data, userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'updatedAt']);
+      allow delete: if false;
+
+      match /schedules/{scheduleId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validSchedule(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validSchedule(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /activities/{activityId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validActivity(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validActivity(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /notes/{noteId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validNote(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validNote(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validTransaction(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validTransaction(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /scanLogs/{scanId} {
+        // A signed-in user can only fetch OCR history stored below their UID.
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validScanLog(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        // OCR workers use the Admin SDK and bypass rules when writing extracted results.
+        allow update: if false;
+        allow delete: if isOwner(userId);
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if false;
+        allow update: if isOwner(userId)
+          && request.resource.data.keys().hasAll(['ownerId', 'title', 'message', 'kind', 'read', 'createdAt', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['ownerId', 'title', 'message', 'kind', 'read', 'createdAt', 'updatedAt'])
+          && request.resource.data.ownerId == userId
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.title is string && request.resource.data.title.size() <= 160
+          && request.resource.data.message is string && request.resource.data.message.size() <= 2000
+          && request.resource.data.kind in ['urgent', 'ai', 'finance', 'schedule', 'system']
+          && request.resource.data.read is bool
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      match /aiRecommendations/{recommendationId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      match /feedback/{feedbackId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validFeedback(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        allow update, delete: if false;
+      }
+
+      match /integrations/{integrationId} {
+        allow read: if isOwner(userId);
+        allow create: if integrationId == 'google-calendar'
+          && isOwner(userId)
+          && userExists(userId)
+          && validGoogleCalendarIntegration(request.resource.data, userId)
+          && request.resource.data.connectedAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if integrationId == 'google-calendar'
+          && isOwner(userId)
+          && validGoogleCalendarIntegration(request.resource.data, userId)
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.connectedAt == resource.data.connectedAt
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if integrationId == 'google-calendar' && isOwner(userId);
+      }
+    }
+
+    match /categories/{categoryId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin()
+        && validCategory(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isAdmin()
+        && validCategory(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.active == true
+          && resource.data.startAt <= request.time
+          && resource.data.endAt > request.time);
+      allow create: if isAdmin()
+        && validAnnouncement(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isAdmin()
+        && validAnnouncement(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /systemStatus/{serviceId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

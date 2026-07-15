@@ -1,0 +1,13 @@
+/* Generated from admin/index.html. */
+import type { ComponentProps } from 'react';
+
+import LegacyPageDom from '@/components/legacy/legacy-page-dom';
+
+export const legacyHtml = "<!DOCTYPE html>\n<html lang=\"th\">\n<head>\n  <meta charset=\"UTF-8\" />\n  \n  <title>SmartLife Admin</title>\n</head>\n<body><a href=\"admin_dashboard.html\">เปิด SmartLife Admin</a><script data-smartlife-bridge>\n    (() => {\n      window.__smartlifeSend = (payload) => {\n        if (window.ReactNativeWebView?.postMessage) {\n          window.ReactNativeWebView.postMessage(JSON.stringify(payload));\n        } else {\n          window.parent.postMessage(payload, '*');\n        }\n      };\n      const pageKey = \"admin/index\";\n      const configuredActiveTab = \"\";\n      const activeTab = configuredActiveTab || decodeURIComponent(window.location.hash.slice(1));\n      if (activeTab) {\n        document.querySelector('[data-tab=\"' + activeTab + '\"]')?.classList.add('active');\n      }\n\n      document.addEventListener('click', (event) => {\n        const anchor = event.target.closest?.('a[href]');\n        if (!anchor) return;\n        const href = anchor.getAttribute('href');\n        if (!href || href.startsWith('#') || /^(https?:|mailto:|tel:|data:)/i.test(href)) return;\n        if (href.includes('.html') || href.startsWith('../') || href.startsWith('./')) {\n          event.preventDefault();\n          window.__smartlifeSend({ type: 'smartlife:navigate', href, pageKey });\n        }\n      }, true);\n\n      window.addEventListener('message', (event) => {\n        let data = event.data;\n        if (typeof data === 'string') {\n          try { data = JSON.parse(data); } catch { return; }\n        }\n        if (!data || typeof data !== 'object') return;\n        if (event.source !== window.parent && String(data.type || '').startsWith('smartlife:')) {\n          window.__smartlifeSend(data);\n          return;\n        }\n        if (data.type === 'smartlife:auth-result') {\n          const submit = document.querySelector('#login-button') || document.querySelector('form button');\n          if (!data.ok) {\n            if (submit) submit.textContent = pageKey === 'login/register' ? 'สมัครสมาชิก' : 'เข้าสู่ระบบ';\n            window.alert(data.message || 'ไม่สามารถดำเนินการได้');\n          }\n        }\n      });\n\n      \n    })();\n  </script></body>\n</html>\n";
+export const legacyPage = {"section":"admin","page":"index"} as const;
+
+type ScreenProps = Omit<ComponentProps<typeof LegacyPageDom>, 'html'>;
+
+export default function LegacyScreen(props: ScreenProps) {
+  return <LegacyPageDom {...props} html={legacyHtml} />;
+}
