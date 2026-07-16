@@ -1,0 +1,95 @@
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+
+import { storage } from '@/lib/firebase';
+
+export type UploadKind = 'avatars' | 'receipts' | 'scans' | 'schedules';
+
+function extensionFromContentType(contentType: string) {
+  if (contentType === 'image/png') return 'png';
+  if (contentType === 'image/webp') return 'webp';
+  return 'jpg';
+}
+
+function blobFromXmlHttpRequest(uri: string) {
+  return new Promise<Blob>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', uri, true);
+    xhr.responseType = 'blob';
+    xhr.timeout = 30000;
+    xhr.onload = () => {
+      const blob = xhr.response as Blob | null;
+      if (blob && blob.size > 0) resolve(blob);
+      else reject(new Error(`XMLHttpRequest returned an empty image (status ${xhr.status}).`));
+    };
+    xhr.onerror = () => reject(new Error(`XMLHttpRequest could not open local URI: ${uri.slice(0, 80)}`));
+    xhr.ontimeout = () => reject(new Error('Reading the selected image timed out.'));
+    xhr.send();
+  });
+}
+
+async function blobFromFetch(uri: string) {
+  const response = await fetch(uri);
+  // Android file:// and content:// responses can have status 0 and ok=false,
+  // even when response.blob() is valid. Do not reject based on response.ok.
+  const blob = await response.blob();
+  if (!blob || blob.size <= 0) {
+    throw new Error(`fetch() returned an empty image (status ${response.status}).`);
+  }
+  return blob;
+}
+
+export async function localImageUriToBlob(uri: string) {
+  if (!uri || !/^(file|content|ph|https?):\/\//i.test(uri)) {
+    throw new Error(`Unsupported image URI: ${uri || '(empty)'}`);
+  }
+
+  const failures: string[] = [];
+  try {
+    const blob = await blobFromXmlHttpRequest(uri);
+    console.log('[SmartScan] Local image opened with XMLHttpRequest', {size: blob.size, type: blob.type, uriScheme: uri.split(':')[0]});
+    return blob;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    failures.push(`XHR: ${message}`);
+    console.warn('[SmartScan] XMLHttpRequest URI read failed; trying fetch()', message);
+  }
+
+  try {
+    const blob = await blobFromFetch(uri);
+    console.log('[SmartScan] Local image opened with fetch()', {size: blob.size, type: blob.type, uriScheme: uri.split(':')[0]});
+    return blob;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    failures.push(`fetch: ${message}`);
+    console.error('[SmartScan] Both local URI readers failed', {failures, uri: uri.slice(0, 120)});
+  }
+
+  throw new Error(`Unable to read the selected image. ${failures.join(' | ')}`);
+}
+
+export async function uploadUserImage({
+  contentType = 'image/jpeg',
+  kind,
+  uid,
+  uri,
+}: {
+  contentType?: string;
+  kind: UploadKind;
+  uid: string;
+  uri: string;
+}) {
+  console.log('[SmartScan] Preparing Firebase Storage upload', {contentType, kind, uriScheme: uri.split(':')[0]});
+  const blob = await localImageUriToBlob(uri);
+  const extension = extensionFromContentType(contentType);
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
+  const path = `users/${uid}/${kind}/${fileName}`;
+  const storageRef = ref(storage, path);
+  try {
+    await uploadBytes(storageRef, blob, {contentType});
+  } catch (error) {
+    console.error('[SmartScan] Firebase Storage upload failed', {error, path, size: blob.size, type: blob.type});
+    throw error;
+  }
+
+  return { downloadUrl: await getDownloadURL(storageRef), path };
+}
