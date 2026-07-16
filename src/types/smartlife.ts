@@ -2,7 +2,7 @@ import type { Timestamp } from 'firebase/firestore';
 
 export type ActivityStatus = 'planned' | 'in-progress' | 'completed' | 'cancelled';
 export type ActivityType = 'activity' | 'task' | 'appointment';
-export type NoteCategory = 'study' | 'work' | 'idea';
+export type NoteCategory = 'study' | 'work' | 'idea' | 'personal';
 export type ScanKind = 'schedule' | 'receipt';
 export type ScanStatus = 'pending' | 'processing' | 'completed' | 'failed';
 export type TransactionType = 'income' | 'expense';
@@ -28,9 +28,14 @@ export type Schedule = OwnedDocument & {
 };
 
 export type Activity = OwnedDocument & {
+  attendees?: string;
+  category?: string;
   color: string;
   endAt: Timestamp;
   location: string;
+  note?: string;
+  priority?: string;
+  reminder?: string;
   source: 'manual' | 'ai';
   startAt: Timestamp;
   status: ActivityStatus;

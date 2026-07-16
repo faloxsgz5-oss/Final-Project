@@ -159,7 +159,7 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
     return activities.create(uid, {
       title: asString(data.title), type: asString(data.type, 'activity') as ActivityType,
       startAt: Timestamp.fromDate(start), endAt: Timestamp.fromDate(end),
-      location: asString(data.location), color: asString(data.color, '#6F8F6D'),
+      location: asString(data.location), color: asString(data.color, '#6F8F6D'), note: asString(data.note), reminder: asString(data.reminder), category: asString(data.category), priority: asString(data.priority), attendees: asString(data.attendees),
       status: 'planned', source: asString(data.source, 'manual') as 'manual' | 'ai',
     });
   }
