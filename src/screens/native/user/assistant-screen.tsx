@@ -1,6 +1,6 @@
 import {useEffect, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {ActivityIndicator, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, KeyboardAvoidingView, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -205,15 +205,16 @@ function MessageBubble({
     <View style={[local.messageRow, isUser && local.messageRowUser]}>
       <View style={[local.bubble, isUser ? local.userBubble : local.assistantBubble]}>
         <Text style={[local.bubbleText, isUser && local.userBubbleText]}>{message.content}</Text>
+        {/* Refactored UI: structured assistant results stay inside the AI response bubble. */}
+        {!isUser && message.proposedAction ? (
+          <ActionCard
+            action={message.proposedAction}
+            busy={busy}
+            onConfirm={() => onConfirm(message.id, message.proposedAction as AssistantProposedAction)}
+            onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
+          />
+        ) : null}
       </View>
-      {message.proposedAction ? (
-        <ActionCard
-          action={message.proposedAction}
-          busy={busy}
-          onConfirm={() => onConfirm(message.id, message.proposedAction as AssistantProposedAction)}
-          onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
-        />
-      ) : null}
     </View>
   );
 }
@@ -277,6 +278,16 @@ function StatusPill({status}: {status: ProposedActionStatus}) {
   );
 }
 
+// Refactored UI: derive focus suggestions from existing proposed actions, without new data sources.
+function FocusSuggestions({messages}: {messages: AssistantChatMessage[]}) {
+  const suggestions = messages.filter((message) => message.role === 'assistant' && message.proposedAction && ['activity', 'checklist'].includes(message.proposedAction.entity));
+  if (!suggestions.length) return null;
+  return <View style={local.focusSection}>
+    <Text style={local.focusHeading}>AI แนะนำให้โฟกัส</Text>
+    {suggestions.map((message) => <View key={`focus-${message.id}`} style={local.focusItem}><View style={local.focusIcon}><MaterialIcon color="#678266" name="task_alt" size={17} /></View><Text numberOfLines={2} style={local.focusText}>{message.proposedAction?.summary}</Text></View>)}
+  </View>;
+}
+
 const shortcuts = [
   ['calendar_month', 'ตารางวันนี้', 'ดูงานเรียงลำดับ', 'smartlife_notifications_schedule'],
   ['check_box', 'งานค้าง', 'เรียงความสำคัญ', 'smartlife_notifications_urgent'],
@@ -292,6 +303,14 @@ const quickAddOptions = [
   {action: 'file' as const, detail: 'PDF, TXT, CSV ตารางเรียนหรืองาน', icon: 'upload_file', title: 'อัปโหลดไฟล์'},
 ];
 
+// Refactored UI: these use the existing message pipeline instead of adding a second data flow.
+const shortcutPrompts: Record<string, string> = {
+  smartlife_notifications_ai: 'ช่วยแนะนำเวลาอ่านหนังสือวันนี้',
+  smartlife_notifications_finance: 'สรุปงบวันนี้ให้หน่อย',
+  smartlife_notifications_schedule: 'วันนี้มีตารางอะไรบ้าง',
+  smartlife_notifications_urgent: 'มีงานค้างอะไรบ้าง',
+};
+
 export default function AssistantScreen({uid, onNavigate}: {page: string; uid: string; onNavigate: UserNavigate}) {
   const chatScrollRef = useRef<ScrollView>(null);
   const speechBaseInputRef = useRef('');
@@ -301,6 +320,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const [listening, setListening] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [messages, setMessages] = useState<AssistantChatMessage[]>(() => [assistantIntroMessage()]);
+  // Refactored UI: the clean state remains visible until the user starts a conversation.
+  const hasConversation = messages.some((message) => message.role === 'user');
+  const visibleMessages = hasConversation ? messages.filter((message) => message.id !== 'assistant-intro') : [];
 
   useEffect(() => {
     let active = true;
@@ -529,6 +551,8 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
   return (
     <UserShell active="smartlife_ai_assistant" onNavigate={onNavigate} scroll={false}>
+      {/* Refactored UI: keep the floating composer above the software keyboard. */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
         <ScrollView ref={chatScrollRef} contentContainerStyle={local.chatContent} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <View style={local.topBar}>
@@ -544,7 +568,8 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
             </Pressable>
           </View>
 
-          <LinearGradient colors={['#6f8f6d', '#b8caba']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={local.heroCard}>
+          {/* Refactored UI: clean greeting banner for the initial assistant state. */}
+          <LinearGradient colors={['#749279', '#87a48d']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={local.heroCard}>
             <View style={local.heroCopy}>
               <Text style={local.heroTitle}>วันนี้อยากให้ช่วยอะไรดีให้ดีขึ้น?</Text>
               <Text style={local.heroText}>ถามเรื่องตารางเรียน งานที่ต้องส่ง งบวันนี้ หรือให้ช่วยแปลงข้อความเป็นรายการบันทึกได้เลย</Text>
@@ -554,7 +579,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
           <View style={local.shortcutGrid}>
             {shortcuts.map(([icon, title, subtitle, target]) => (
-              <Pressable disabled={busy} key={title} onPress={() => onNavigate(target)} style={[local.shortcutCard, busy && local.disabled]}>
+              <Pressable disabled={busy} key={title} onPress={() => sendMessage(shortcutPrompts[target] ?? title)} style={[local.shortcutCard, busy && local.disabled]}>
                 <View style={local.shortcutIcon}><MaterialIcon color="#64835f" name={icon} size={17} /></View>
                 <View style={{flex: 1}}>
                   <Text style={local.shortcutTitle}>{title}</Text>
@@ -564,8 +589,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
             ))}
           </View>
 
-          <View style={local.chatStack}>
-            {messages.map((message) => (
+          {hasConversation ? <View style={local.chatStack}>
+            {/* Refactored UI: conversations appear only after the first user interaction. */}
+            {visibleMessages.map((message) => (
               <MessageBubble busy={busy} key={message.id} message={message} onConfirm={confirmAction} onReject={rejectAction} />
             ))}
             {busy ? (
@@ -574,8 +600,11 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                 <Text style={userStyles.muted}>กำลังดูข้อมูลจริงในระบบ...</Text>
               </View>
             ) : null}
-          </View>
+            <FocusSuggestions messages={visibleMessages} />
+          </View> : null}
         </ScrollView>
+        {/* Refactored UI: a soft fade keeps scrolling content legible behind the floating composer. */}
+        <LinearGradient colors={['rgba(241,244,240,0)', '#f1f4f0']} end={{x: 0, y: 1}} pointerEvents="none" start={{x: 0, y: 0}} style={local.inputFade} />
         <View style={local.composerWrap}>
           {quickAddOpen ? <LinearGradient colors={['rgba(255,255,255,.99)', '#f5f8f1']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={local.quickAddMenu}>
             <View style={local.quickAddHeader}>
@@ -599,6 +628,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
             <TextInput
               multiline
               onChangeText={setInput}
+              onFocus={() => requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({animated: true}))}
               onSubmitEditing={() => sendMessage()}
               placeholder="เช่น วันนี้มีเรียนอะไร / จ่ายกาแฟ 65 บาท / จดโน้ต..."
               placeholderTextColor="#8d9689"
@@ -615,6 +645,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           </View>
         </View>
       </View>
+      </KeyboardAvoidingView>
     </UserShell>
   );
 }
@@ -623,27 +654,34 @@ const local = StyleSheet.create({
   actionCard: {alignSelf: 'stretch', marginTop: 8, padding: 14},
   actionHeader: {alignItems: 'center', flexDirection: 'row', gap: 10},
   actionIcon: {alignItems: 'center', backgroundColor: '#e8f1e5', borderRadius: 18, height: 36, justifyContent: 'center', width: 36},
-  assistantBubble: {backgroundColor: '#ffffff', borderColor: '#e4eadf', borderWidth: 1},
-  attachButton: {alignItems: 'center', backgroundColor: '#edf5ec', borderRadius: 15, height: 46, justifyContent: 'center', width: 46},
+  assistantBubble: {backgroundColor: '#ffffff', borderColor: '#e4eadf', borderTopLeftRadius: 8, borderWidth: 1, boxShadow: '0 5px 14px rgba(45,58,49,.08)'},
+  attachButton: {alignItems: 'center', backgroundColor: '#edf5ec', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
   attachButtonActive: {backgroundColor: '#5d8059'},
-  bubble: {borderRadius: 16, maxWidth: '88%', paddingHorizontal: 14, paddingVertical: 11},
-  bubbleText: {color: '#384231', fontFamily: 'Prompt_400Regular', fontSize: 14, lineHeight: 21},
-  chatContent: {gap: 12, paddingBottom: 14},
+  bubble: {borderRadius: 24, maxWidth: '88%', paddingHorizontal: 15, paddingVertical: 12},
+  bubbleText: {color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 14, lineHeight: 21},
+  chatContent: {gap: 14, paddingBottom: 138, paddingHorizontal: 18, paddingTop: 18},
   chatStack: {gap: 10},
   circleButton: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, height: 34, justifyContent: 'center', width: 34},
-  composer: {alignItems: 'flex-end', backgroundColor: 'rgba(255,255,255,.92)', borderColor: '#dfe7db', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 8, padding: 8},
-  composerWrap: {gap: 8},
+  composer: {alignItems: 'center', backgroundColor: '#ffffff', borderColor: '#dfe7db', borderRadius: 30, borderWidth: 1, boxShadow: '0 8px 22px rgba(45,58,49,.12)', flexDirection: 'row', gap: 5, padding: 6},
+  composerWrap: {bottom: 18, gap: 8, left: 18, position: 'absolute', right: 18, zIndex: 20},
   confirmRow: {alignItems: 'center', flexDirection: 'row', gap: 10, marginTop: 12},
   detailBox: {backgroundColor: '#f7f9f4', borderRadius: 14, gap: 8, marginTop: 12, padding: 12},
   detailLabel: {color: '#7d8779', fontFamily: 'Prompt_500Medium', fontSize: 11, width: 72},
   detailRow: {alignItems: 'flex-start', flexDirection: 'row', gap: 8},
   detailValue: {color: '#33412e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18},
   disabled: {opacity: .5},
-  heroCard: {alignItems: 'center', borderRadius: 14, flexDirection: 'row', gap: 12, minHeight: 128, overflow: 'hidden', padding: 16},
+  focusHeading: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginBottom: 8},
+  focusIcon: {alignItems: 'center', backgroundColor: '#e4eee3', borderRadius: 12, height: 30, justifyContent: 'center', width: 30},
+  focusItem: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 16, flexDirection: 'row', gap: 9, marginTop: 7, padding: 10},
+  focusSection: {marginTop: 10},
+  focusText: {color: '#4b584e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
+  heroCard: {alignItems: 'center', borderRadius: 24, flexDirection: 'row', gap: 12, minHeight: 122, overflow: 'hidden', padding: 17},
   heroCopy: {flex: 1, gap: 7},
-  heroText: {color: 'rgba(38,50,31,.78)', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 17},
-  heroTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, lineHeight: 25},
-  input: {color: '#33412e', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 14, maxHeight: 110, minHeight: 42, paddingHorizontal: 8, paddingVertical: 9},
+  heroText: {color: 'rgba(255,255,255,.82)', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 17},
+  heroTitle: {color: '#ffffff', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, lineHeight: 26},
+  input: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 14, maxHeight: 100, minHeight: 42, paddingHorizontal: 5, paddingVertical: 8},
+  inputFade: {bottom: 0, height: 145, left: 0, position: 'absolute', right: 0},
+  keyboardAvoiding: {flex: 1},
   messageRow: {alignItems: 'flex-start'},
   messageRowUser: {alignItems: 'flex-end'},
   miniBrand: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 8, lineHeight: 10},
@@ -661,10 +699,11 @@ const local = StyleSheet.create({
   screenTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 19, lineHeight: 23},
   secondaryButton: {alignItems: 'center', backgroundColor: '#eef1eb', borderRadius: 14, justifyContent: 'center', marginTop: 15, minHeight: 50, paddingHorizontal: 15},
   secondaryButtonText: {color: '#66735f', fontFamily: 'Prompt_700Bold', fontSize: 14},
-  sendButton: {alignItems: 'center', backgroundColor: '#9ab49b', borderRadius: 15, height: 46, justifyContent: 'center', width: 46},
-  shell: {flex: 1, gap: 10, paddingHorizontal: 18, paddingTop: 18},
-  shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, flexDirection: 'row', gap: 9, minHeight: 70, padding: 12, width: '48.5%'},
-  shortcutGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
+  sendButton: {alignItems: 'center', backgroundColor: '#749279', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
+  // Refactored UI: clip the whole assistant surface into a rounded app frame.
+  shell: {backgroundColor: '#f1f4f0', borderRadius: 32, flex: 1, overflow: 'hidden'},
+  shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 24, flexDirection: 'row', gap: 9, minHeight: 74, padding: 12, width: '48.5%'},
+  shortcutGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 9},
   shortcutIcon: {alignItems: 'center', backgroundColor: '#eef5ed', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
   shortcutSubtitle: {color: '#8a9585', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 2},
   shortcutTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
@@ -677,8 +716,8 @@ const local = StyleSheet.create({
   thinking: {alignItems: 'center', flexDirection: 'row', gap: 8, padding: 10},
   topBar: {alignItems: 'center', flexDirection: 'row', gap: 9},
   topTitle: {flex: 1},
-  userBubble: {backgroundColor: '#789a75'},
+  userBubble: {backgroundColor: '#749279', borderBottomRightRadius: 8},
   userBubbleText: {color: '#ffffff'},
-  voiceButton: {alignItems: 'center', backgroundColor: '#edf5ec', borderRadius: 15, height: 46, justifyContent: 'center', width: 46},
+  voiceButton: {alignItems: 'center', backgroundColor: '#edf5ec', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
   voiceButtonActive: {backgroundColor: '#5d8059'},
 });

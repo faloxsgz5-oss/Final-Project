@@ -16,6 +16,7 @@ import AdminPortal from '@/screens/admin/admin-portal';
 import AuthPortal from '@/screens/auth/auth-portal';
 import DashboardScreen from '@/screens/native/user/dashboard-screen';
 import CalendarScreen from '@/screens/native/user/calendar-screen';
+import PlannerScreen from '@/screens/native/user/planner-screen';
 import FinanceScreen from '@/screens/native/user/finance-screen';
 import NotesScreen from '@/screens/native/user/notes-screen';
 import AssistantScreen from '@/screens/native/user/assistant-screen';
@@ -193,6 +194,7 @@ export default function LegacyPageRoute() {
   if (section === 'admin' && role === 'user') return <Redirect href={'/user/index' as Href} />;
   if (section === 'admin' && user) return <AdminPortal page={page === 'index' ? 'admin_dashboard' : page} uid={user.uid} onNavigate={(target) => router.push(`/admin/${target}` as Href)} onLogout={handleLogout} />;
   if (section === 'user' && user && page === 'index') return <DashboardScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
+  if (section === 'user' && user && page === 'smartlife_planner') return <PlannerScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_calendar_day', 'smartlife_calendar_week', 'smartlife_calendar_month'].includes(page)) return <CalendarScreen page={page as 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_finance_day', 'smartlife_finance_week', 'smartlife_finance_month', 'smartlife_finance_income', 'smartlife_finance_expense'].includes(page)) return <FinanceScreen page={page as 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month' | 'smartlife_finance_income' | 'smartlife_finance_expense'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_notes', 'smartlife_notes_study', 'smartlife_notes_work', 'smartlife_notes_ideas'].includes(page)) return <NotesScreen page={page as 'smartlife_notes' | 'smartlife_notes_study' | 'smartlife_notes_work' | 'smartlife_notes_ideas'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;

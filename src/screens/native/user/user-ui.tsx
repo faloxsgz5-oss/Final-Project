@@ -1,5 +1,5 @@
-import type {ReactNode} from 'react';
-import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {useState, type ReactNode} from 'react';
+import {ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -38,7 +38,7 @@ export function EmptyBlock({label}: {label: string}) {
   return <Text style={styles.empty}>{label}</Text>;
 }
 
-export function UserTabBar({active, onNavigate}: {active?: string; onNavigate: UserNavigate}) {
+export function LegacyUserTabBar({active, onNavigate}: {active?: string; onNavigate: UserNavigate}) {
   const tabs = [
     ['home', 'หน้าหลัก', 'index'],
     ['calendar_month', 'ตารางเวลา', 'smartlife_calendar_day'],
@@ -49,6 +49,34 @@ export function UserTabBar({active, onNavigate}: {active?: string; onNavigate: U
   ];
   const widths = ['20%', '20%', '20%', '13.333%', '13.333%', '13.334%'] as const;
   return <LinearGradient colors={['rgba(255,255,255,.99)', '#f7f9f4']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={styles.tabs}>{tabs.map(([icon, label, page], index) => <Pressable key={page} onPress={() => onNavigate(page)} style={({pressed}) => [styles.tab, {width: widths[index]}, pressed && styles.tabPressed]}>{index === 2 ? <LinearGradient colors={['#71936e', '#3f633a']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.plus}><MaterialIcon color="#fff" name="add" size={31} /></LinearGradient> : <><MaterialIcon color={active === page ? '#5f835f' : '#9ea59b'} name={icon} size={20} /><Text numberOfLines={1} style={[styles.tabLabel, active === page && styles.active]}>{label}</Text></>}</Pressable>)}</LinearGradient>;
+}
+
+// Added for Merged Planner: a symmetrical 2-1-2 navigation with a central OCR scanner.
+export function UserTabBar({active, onNavigate}: {active?: string; onNavigate: UserNavigate}) {
+  const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
+  const leftTabs = [['home', 'หน้าหลัก', 'index'], ['calendar_month', 'แพลนเนอร์', 'smartlife_planner']];
+  const rightTabs = [['account_balance_wallet', 'การเงิน', 'smartlife_finance_day'], ['person', 'โปรไฟล์', 'smartlife_profile']];
+  const openForm = (page: string) => { setIsBottomSheetOpen(false); onNavigate(page); };
+  const renderTab = ([icon, label, page]: string[]) => <Pressable key={page} onPress={() => onNavigate(page)} style={({pressed}) => [styles.tab, pressed && styles.tabPressed]}><MaterialIcon color={active === page ? '#5f835f' : '#9ea59b'} name={icon} size={20} /><Text numberOfLines={1} style={[styles.tabLabel, active === page && styles.active]}>{label}</Text></Pressable>;
+  return <>
+    <LinearGradient colors={['rgba(255,255,255,.99)', '#f7f9f4']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={styles.tabs}>
+      {leftTabs.map(renderTab)}
+      {/* The centre action is the schedule OCR scanner, not an add-item menu. */}
+      <Pressable accessibilityLabel="สแกนตารางเวลา" onPress={() => onNavigate('smartlife_scan_schedule')} style={({pressed}) => [styles.tab, pressed && styles.tabPressed]}><LinearGradient colors={['#71936e', '#3f633a']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.plus}><MaterialIcon color="#fff" name="add" size={31} /></LinearGradient></Pressable>
+      {rightTabs.map(renderTab)}
+    </LinearGradient>
+    <Modal animationType="fade" onRequestClose={() => setIsBottomSheetOpen(false)} transparent visible={isBottomSheetOpen}>
+      <Pressable accessibilityLabel="ปิดเมนูเพิ่มรายการ" onPress={() => setIsBottomSheetOpen(false)} style={styles.sheetBackdrop}>
+        <View onStartShouldSetResponder={() => true} style={styles.addSheet}>
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>เพิ่มรายการใหม่</Text>
+          <Text style={styles.sheetSubtitle}>เลือกสิ่งที่คุณต้องการบันทึก</Text>
+          <Pressable onPress={() => openForm('smartlife_add_activity')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#e5efe2'}]}><MaterialIcon color="#52734b" name="event" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>กิจกรรมใหม่</Text><Text style={styles.sheetOptionSub}>นัดหมาย คลาส หรือสิ่งที่ต้องทำ</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
+          <Pressable onPress={() => openForm('smartlife_add_note')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#f5e8e8'}]}><MaterialIcon color="#bb7777" name="edit_note" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>โน้ตใหม่</Text><Text style={styles.sheetOptionSub}>บันทึกไอเดียและเรื่องสำคัญ</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
+        </View>
+      </Pressable>
+    </Modal>
+  </>;
 }
 
 export const userStyles = StyleSheet.create({
@@ -74,6 +102,7 @@ export const userStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   active: {color: '#4f754b'},
+  addSheet: {backgroundColor: '#fbfcf8', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 18, paddingBottom: 34, width: '100%'},
   avatar: {alignItems: 'center', backgroundColor: '#e8efe4', borderRadius: 22, height: 44, justifyContent: 'center', width: 44},
   avatarText: {color: '#52734b', fontFamily: 'Prompt_700Bold'},
   body: {flex: 1, padding: 18},
@@ -91,8 +120,17 @@ const styles = StyleSheet.create({
   safe: {backgroundColor: '#f0f2ec', flex: 1},
   scroll: {flexGrow: 1, paddingBottom: 12},
   shell: {backgroundColor: '#f0f2ec', flex: 1},
+  sheetBackdrop: {backgroundColor: 'rgba(20,31,20,.42)', flex: 1, justifyContent: 'flex-end'},
+  sheetCopy: {flex: 1},
+  sheetHandle: {alignSelf: 'center', backgroundColor: '#d8e0d6', borderRadius: 4, height: 4, marginBottom: 15, width: 42},
+  sheetIcon: {alignItems: 'center', borderRadius: 15, height: 44, justifyContent: 'center', width: 44},
+  sheetOption: {alignItems: 'center', backgroundColor: '#fff', borderColor: '#e8ede5', borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 11, marginTop: 10, padding: 12},
+  sheetOptionSub: {color: '#879087', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 1},
+  sheetOptionTitle: {color: '#2c341b', fontFamily: 'Prompt_700Bold', fontSize: 12},
+  sheetSubtitle: {color: '#818b7f', fontFamily: 'Prompt_400Regular', fontSize: 10, marginTop: 2},
+  sheetTitle: {color: '#29351f', fontFamily: 'Prompt_700Bold', fontSize: 17},
   subtitle: {color: '#84907f', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 3},
-  tab: {alignItems: 'center', justifyContent: 'center'},
+  tab: {alignItems: 'center', flex: 1, justifyContent: 'center'},
   tabLabel: {color: '#9aa39a', fontFamily: 'Prompt_500Medium', fontSize: 8, marginTop: 4, textAlign: 'center'},
   tabPressed: {opacity: .65, transform: [{translateY: -1}]},
   tabs: {alignItems: 'center', borderTopColor: '#e2e6df', borderTopWidth: 1, boxShadow: '0 -8px 18px rgba(44, 52, 27, 0.07)', flexDirection: 'row', height: 78, paddingHorizontal: 0},

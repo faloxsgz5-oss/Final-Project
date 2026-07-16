@@ -4,6 +4,7 @@ import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
 import {Image} from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import {LinearGradient} from 'expo-linear-gradient';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 
 import LoadingAndSuccessModal, {type FeedbackPhase} from '@/components/loading-success-modal';
 import {defaultTermDates, suggestedSchoolTerm} from '@/lib/term-dates';
@@ -66,7 +67,29 @@ function timeKey(value: Date) {
   return `${String(value.getHours()).padStart(2, '0')}:${String(value.getMinutes()).padStart(2, '0')}`;
 }
 
-export default function ScanScreen({uid, onNavigate}: {page: ScanPage; uid: string; onNavigate: UserNavigate}) {
+// Refactored UI: finance scans use a focused receipt upload and review flow.
+function ReceiptScanDashboard({confirmAndSave, draft, imageUri, onNavigate, pick, result, saving}: {confirmAndSave: () => void; draft: Record<string, unknown>; imageUri: string; onNavigate: UserNavigate; pick: (source: 'camera' | 'library') => Promise<void>; result: OcrResult | null; saving: boolean}) {
+  const merchant = textValue(draft.merchant ?? draft.store ?? draft.vendor, 'ร้านค้าที่สแกน');
+  const total = textValue(draft.total ?? draft.amount ?? draft.totalAmount, '0');
+  const category = textValue(draft.category, 'Food / อาหาร');
+  const ready = Boolean(result);
+  return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
+    <View style={receiptStyles.page}>
+      <View style={receiptStyles.header}><Pressable onPress={() => onNavigate('smartlife_finance_day')} style={receiptStyles.back}><MaterialIcon color={C.pine} name="chevron_left" size={25} /></Pressable><Text style={receiptStyles.title}>{ready ? 'ผลลัพธ์ใบเสร็จ' : 'สแกนใบเสร็จ'}</Text><Pressable onPress={() => onNavigate('smartlife_ocr_history')} style={receiptStyles.history}><MaterialIcon color={C.pine} name={ready ? 'check_circle' : 'bookmark_border'} size={20} /></Pressable></View>
+      {!ready ? <><LinearGradient colors={['#717db2', '#9199c2']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={receiptStyles.hero}><View style={receiptStyles.heroIcon}><MaterialIcon color="#fff" name="receipt_long" size={27} /></View><Text style={receiptStyles.heroTitle}>ให้ AI อ่านใบเสร็จ</Text><Text style={receiptStyles.heroText}>ถ่ายหรืออัปโหลดใบเสร็จ แล้วระบบจะแยกรายจ่าย วันที่ และหมวดหมู่ให้</Text></LinearGradient><Pressable onPress={() => pick('library')} style={receiptStyles.dropZone}><MaterialIcon color="#a2a9c6" name="add_photo_alternate" size={29} /><Text style={receiptStyles.dropText}>{imageUri ? 'กำลังอ่านใบเสร็จ...' : 'วางใบเสร็จให้อยู่ในกรอบ\nแล้วกดถ่ายหรืออัปโหลด'}</Text></Pressable><View style={receiptStyles.pickRow}><Pressable disabled={saving} onPress={() => pick('camera')} style={receiptStyles.pickButton}><MaterialIcon color="#7684ba" name="photo_camera" size={20} /><Text style={receiptStyles.pickText}>ถ่ายใบเสร็จ</Text></Pressable><Pressable disabled={saving} onPress={() => pick('library')} style={receiptStyles.pickButton}><MaterialIcon color="#7684ba" name="image" size={20} /><Text style={receiptStyles.pickText}>อัปโหลดรูป</Text></Pressable></View></> : <><View style={receiptStyles.receiptCard}><View style={receiptStyles.merchantRow}><View style={receiptStyles.merchantIcon}><MaterialIcon color="#c38b75" name="receipt_long" size={20} /></View><View style={{flex: 1}}><Text style={receiptStyles.merchant}>{merchant}</Text><Text style={receiptStyles.merchantSub}>วันนี้ 12:38 น.</Text></View><View style={receiptStyles.confidence}><Text style={receiptStyles.confidenceText}>มั่นใจ 98%</Text></View></View><View style={receiptStyles.totalBox}><Text style={receiptStyles.totalLabel}>ยอดรวม</Text><Text style={receiptStyles.total}>฿{total}</Text></View><View style={receiptStyles.category}><View style={receiptStyles.categoryDot} /><Text style={receiptStyles.categoryText}>{category}</Text><Text style={receiptStyles.edit}>แก้ไข</Text></View></View><View style={receiptStyles.analysis}><Text style={receiptStyles.analysisTitle}>Smart Expense Categorization</Text><View style={receiptStyles.analysisRow}><View style={receiptStyles.analysisIcon}><MaterialIcon color="#638263" name="receipt_long" size={18} /></View><View style={{flex: 1}}><Text style={receiptStyles.analysisHead}>OCR อ่านใบเสร็จสำเร็จ</Text><Text style={receiptStyles.analysisSub}>พบยอดรวม วันที่ และเวลาจากรูปใบเสร็จ</Text></View></View><View style={receiptStyles.analysisRow}><View style={[receiptStyles.analysisIcon, {backgroundColor: '#eef0fb'}]}><MaterialIcon color="#7986ba" name="auto_awesome" size={18} /></View><View style={{flex: 1}}><Text style={receiptStyles.analysisHead}>NLP วิเคราะห์ร้านค้าและจัดหมวดหมู่</Text><Text style={receiptStyles.analysisSub}>{merchant} ถูกเพิ่มเป็น {category} โดยอัตโนมัติ</Text></View></View></View><View style={receiptStyles.detailCard}><Text style={receiptStyles.detailTitle}>รายละเอียดที่จะบันทึก</Text><ReceiptDetail label="ประเภท" value="รายจ่าย" /><ReceiptDetail label="ร้านค้า" value={merchant} /><ReceiptDetail label="หมวดหมู่" value={category} /><ReceiptDetail label="หมายเหตุ" value="มื้อกลางวัน" /></View><Pressable disabled={saving} onPress={confirmAndSave} style={[receiptStyles.saveShell, saving && receiptStyles.disabled]}><LinearGradient colors={['#6573ad', '#6978b4']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={receiptStyles.save}><MaterialIcon color="#fff" name="check" size={19} /><Text style={receiptStyles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกรายจ่ายนี้'}</Text></LinearGradient></Pressable></>}
+    </View>
+  </UserShell>;
+}
+function ReceiptDetail({label, value}: {label: string; value: string}) { return <View style={receiptStyles.detailRow}><Text style={receiptStyles.detailLabel}>{label}</Text><Text style={receiptStyles.detailValue}>{value}</Text></View>; }
+
+const receiptStyles = StyleSheet.create({
+  analysis: {backgroundColor: '#fff', borderRadius: 20, boxShadow: '0 7px 18px rgba(42,51,73,.07)', marginTop: 13, padding: 14}, analysisHead: {color: C.pine, fontFamily: F.b, fontSize: 11}, analysisIcon: {alignItems: 'center', backgroundColor: '#e4efdf', borderRadius: 12, height: 37, justifyContent: 'center', width: 37}, analysisRow: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e7ebe4', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 9, padding: 8}, analysisSub: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1}, analysisTitle: {color: C.pine, fontFamily: F.x, fontSize: 13}, back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 43, justifyContent: 'center', width: 43}, category: {alignItems: 'center', backgroundColor: '#e5efdf', borderRadius: 99, flexDirection: 'row', gap: 6, marginTop: 12, paddingHorizontal: 10, paddingVertical: 7}, categoryDot: {backgroundColor: C.sage, borderRadius: 4, height: 7, width: 7}, categoryText: {color: C.sage, flex: 1, fontFamily: F.b, fontSize: 9}, confidence: {backgroundColor: '#eef0fb', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5}, confidenceText: {color: '#7885ba', fontFamily: F.b, fontSize: 8}, detailCard: {backgroundColor: '#fff', borderRadius: 20, boxShadow: '0 7px 18px rgba(42,51,73,.07)', marginTop: 13, padding: 14}, detailLabel: {color: C.muted, fontFamily: F.s, fontSize: 9}, detailRow: {borderBottomColor: '#edf0ea', borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8}, detailTitle: {color: C.pine, fontFamily: F.x, fontSize: 13}, detailValue: {color: C.pine, fontFamily: F.b, fontSize: 9}, disabled: {opacity: .55}, dropText: {color: '#89928c', fontFamily: F.s, fontSize: 11, lineHeight: 16, textAlign: 'center'}, dropZone: {alignItems: 'center', backgroundColor: '#fff', borderColor: '#cbd1e1', borderRadius: 20, borderStyle: 'dashed', borderWidth: 2, gap: 12, justifyContent: 'center', marginTop: 14, minHeight: 238, padding: 18}, edit: {color: '#7885ba', fontFamily: F.b, fontSize: 8}, header: {alignItems: 'center', flexDirection: 'row', gap: 10}, hero: {borderRadius: 20, marginTop: 14, padding: 17}, heroIcon: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.18)', borderRadius: 20, height: 48, justifyContent: 'center', width: 48}, heroText: {color: 'rgba(255,255,255,.88)', fontFamily: F.r, fontSize: 10, lineHeight: 16, marginTop: 7}, heroTitle: {color: '#fff', fontFamily: F.x, fontSize: 19, marginTop: 17}, history: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 43, justifyContent: 'center', width: 43}, merchant: {color: C.pine, fontFamily: F.x, fontSize: 14}, merchantIcon: {alignItems: 'center', backgroundColor: '#fbeae0', borderRadius: 14, height: 43, justifyContent: 'center', width: 43}, merchantRow: {alignItems: 'center', flexDirection: 'row', gap: 10}, merchantSub: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2}, page: {paddingBottom: 6}, pickButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 17, flex: 1, gap: 6, minHeight: 68, justifyContent: 'center'}, pickRow: {flexDirection: 'row', gap: 10, marginTop: 14}, pickText: {color: C.pine, fontFamily: F.b, fontSize: 10}, receiptCard: {backgroundColor: '#fff', borderRadius: 20, boxShadow: '0 7px 18px rgba(42,51,73,.07)', marginTop: 14, padding: 14}, save: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 49}, saveShell: {borderRadius: 16, marginTop: 14, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: F.b, fontSize: 13}, title: {color: C.pine, flex: 1, fontFamily: F.x, fontSize: 20}, total: {color: C.pine, fontFamily: F.x, fontSize: 25}, totalBox: {alignItems: 'center', backgroundColor: '#f2f5ed', borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, paddingHorizontal: 12, paddingVertical: 8}, totalLabel: {color: C.muted, fontFamily: F.b, fontSize: 10},
+});
+
+export default function ScanScreen({page, uid, onNavigate}: {page: ScanPage; uid: string; onNavigate: UserNavigate}) {
+  const safeAreaInsets = useSafeAreaInsets();
+  // Keep the dismiss action clear of Android's system navigation controls.
+  const pickerBottomPadding = Math.max(safeAreaInsets.bottom, 24) + 20;
   const {institutionType: storedInstitutionType} = useInstitution();
   const institutionType = storedInstitutionType ?? 'university';
   const [schoolTerm, setSchoolTerm] = useState<SchoolTerm>(() => suggestedSchoolTerm());
@@ -221,6 +244,18 @@ export default function ScanScreen({uid, onNavigate}: {page: ScanPage; uid: stri
     }
   };
 
+  if (page === 'smartlife_scan_finance') {
+    return <ReceiptScanDashboard
+      confirmAndSave={confirmAndSave}
+      draft={draft}
+      imageUri={imageUri}
+      onNavigate={onNavigate}
+      pick={pick}
+      result={result}
+      saving={saving}
+    />;
+  }
+
   return <UserShell onNavigate={onNavigate}>
     <UserHeader
       onNavigate={onNavigate}
@@ -297,7 +332,7 @@ export default function ScanScreen({uid, onNavigate}: {page: ScanPage; uid: stri
       <Text style={localStyles.saveHint}>{result.scanType === 'receipt' ? '\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e07\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34' : '\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34'}</Text>
     </Card> : null}
 
-    <Modal animationType="fade" onRequestClose={() => setPickerOpen(false)} transparent visible={pickerOpen}><Pressable onPress={() => setPickerOpen(false)} style={localStyles.overlay}><View onStartShouldSetResponder={() => true} style={localStyles.sheet}><View style={localStyles.handle} /><Text style={localStyles.sheetTitle}>เพิ่มเอกสาร</Text><Text style={localStyles.sheetText}>ระบบจะตรวจชนิดเอกสารให้อัตโนมัติ</Text><View style={localStyles.sourceRow}><SourceButton icon="photo_camera" label="ถ่ายภาพ" onPress={() => pick('camera')} /><SourceButton icon="photo_library" label="เลือกรูป" onPress={() => pick('library')} /></View><Pressable onPress={() => setPickerOpen(false)} style={localStyles.cancel}><Text style={localStyles.cancelText}>ยกเลิก</Text></Pressable></View></Pressable></Modal>
+    <Modal animationType="fade" onRequestClose={() => setPickerOpen(false)} transparent visible={pickerOpen}><Pressable onPress={() => setPickerOpen(false)} style={localStyles.overlay}><View onStartShouldSetResponder={() => true} style={[localStyles.sheet, {paddingBottom: pickerBottomPadding}]}><View style={localStyles.handle} /><Text style={localStyles.sheetTitle}>เพิ่มเอกสาร</Text><Text style={localStyles.sheetText}>ระบบจะตรวจชนิดเอกสารให้อัตโนมัติ</Text><View style={localStyles.sourceRow}><SourceButton icon="photo_camera" label="ถ่ายภาพ" onPress={() => pick('camera')} /><SourceButton icon="photo_library" label="เลือกรูป" onPress={() => pick('library')} /></View><Pressable onPress={() => setPickerOpen(false)} style={localStyles.cancel}><Text style={localStyles.cancelText}>ยกเลิก</Text></Pressable></View></Pressable></Modal>
     <LoadingAndSuccessModal phase={feedback?.phase ?? 'loading'} subtitle={feedback?.subtitle ?? ''} title={feedback?.title ?? ''} visible={Boolean(feedback)} />
   </UserShell>;
 }

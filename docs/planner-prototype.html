@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Planner Prototype</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Prompt:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root { --green:#4a6b53; --mint:#f3f6f3; --ink:#17221b; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:radial-gradient(circle at 20% 15%,#dcebdd 0,transparent 29%),radial-gradient(circle at 85% 85%,#fbe4d5 0,transparent 27%),#eaf0ea; font-family:Prompt,Inter,sans-serif; color:var(--ink); }
+    button,input,textarea,select { font:inherit; }
+    button { cursor:pointer; }
+    .phone { width:360px; height:750px; overflow:hidden; position:relative; border:8px solid #17202b; border-radius:43px; background:var(--mint); box-shadow:0 28px 75px rgba(30,48,36,.32),inset 0 0 0 1px rgba(255,255,255,.22); }
+    .notch { position:absolute; z-index:20; width:112px; height:25px; top:0; left:50%; transform:translateX(-50%); border-radius:0 0 16px 16px; background:#17202b; }
+    .status { height:34px; padding:10px 22px 0; display:flex; align-items:center; justify-content:space-between; font:700 10px Inter,sans-serif; color:#3d5042; }
+    .screen { height:100%; overflow-y:auto; padding:0 16px 102px; scrollbar-width:none; }
+    .screen::-webkit-scrollbar { display:none; }
+    .tab-track { position:relative; display:grid; grid-template-columns:1fr 1fr; padding:4px; border-radius:16px; background:#e4ebe4; }
+    .tab-glider { position:absolute; top:4px; bottom:4px; left:4px; width:calc(50% - 4px); background:#fff; border-radius:12px; box-shadow:0 2px 8px rgba(48,74,54,.10); transition:transform .32s cubic-bezier(.2,.9,.2,1); }
+    .tab-glider.notes { transform:translateX(100%); }
+    .tab { z-index:1; border:0; background:transparent; border-radius:12px; padding:9px 4px; color:#7b8980; font-size:11px; font-weight:700; transition:color .2s; }
+    .tab.active { color:var(--green); }
+    .scope { display:grid; grid-template-columns:repeat(4,1fr); padding:3px; border:1px solid #e7eee8; background:#fff; border-radius:14px; }
+    .scope button { border:0; padding:7px 1px; border-radius:10px; color:#839086; background:transparent; font-size:10px; font-weight:600; }
+    .scope button.active { background:var(--green); color:#fff; box-shadow:0 3px 7px rgba(74,107,83,.22); }
+    .days { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+    .day { border:0; background:#fff; min-height:60px; border-radius:15px; padding:6px 2px; color:#64736a; transition:.2s; }
+    .day small { display:block; font-size:9px; font-weight:600; }
+    .day strong { display:block; font:700 15px Inter,sans-serif; margin-top:4px; }
+    .day .dot { display:block; width:4px; height:4px; margin:5px auto 0; border-radius:50%; background:#f5a88e; }
+    .day.active { color:#fff; background:var(--green); box-shadow:0 5px 12px rgba(74,107,83,.25); }
+    .day.active .dot { background:#f8d46b; }
+    .event { display:flex; align-items:center; gap:10px; background:#fff; border:1px solid #eef2ee; border-radius:18px; overflow:hidden; box-shadow:0 4px 13px rgba(47,64,53,.045); transition:opacity .25s, transform .25s; }
+    .event.done { opacity:.45; }
+    .event.done .event-title { text-decoration:line-through; }
+    .event-line { width:5px; align-self:stretch; background:#60a5fa; }
+    .event-inner { min-width:0; flex:1; padding:11px 0; }
+    .event-time { color:#718076; font:600 9px Inter,sans-serif; }
+    .event-title { margin:2px 0; font-size:12px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .event-place { color:#87938a; font-size:9px; }
+    .check { width:26px; height:26px; margin-right:10px; border:1.5px solid #ccd8ce; border-radius:50%; background:#fff; color:transparent; font-weight:800; }
+    .event.done .check { border-color:var(--green); color:#fff; background:var(--green); }
+    .filter { border:0; border-radius:99px; background:#fff; padding:7px 10px; color:#78857c; white-space:nowrap; font-size:10px; font-weight:600; }
+    .filter.active { color:#fff; background:var(--green); }
+    .note { min-height:137px; border-radius:19px; padding:12px; position:relative; box-shadow:0 4px 10px rgba(71,82,68,.06); transition:transform .18s; }
+    .note:hover { transform:translateY(-2px); }
+    .note h4 { margin:10px 0 4px; font-size:12px; line-height:1.3; font-weight:700; }
+    .note p { margin:0; color:#68736c; font-size:9px; line-height:1.55; }
+    .note time { position:absolute; bottom:11px; color:#7c877f; font:500 8px Inter,sans-serif; }
+    .bottom-nav { position:absolute; z-index:10; bottom:0; left:0; width:100%; height:78px; padding:15px 20px 8px; display:grid; grid-template-columns:1fr 1fr 58px 1fr 1fr; align-items:end; background:rgba(255,255,255,.96); border-top:1px solid #e8eee9; backdrop-filter:blur(12px); }
+    .nav-item { border:0; background:transparent; color:#9ba69e; padding:3px; font-size:8px; font-weight:600; }
+    .nav-item svg { display:block; width:19px; height:19px; margin:0 auto 3px; }
+    .nav-item.active { color:var(--green); }
+    .fab { width:54px; height:54px; border:5px solid var(--mint); border-radius:50%; background:var(--green); color:#fff; font-size:31px; line-height:1; transform:translateY(-25px); box-shadow:0 8px 17px rgba(74,107,83,.35); }
+    .sheet-backdrop { position:absolute; z-index:30; inset:0; display:flex; align-items:flex-end; padding:0; background:rgba(16,27,20,.34); opacity:0; pointer-events:none; transition:opacity .25s; }
+    .sheet-backdrop.show { opacity:1; pointer-events:auto; }
+    .sheet { width:100%; padding:11px 16px 28px; border-radius:28px 28px 0 0; background:#fff; transform:translateY(105%); transition:transform .35s cubic-bezier(.2,.85,.25,1); }
+    .sheet-backdrop.show .sheet { transform:translateY(0); }
+    .handle { width:38px; height:4px; margin:0 auto 15px; border-radius:20px; background:#d9e1da; }
+    .choice { width:100%; display:flex; align-items:center; gap:12px; margin-top:9px; padding:13px; border:1px solid #edf1ed; border-radius:17px; background:#fff; text-align:left; }
+    .choice-icon { display:grid; place-items:center; width:37px; height:37px; border-radius:13px; font-size:18px; }
+    .form-field { width:100%; margin-top:9px; border:1px solid #e5ebe6; border-radius:12px; outline:0; padding:9px 10px; background:#fbfdfb; color:#26342a; font-size:11px; }
+    textarea.form-field { height:70px; resize:none; }
+    .toast { position:absolute; z-index:50; left:50%; bottom:92px; width:max-content; max-width:290px; transform:translate(-50%,18px); opacity:0; border-radius:99px; padding:9px 14px; background:#263d2d; color:#fff; font-size:10px; transition:.25s; pointer-events:none; }
+    .toast.show { transform:translate(-50%,0); opacity:1; }
+    .hidden { display:none!important; }
+    @media (max-width:420px) { body { display:block; background:var(--mint); } .phone { width:100%; height:100vh; border:0; border-radius:0; box-shadow:none; } .notch { display:none; } }
+  </style>
+</head>
+<body>
+  <main class="phone" aria-label="Smart Planner prototype">
+    <div class="notch"></div>
+    <div class="screen">
+      <div class="status"><span>9:41</span><span>5G&nbsp; ▮▮▮ &nbsp;87%</span></div>
+      <header class="mb-4 flex items-center justify-between">
+        <div class="flex items-center gap-2.5"><div class="grid h-9 w-9 place-items-center rounded-2xl bg-[#dfece0] text-xs font-bold text-[#4a6b53]">SM</div><div><p class="m-0 text-[9px] text-slate-400">สวัสดี, Sarocha</p><h1 id="pageTitle" class="m-0 text-[17px] font-bold">My Calendar</h1></div></div>
+        <button class="grid h-9 w-9 place-items-center rounded-xl border border-slate-100 bg-white text-slate-500" aria-label="Settings">⚙</button>
+      </header>
+      <div class="tab-track mb-4"><div id="glider" class="tab-glider"></div><button class="tab active" data-tab="schedule">🗓️ ตารางงาน</button><button class="tab" data-tab="notes">📝 โน้ต</button></div>
+
+      <section id="scheduleView">
+        <div class="mb-4 rounded-3xl bg-gradient-to-br from-[#4a6b53] to-[#73977a] p-4 text-white shadow-lg shadow-[#4a6b53]/20">
+          <div class="flex items-start justify-between"><div><p class="m-0 text-[9px] text-emerald-100">SMART CONNECTION</p><h2 class="mt-1 text-[15px] font-bold leading-tight">Two-Way Sync<br />Google Calendar</h2></div><span class="text-2xl">🗓️</span></div>
+          <div class="mt-3 flex items-center justify-between"><span id="syncStatus" class="text-[9px] text-emerald-50">อัปเดตล่าสุดเมื่อ 10 นาทีที่แล้ว</span><button id="syncButton" class="rounded-xl bg-white px-3 py-2 text-[10px] font-bold text-[#4a6b53]">↻ Sync now</button></div>
+        </div>
+        <div id="scopeButtons" class="scope mb-4"><button data-scope="day">วัน</button><button class="active" data-scope="week">สัปดาห์</button><button data-scope="month">เดือน</button><button data-scope="year">ปี</button></div>
+        <div id="dayStrip" class="days mb-4"></div>
+        <div class="mb-2 flex items-center justify-between"><h3 class="m-0 text-[13px] font-bold">กิจกรรมของวันนี้</h3><span id="eventCount" class="text-[9px] text-slate-400"></span></div>
+        <div id="eventList" class="space-y-2"></div>
+      </section>
+
+      <section id="notesView" class="hidden">
+        <label class="mb-3 flex items-center gap-2 rounded-2xl border border-slate-100 bg-white px-3 py-2.5 text-slate-400"><span>⌕</span><input id="searchInput" class="w-full border-0 bg-transparent text-[10px] outline-none" placeholder="ค้นหาโน้ต..." /></label>
+        <div id="noteFilters" class="mb-4 flex gap-1.5 overflow-x-auto pb-1"><button class="filter active" data-filter="all">ทั้งหมด</button><button class="filter" data-filter="study">📚 เรียน</button><button class="filter" data-filter="work">💼 งาน</button><button class="filter" data-filter="idea">💡 ไอเดีย</button></div>
+        <div class="mb-4 rounded-3xl border border-[#ffdcd2] bg-[#fff0eb] p-3"><div class="flex items-center justify-between"><span class="text-[10px] font-bold text-[#c96554]">🎯 FOCUS OF THE DAY</span><span class="text-[9px] text-[#d88b7b]">วันนี้</span></div><h3 class="mt-1 text-[14px] font-bold text-[#83483e]">Linked List Structure</h3><p class="m-0 text-[9px] leading-relaxed text-[#aa6b60]">ทบทวนการเชื่อมโยง node และเตรียมโจทย์สำหรับคลาสพรุ่งนี้</p></div>
+        <div id="notesGrid" class="grid grid-cols-2 gap-2.5"></div>
+      </section>
+    </div>
+
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-6h6v6"/></svg>Home</button>
+      <button class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>Planner</button>
+      <button id="addButton" class="fab" aria-label="เพิ่มรายการ">+</button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 16 4-5 3 3 5-7"/></svg>Finance</button>
+      <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c.8-4 3.4-6 8-6s7.2 2 8 6"/></svg>Profile</button>
+    </nav>
+    <div id="sheetBackdrop" class="sheet-backdrop"><div id="bottomSheet" class="sheet"></div></div>
+    <div id="toast" class="toast"></div>
+  </main>
+
+  <script>
+    // Mock state: all rendered content is driven from these two collections.
+    const days = [{key:'mon',label:'จ.',date:13},{key:'tue',label:'อ.',date:14},{key:'wed',label:'พ.',date:15},{key:'thu',label:'พฤ.',date:16},{key:'fri',label:'ศ.',date:17},{key:'sat',label:'ส.',date:18},{key:'sun',label:'อา.',date:19}];
+    let activeDay = 'wed', activeTab = 'schedule', activeFilter = 'all';
+    let events = [
+      {id:1, day:'wed',time:'09:00 — 10:30',title:'Data Structure Class',place:'อาคารวิทยาการคอมพิวเตอร์ 402',color:'#60a5fa',done:false},
+      {id:2, day:'wed',time:'13:00 — 14:00',title:'Group project sync',place:'Google Meet',color:'#fbbf24',done:false},
+      {id:3, day:'thu',time:'10:00 — 12:00',title:'UI/UX Design Workshop',place:'Creative Lab ชั้น 3',color:'#f87171',done:false},
+      {id:4, day:'fri',time:'15:30 — 16:30',title:'Review weekly goals',place:'Study corner',color:'#a78bfa',done:false}
+    ];
+    let notes = [
+      {id:1,category:'study',title:'Database Normalization',text:'สรุป 1NF, 2NF และ 3NF ก่อนสอบกลางภาค',date:'15 ก.ค.',pinned:true},
+      {id:2,category:'work',title:'Project Timeline',text:'จัดลำดับงานและกำหนดวันส่งของแต่ละ sprint',date:'14 ก.ค.',pinned:false},
+      {id:3,category:'idea',title:'App feature ideas',text:'เพิ่ม streak และ weekly progress ให้ผู้ใช้',date:'13 ก.ค.',pinned:true},
+      {id:4,category:'study',title:'React Native',text:'ทดลองใช้ animation สำหรับหน้าจอ onboarding',date:'12 ก.ค.',pinned:false}
+    ];
+    const $ = id => document.getElementById(id);
+    function renderDays() {
+      $('dayStrip').innerHTML = days.map(day => { const hasEvent = events.some(e => e.day === day.key); return `<button class="day ${day.key===activeDay?'active':''}" data-day="${day.key}"><small>${day.label}</small><strong>${day.date}</strong>${hasEvent?'<i class="dot"></i>':'<i class="dot" style="visibility:hidden"></i>'}</button>`; }).join('');
+      document.querySelectorAll('[data-day]').forEach(el => el.onclick = () => { activeDay = el.dataset.day; renderDays(); renderEvents(); });
+    }
+    function renderEvents() {
+      const items = events.filter(e => e.day === activeDay); $('eventCount').textContent = `${items.length} รายการ`;
+      $('eventList').innerHTML = items.length ? items.map(e => `<article class="event ${e.done?'done':''}"><span class="event-line" style="background:${e.color}"></span><div class="event-inner"><div class="event-time">${e.time}</div><div class="event-title">${e.title}</div><div class="event-place">⌖ ${e.place}</div></div><button class="check" data-check="${e.id}" aria-label="ทำกิจกรรมเสร็จแล้ว">✓</button></article>`).join('') : '<div class="rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center text-[10px] text-slate-400">ไม่มีรายการในวันนี้ ✨</div>';
+      document.querySelectorAll('[data-check]').forEach(el => el.onclick = () => { const event = events.find(e => e.id === +el.dataset.check); event.done = !event.done; renderEvents(); showToast(event.done ? 'ทำกิจกรรมเสร็จแล้ว 🎉' : 'เปิดรายการอีกครั้งแล้ว'); });
+    }
+    function renderNotes() {
+      const term = $('searchInput').value.trim().toLowerCase();
+      const colours = {study:'#ffe8e5',work:'#e4f0ff',idea:'#fff3cc'};
+      const icons = {study:'📚',work:'💼',idea:'💡'};
+      const list = notes.filter(n => (activeFilter==='all'||n.category===activeFilter) && `${n.title} ${n.text}`.toLowerCase().includes(term));
+      $('notesGrid').innerHTML = list.length ? list.map(n => `<article class="note" style="background:${colours[n.category]}"><div class="flex items-center justify-between text-[12px]"><span>${icons[n.category]}</span><span>${n.pinned?'📌':''}</span></div><h4>${n.title}</h4><p>${n.text}</p><time>${n.date}</time></article>`).join('') : '<p class="col-span-2 py-8 text-center text-[10px] text-slate-400">ไม่พบโน้ตที่ค้นหา</p>';
+    }
+    function switchTab(tab) {
+      activeTab = tab; const notesTab = tab === 'notes'; $('scheduleView').classList.toggle('hidden',notesTab); $('notesView').classList.toggle('hidden',!notesTab); $('pageTitle').textContent = notesTab ? 'My Notes' : 'My Calendar'; $('glider').classList.toggle('notes',notesTab); document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active',el.dataset.tab===tab));
+    }
+    function showToast(message) { const toast = $('toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(window.toastTimer); window.toastTimer = setTimeout(() => toast.classList.remove('show'),2400); }
+    function closeSheet() { $('sheetBackdrop').classList.remove('show'); }
+    function menuSheet() { $('bottomSheet').innerHTML = `<div class="handle"></div><div class="mb-3 flex items-center justify-between"><h2 class="m-0 text-[16px] font-bold">เพิ่มรายการใหม่</h2><button id="closeSheet" class="text-lg text-slate-400">×</button></div><button class="choice" id="chooseEvent"><span class="choice-icon bg-emerald-100">🗓️</span><span><b class="block text-[12px]">เพิ่มกิจกรรมใหม่</b><small class="text-[9px] text-slate-400">นัดหมาย คลาส หรือสิ่งที่ต้องทำ</small></span></button><button class="choice" id="chooseNote"><span class="choice-icon bg-amber-100">📝</span><span><b class="block text-[12px]">เพิ่มโน้ตใหม่</b><small class="text-[9px] text-slate-400">บันทึกไอเดียและเรื่องสำคัญ</small></span></button>`; $('closeSheet').onclick=closeSheet; $('chooseEvent').onclick=eventForm; $('chooseNote').onclick=noteForm; }
+    function eventForm() { $('bottomSheet').innerHTML = `<div class="handle"></div><div class="flex items-center justify-between"><h2 class="m-0 text-[16px] font-bold">กิจกรรมใหม่</h2><button id="backMenu" class="text-[11px] font-semibold text-[#4a6b53]">‹ กลับ</button></div><form id="eventForm"><input class="form-field" required name="title" placeholder="ชื่อกิจกรรม" /><div class="flex gap-2"><select class="form-field" name="day">${days.map(d=>`<option value="${d.key}">${d.label} ${d.date} ก.ค.</option>`).join('')}</select><input class="form-field" required name="time" placeholder="เวลา เช่น 10:00" /></div><input class="form-field" name="place" placeholder="สถานที่" /><select class="form-field" name="color"><option value="#60a5fa">น้ำเงิน — เรียน</option><option value="#f87171">แดง — สำคัญ</option><option value="#fbbf24">เหลือง — งาน</option><option value="#a78bfa">ม่วง — ส่วนตัว</option></select><button class="mt-3 w-full rounded-xl bg-[#4a6b53] py-2.5 text-[11px] font-bold text-white">บันทึกกิจกรรม</button></form>`; $('backMenu').onclick=menuSheet; $('eventForm').onsubmit=e=>{e.preventDefault(); const d=Object.fromEntries(new FormData(e.target)); events.unshift({id:Date.now(),day:d.day,time:d.time,title:d.title,place:d.place||'ยังไม่ได้ระบุสถานที่',color:d.color,done:false}); activeDay=d.day; renderDays(); renderEvents(); closeSheet(); showToast('เพิ่มกิจกรรมเรียบร้อยแล้ว ✓');}; }
+    function noteForm() { $('bottomSheet').innerHTML = `<div class="handle"></div><div class="flex items-center justify-between"><h2 class="m-0 text-[16px] font-bold">โน้ตใหม่</h2><button id="backMenu" class="text-[11px] font-semibold text-[#4a6b53]">‹ กลับ</button></div><form id="noteForm"><input class="form-field" required name="title" placeholder="หัวข้อโน้ต" /><select class="form-field" name="category"><option value="study">📚 เรียน</option><option value="work">💼 งาน</option><option value="idea">💡 ไอเดีย</option></select><textarea class="form-field" required name="text" placeholder="เขียนโน้ตของคุณ..."></textarea><button class="mt-3 w-full rounded-xl bg-[#4a6b53] py-2.5 text-[11px] font-bold text-white">บันทึกโน้ต</button></form>`; $('backMenu').onclick=menuSheet; $('noteForm').onsubmit=e=>{e.preventDefault(); const d=Object.fromEntries(new FormData(e.target)); notes.unshift({id:Date.now(),title:d.title,category:d.category,text:d.text,date:'เมื่อสักครู่',pinned:false}); renderNotes(); closeSheet(); switchTab('notes'); showToast('บันทึกโน้ตเรียบร้อยแล้ว ✓');}; }
+    document.querySelectorAll('.tab').forEach(el => el.onclick=()=>switchTab(el.dataset.tab));
+    document.querySelectorAll('[data-scope]').forEach(el=>el.onclick=()=>{document.querySelectorAll('[data-scope]').forEach(b=>b.classList.remove('active'));el.classList.add('active');showToast(`เปลี่ยนมุมมองเป็น ${el.textContent}`);});
+    document.querySelectorAll('[data-filter]').forEach(el=>el.onclick=()=>{activeFilter=el.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===el));renderNotes();});
+    $('searchInput').oninput=renderNotes; $('addButton').onclick=()=>{menuSheet();$('sheetBackdrop').classList.add('show');}; $('sheetBackdrop').onclick=e=>{if(e.target===$('sheetBackdrop'))closeSheet();};
+    $('syncButton').onclick=()=>{const button=$('syncButton'); button.disabled=true;button.textContent='กำลัง Sync...';setTimeout(()=>{if(!events.some(e=>e.title==='Academic consultation'))events.push({id:Date.now(),day:'fri',time:'11:00 — 11:30',title:'Academic consultation',place:'Google Calendar',color:'#f87171',done:false});button.disabled=false;button.textContent='✓ Synced';$('syncStatus').textContent='ซิงค์ Google Calendar สำเร็จแล้ว';renderDays();renderEvents();showToast('นำเข้ากิจกรรมจาก Google แล้ว');},1000);};
+    renderDays(); renderEvents(); renderNotes();
+  </script>
+</body>
+</html>
