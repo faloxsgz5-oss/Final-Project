@@ -296,7 +296,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const chatScrollRef = useRef<ScrollView>(null);
   const speechBaseInputRef = useRef('');
   const [busy, setBusy] = useState(false);
-  const [historyReady, setHistoryReady] = useState(false);
+  const [historyOwnerUid, setHistoryOwnerUid] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [listening, setListening] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -305,8 +305,6 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   useEffect(() => {
     let active = true;
     const today = thailandDateKey();
-    setHistoryReady(false);
-    setMessages([assistantIntroMessage()]);
 
     async function loadHistoryAndBriefing() {
       const [storedMessages, lastBriefingDate] = await Promise.all([
@@ -317,7 +315,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
       const history = parseStoredMessages(storedMessages);
       setMessages(history.length ? history : [assistantIntroMessage()]);
-      setHistoryReady(true);
+      setHistoryOwnerUid(uid);
 
       if (lastBriefingDate === today) return;
       try {
@@ -342,15 +340,15 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     loadHistoryAndBriefing().catch(() => {
       if (!active) return;
       setMessages([assistantIntroMessage()]);
-      setHistoryReady(true);
+      setHistoryOwnerUid(uid);
     });
     return () => { active = false; };
   }, [uid]);
 
   useEffect(() => {
-    if (!historyReady) return;
+    if (historyOwnerUid !== uid) return;
     AsyncStorage.setItem(assistantHistoryKey(uid), JSON.stringify(trimChatHistory(messages))).catch(() => undefined);
-  }, [historyReady, messages, uid]);
+  }, [historyOwnerUid, messages, uid]);
 
   useEffect(() => {
     return () => {

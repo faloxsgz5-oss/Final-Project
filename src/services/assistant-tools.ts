@@ -307,7 +307,7 @@ function buildFreeTime(context: AssistantContext, preferences: AssistantPreferen
   const dayEnd = new Date(now);
   dayEnd.setHours(21, 0, 0, 0);
   let cursor = Math.max(dayStart.getTime(), now.getTime());
-  const gaps: Array<{end: Date; start: Date}> = [];
+  const gaps: {end: Date; start: Date}[] = [];
   const events = [...context.todaySchedules, ...context.todayActivities.filter((item) => item.status !== 'cancelled')]
     .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
   events.forEach((item) => {
