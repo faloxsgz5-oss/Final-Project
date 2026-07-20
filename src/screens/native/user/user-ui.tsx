@@ -13,9 +13,9 @@ export function UserGradientBackdrop() {
   return <LinearGradient colors={['#fbfcf8', '#f0f3eb', '#e7ece1']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />;
 }
 
-export function UserShell({children, active, onNavigate, scroll = true}: {children: ReactNode; active?: string; onNavigate: UserNavigate; scroll?: boolean}) {
-  const body = <View style={styles.body}>{children}</View>;
-  return <ResponsiveSafeArea style={styles.safe}><View style={styles.shell}><UserGradientBackdrop />{scroll ? <ScrollView contentContainerStyle={styles.scroll} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">{body}</ScrollView> : body}<UserTabBar active={active} onNavigate={onNavigate} /></View></ResponsiveSafeArea>;
+export function UserShell({children, active, edgeToEdge = false, onNavigate, scroll = true}: {children: ReactNode; active?: string; edgeToEdge?: boolean; onNavigate: UserNavigate; scroll?: boolean}) {
+  const body = <View style={[styles.body, edgeToEdge && styles.bodyEdge]}>{children}</View>;
+  return <ResponsiveSafeArea style={[styles.safe, edgeToEdge && styles.flatSurface]}><View style={[styles.shell, edgeToEdge && styles.flatSurface]}>{edgeToEdge ? null : <UserGradientBackdrop />}{scroll ? <ScrollView contentContainerStyle={styles.scroll} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">{body}</ScrollView> : body}<UserTabBar active={active} onNavigate={onNavigate} /></View></ResponsiveSafeArea>;
 }
 
 export function UserHeader({title, subtitle, right, onNavigate}: {title: string; subtitle?: string; right?: ReactNode; onNavigate: UserNavigate}) {
@@ -106,10 +106,12 @@ const styles = StyleSheet.create({
   avatar: {alignItems: 'center', backgroundColor: '#e8efe4', borderRadius: 22, height: 44, justifyContent: 'center', width: 44},
   avatarText: {color: '#52734b', fontFamily: 'Prompt_700Bold'},
   body: {flex: 1, padding: 18},
+  bodyEdge: {padding: 0},
   brand: {color: '#668d65', fontFamily: 'Prompt_600SemiBold', fontSize: 13},
   card: {borderColor: 'rgba(255,255,255,.8)', borderRadius: 18, borderWidth: 1, boxShadow: '0 8px 18px rgba(44, 52, 27, 0.07)', marginTop: 14, padding: 16},
   disabled: {opacity: .55},
   empty: {color: '#879082', fontFamily: 'Prompt_400Regular', fontSize: 13, paddingVertical: 20, textAlign: 'center'},
+  flatSurface: {backgroundColor: '#f4f7f4'},
   header: {alignItems: 'center', borderBottomColor: '#e5e9e1', borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', padding: 18},
   loading: {alignItems: 'center', gap: 12, paddingTop: 90},
   muted: {color: '#808a7b', fontFamily: 'Prompt_400Regular', fontSize: 12},

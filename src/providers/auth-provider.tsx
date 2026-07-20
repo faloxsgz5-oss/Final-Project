@@ -45,7 +45,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     initializing,
     signOut: async () => {
       await signOutCurrentUser();
-      if (isDemoMode) return;
+      // Demo mode has no Firebase auth event to clear this state, so clear it explicitly as well.
       setUser(null);
       setRole(null);
     },
