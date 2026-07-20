@@ -1,10 +1,11 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {ActivityIndicator, KeyboardAvoidingView, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {buildAssistantReply, confirmAssistantAction} from '@/services/assistant-tools';
+import {loadLegacyPageData} from '@/services/legacy-data';
 import type {AssistantChatMessage, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
 import {Card, MaterialIcon, PrimaryButton, UserShell, type UserNavigate, userStyles} from './user-ui';
 
@@ -278,6 +279,71 @@ function StatusPill({status}: {status: ProposedActionStatus}) {
   );
 }
 
+type InsightItem = {icon: string; subtitle: string; title: string};
+type WeeklyInsightData = {activities?: unknown; schedules?: unknown};
+
+function insightRecords(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : [];
+}
+
+function insightTitle(item: Record<string, unknown>) {
+  const title = item.title ?? item.courseName ?? item.courseCode;
+  return typeof title === 'string' && title.trim() ? title : 'รายการในตาราง';
+}
+
+function insightDate(item: Record<string, unknown>) {
+  const value = item.startAt;
+  const date = new Date(typeof value === 'string' ? value : '');
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function timeOfDay(date: Date | null) {
+  if (!date) return 'ช่วงที่คุณสะดวก';
+  const hour = date.getHours();
+  if (hour < 12) return 'ช่วงเช้า';
+  if (hour < 17) return 'ช่วงบ่าย';
+  return 'ช่วงเย็น';
+}
+
+// Added for AI Assistant insights: present seven-day workload, behavior, and focus using existing calendar data only.
+function AssistantInsights({data, onAsk}: {data: WeeklyInsightData | null; onAsk: (prompt: string) => void}) {
+  const insight = useMemo(() => {
+    const schedules = insightRecords(data?.schedules);
+    const activities = insightRecords(data?.activities);
+    const all = [
+      ...schedules.map((item) => ({date: insightDate(item), icon: 'calendar_month', kind: 'ตารางเรียน', title: insightTitle(item)})),
+      ...activities.map((item) => ({date: insightDate(item), icon: 'task_alt', kind: 'กิจกรรม', title: insightTitle(item)})),
+    ].sort((first, second) => (first.date?.getTime() ?? Number.MAX_SAFE_INTEGER) - (second.date?.getTime() ?? Number.MAX_SAFE_INTEGER));
+    const morning = all.filter((item) => item.date && item.date.getHours() < 12).length;
+    const afternoon = all.filter((item) => item.date && item.date.getHours() >= 12 && item.date.getHours() < 17).length;
+    const evening = all.filter((item) => item.date && item.date.getHours() >= 17).length;
+    const preferred = morning >= afternoon && morning >= evening ? 'ช่วงเช้า' : afternoon >= evening ? 'ช่วงบ่าย' : 'ช่วงเย็น';
+    const workload = all.length;
+    const risk = workload >= 10 ? 'สูง' : workload >= 6 ? 'ปานกลาง' : 'ต่ำ';
+    const riskCopy = workload >= 10
+      ? 'สัปดาห์นี้มีรายการค่อนข้างแน่น ลองเว้นช่วงพักสั้น ๆ ระหว่างงานสำคัญ'
+      : workload >= 6
+        ? 'ตารางมีหลายรายการ กระจายงานยากไว้ก่อนช่วงที่คุณมีสมาธิ'
+        : 'ตารางยังมีพื้นที่พัก ลองกันเวลาสำหรับงานสำคัญไว้ล่วงหน้า';
+    const focus: InsightItem[] = all.slice(0, 3).map((item) => ({icon: item.icon, subtitle: item.kind, title: item.title}));
+    if (!focus.length) focus.push(
+      {icon: 'calendar_month', subtitle: 'เริ่มจากข้อมูลที่มี', title: 'เพิ่มตารางของสัปดาห์นี้'},
+      {icon: 'task_alt', subtitle: 'ช่วยจัดลำดับให้ได้', title: 'บันทึกงานที่ต้องส่ง'},
+      {icon: 'savings', subtitle: 'วางแผนง่ายขึ้น', title: 'กำหนดงบสำหรับสัปดาห์นี้'},
+    );
+    return {focus, preferred, risk, riskCopy, workload};
+  }, [data]);
+
+  return <View style={local.insightSection}>
+    <View style={local.insightHeader}><Text style={local.insightHeading}>วิเคราะห์ข้อมูล 7 วันที่ผ่านมา</Text><Text style={local.insightCount}>{insight.workload} รายการ</Text></View>
+    <View style={local.insightDivider} />
+    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text></View></View>
+    <View style={local.behaviorPanel}><View style={local.behaviorHeading}><View style={local.behaviorIcon}><MaterialIcon color="#668d65" name="schedule" size={18} /></View><View style={{flex: 1}}><Text style={local.behaviorTitle}>AI เรียนรู้พฤติกรรม</Text><Text style={local.behaviorText}>ระบบดูรูปแบบตารางเพื่อช่วยเลือกเวลาที่เหมาะกับคุณ</Text></View></View><View style={local.behaviorTiming}><View style={local.timingTile}><Text style={local.timingLabel}>ช่วงที่พบมาก</Text><Text style={local.timingValue}>{insight.preferred}</Text></View><View style={local.timingTile}><Text style={local.timingLabel}>คำแนะนำ</Text><Text style={local.timingValue}>โฟกัส 35 นาที</Text></View></View><Pressable onPress={() => onAsk('ช่วยจัดช่วงโฟกัสให้เหมาะกับตารางของฉัน')} style={local.behaviorAction}><MaterialIcon color="#fff" name="check" size={17} /><Text style={local.behaviorActionText}>ใช้แผนที่ AI แนะนำ</Text></Pressable></View>
+    <View style={local.focusHeader}><Text style={local.focusHeading}>AI แนะนำให้โฟกัส</Text><Text style={local.focusCount}>{insight.focus.length} รายการ</Text></View>
+    <View style={local.focusList}>{insight.focus.map((item, index) => <Pressable key={`${item.title}-${index}`} onPress={() => onAsk(`ช่วยวางแผน ${item.title}`)} style={local.focusItem}><View style={local.focusIcon}><MaterialIcon color="#678266" name={item.icon} size={17} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={local.focusItemTitle}>{item.title}</Text><Text numberOfLines={1} style={local.focusText}>{item.subtitle}</Text></View><MaterialIcon color="#95a18f" name="chevron_right" size={18} /></Pressable>)}</View>
+  </View>;
+}
+
 // Refactored UI: derive focus suggestions from existing proposed actions, without new data sources.
 function FocusSuggestions({messages}: {messages: AssistantChatMessage[]}) {
   const suggestions = messages.filter((message) => message.role === 'assistant' && message.proposedAction && ['activity', 'checklist'].includes(message.proposedAction.entity));
@@ -319,6 +385,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const [input, setInput] = useState('');
   const [listening, setListening] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [weeklyInsights, setWeeklyInsights] = useState<WeeklyInsightData | null>(null);
   const [messages, setMessages] = useState<AssistantChatMessage[]>(() => [assistantIntroMessage()]);
   // Refactored UI: the clean state remains visible until the user starts a conversation.
   const hasConversation = messages.some((message) => message.role === 'user');
@@ -366,6 +433,14 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setMessages([assistantIntroMessage()]);
       setHistoryReady(true);
     });
+    return () => { active = false; };
+  }, [uid]);
+
+  useEffect(() => {
+    let active = true;
+    loadLegacyPageData(uid, 'user/smartlife_calendar_week')
+      .then((data) => { if (active) setWeeklyInsights(data as WeeklyInsightData); })
+      .catch(() => { if (active) setWeeklyInsights({}); });
     return () => { active = false; };
   }, [uid]);
 
@@ -552,7 +627,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   };
 
   return (
-    <UserShell active="smartlife_ai_assistant" onNavigate={onNavigate} scroll={false}>
+    <UserShell active="smartlife_ai_assistant" edgeToEdge onNavigate={onNavigate} scroll={false}>
       {/* Refactored UI: keep the floating composer above the software keyboard. */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
@@ -590,6 +665,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
               </Pressable>
             ))}
           </View>
+
+          {/* Added for AI Assistant: keep insights visible before and during a conversation. */}
+          <AssistantInsights data={weeklyInsights} onAsk={sendMessage} />
 
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
@@ -661,6 +739,18 @@ const local = StyleSheet.create({
   attachButtonActive: {backgroundColor: '#5d8059'},
   bubble: {borderRadius: 24, maxWidth: '88%', paddingHorizontal: 15, paddingVertical: 12},
   bubbleText: {color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 14, lineHeight: 21},
+  behaviorAction: {alignItems: 'center', backgroundColor: '#2b3916', borderRadius: 14, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: 12, minHeight: 43},
+  behaviorActionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  behaviorHeading: {alignItems: 'center', flexDirection: 'row', gap: 9},
+  behaviorIcon: {alignItems: 'center', backgroundColor: '#e4eee3', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},
+  behaviorPanel: {backgroundColor: '#ffffff', borderRadius: 20, marginTop: 10, padding: 14},
+  behaviorText: {color: '#7c8979', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 2},
+  behaviorTiming: {flexDirection: 'row', gap: 8, marginTop: 11},
+  behaviorTitle: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 13},
+  burnoutIcon: {alignItems: 'center', backgroundColor: '#e8e9cc', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},
+  burnoutPanel: {alignItems: 'center', backgroundColor: '#f0f1dc', borderColor: '#d9dcad', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 12, padding: 13},
+  burnoutText: {color: '#727560', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
+  burnoutTitle: {color: '#35402d', fontFamily: 'Prompt_700Bold', fontSize: 11},
   chatContent: {gap: 14, paddingBottom: 138, paddingHorizontal: 18, paddingTop: 18},
   chatStack: {gap: 10},
   circleButton: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, height: 34, justifyContent: 'center', width: 34},
@@ -673,8 +763,12 @@ const local = StyleSheet.create({
   detailValue: {color: '#33412e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18},
   disabled: {opacity: .5},
   focusHeading: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginBottom: 8},
+  focusCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 9},
+  focusHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 18},
   focusIcon: {alignItems: 'center', backgroundColor: '#e4eee3', borderRadius: 12, height: 30, justifyContent: 'center', width: 30},
-  focusItem: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 16, flexDirection: 'row', gap: 9, marginTop: 7, padding: 10},
+  focusItem: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 16, flexDirection: 'row', gap: 9, padding: 10},
+  focusItemTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  focusList: {gap: 8},
   focusSection: {marginTop: 10},
   focusText: {color: '#4b584e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
   heroCard: {alignItems: 'center', borderRadius: 24, flexDirection: 'row', gap: 12, minHeight: 122, overflow: 'hidden', padding: 17},
@@ -683,6 +777,11 @@ const local = StyleSheet.create({
   heroTitle: {color: '#ffffff', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, lineHeight: 26},
   input: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 14, maxHeight: 100, minHeight: 42, paddingHorizontal: 5, paddingVertical: 8},
   inputFade: {bottom: 0, height: 145, left: 0, position: 'absolute', right: 0},
+  insightCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 9},
+  insightDivider: {backgroundColor: '#d9e0d3', borderRadius: 99, height: 5, marginTop: 8, width: '100%'},
+  insightHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
+  insightHeading: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 14},
+  insightSection: {marginTop: 16},
   keyboardAvoiding: {flex: 1},
   messageRow: {alignItems: 'flex-start'},
   messageRowUser: {alignItems: 'flex-end'},
@@ -702,8 +801,8 @@ const local = StyleSheet.create({
   secondaryButton: {alignItems: 'center', backgroundColor: '#eef1eb', borderRadius: 14, justifyContent: 'center', marginTop: 15, minHeight: 50, paddingHorizontal: 15},
   secondaryButtonText: {color: '#66735f', fontFamily: 'Prompt_700Bold', fontSize: 14},
   sendButton: {alignItems: 'center', backgroundColor: '#749279', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
-  // Refactored UI: clip the whole assistant surface into a rounded app frame.
-  shell: {backgroundColor: '#f1f4f0', borderRadius: 32, flex: 1, overflow: 'hidden'},
+  // Refactored UI: a single seamless surface fills the entire screen without an outer frame.
+  shell: {backgroundColor: '#f4f7f4', flex: 1},
   shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 24, flexDirection: 'row', gap: 9, minHeight: 74, padding: 12, width: '48.5%'},
   shortcutGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 9},
   shortcutIcon: {alignItems: 'center', backgroundColor: '#eef5ed', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
@@ -716,6 +815,9 @@ const local = StyleSheet.create({
   statusTextConfirmed: {color: '#4f754b'},
   statusTextRejected: {color: '#8a5b5b'},
   thinking: {alignItems: 'center', flexDirection: 'row', gap: 8, padding: 10},
+  timingLabel: {color: '#7e8b7a', fontFamily: 'Prompt_500Medium', fontSize: 8},
+  timingTile: {backgroundColor: '#f1f5ef', borderRadius: 14, flex: 1, padding: 10},
+  timingValue: {color: '#34412e', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 2},
   topBar: {alignItems: 'center', flexDirection: 'row', gap: 9},
   topTitle: {flex: 1},
   userBubble: {backgroundColor: '#749279', borderBottomRightRadius: 8},
