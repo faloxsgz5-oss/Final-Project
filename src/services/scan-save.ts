@@ -4,10 +4,14 @@ import {schedules, transactions} from '@/services/firestore';
 import type {OcrResult} from '@/services/ocr';
 
 type ScheduleEntry = {
+  buildingName?: string;
+  classTime?: string;
   courseCode?: string;
   courseName?: string;
   day?: string;
   endTime?: string;
+  finalExam?: string;
+  midtermExam?: string;
   room?: string;
   section?: string;
   startTime?: string;
@@ -69,8 +73,9 @@ export function parseCurrencyAmount(value: unknown) {
 }
 
 function firstAmountValue(draft: Record<string, unknown>) {
-  if ('total' in draft) return draft.total;
-  return [draft.amount, draft.totalAmount].find((value) => String(value ?? '').trim().length > 0);
+  return [draft.total, draft.amount, draft.totalAmount].find(
+    (value) => String(value ?? '').trim().length > 0,
+  );
 }
 
 function bangkokDateParts(value = new Date()) {
@@ -84,13 +89,21 @@ function bangkokDateParts(value = new Date()) {
   return {day: get('day'), month: get('month'), year: get('year')};
 }
 
-function parseTime(value: unknown, fallbackHour: number) {
+function parseRequiredTime(value: unknown, label: string) {
   const match = text(value).match(/(\d{1,2})\s*[:.]\s*(\d{2})/);
-  if (!match) return {hour: fallbackHour, minute: 0};
+  if (!match) throw new Error(`\u0e01\u0e23\u0e38\u0e13\u0e32\u0e40\u0e25\u0e37\u0e2d\u0e01${label}\u0e43\u0e2b\u0e49\u0e04\u0e23\u0e1a\u0e01\u0e48\u0e2d\u0e19\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01`);
   return {
     hour: Math.min(23, Math.max(0, Number(match[1]))),
     minute: Math.min(59, Math.max(0, Number(match[2]))),
   };
+}
+
+function parseTime(value: unknown, fallbackHour: number) {
+  const match = text(value).match(/(\d{1,2})\s*[:.]\s*(\d{2})/);
+  return match ? {
+    hour: Math.min(23, Math.max(0, Number(match[1]))),
+    minute: Math.min(59, Math.max(0, Number(match[2]))),
+  } : {hour: fallbackHour, minute: 0};
 }
 
 function bangkokDate(year: number, month: number, day: number, hour: number, minute: number) {
@@ -150,8 +163,8 @@ function weeklyScheduleTimes(entry: ScheduleEntry, index: number, semesterStart:
   const finalSemesterDay = bangkokDate(semesterEnd.year, semesterEnd.month, semesterEnd.day, 23, 59);
   const targetWeekday = weekdayNumber(entry.day, -1);
   if (targetWeekday < 0) throw new Error(`\u0e23\u0e32\u0e22\u0e27\u0e34\u0e0a\u0e32\u0e17\u0e35\u0e48 ${index + 1} \u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e27\u0e31\u0e19\u0e40\u0e23\u0e35\u0e22\u0e19`);
-  const startTime = parseTime(entry.startTime, Math.min(20, 9 + index));
-  const endTime = parseTime(entry.endTime, Math.min(22, startTime.hour + 1));
+  const startTime = parseRequiredTime(entry.startTime, `เวลาเริ่มของรายวิชาที่ ${index + 1}`);
+  const endTime = parseRequiredTime(entry.endTime, `เวลาสิ้นสุดของรายวิชาที่ ${index + 1}`);
   const dayOffset = (targetWeekday - firstSemesterDay.getUTCDay() + 7) % 7;
   let cursor = bangkokDate(semesterStart.year, semesterStart.month, semesterStart.day + dayOffset, 12, 0);
   const occurrences: {endAt: Date; startAt: Date}[] = [];
@@ -188,8 +201,8 @@ export async function saveOcrResult({
 
     const id = await transactions.create(uid, {
       amount,
-      category: '\u0e2d\u0e37\u0e48\u0e19 \u0e46',
-      merchant: text(draft.merchant),
+      category: text(draft.category) || 'Others',
+      merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',
       note: '\u0e19\u0e33\u0e40\u0e02\u0e49\u0e32\u0e08\u0e32\u0e01 Smart Scan OCR',
       occurredAt: Timestamp.fromDate(receiptOccurredAt(draft.date, draft.time)),
       receiptPath: '',
@@ -212,7 +225,7 @@ export async function saveOcrResult({
   const scheduleItems = entries.flatMap((entry, index) => {
     const courseCode = text(entry.courseCode).replace(/\s+/g, '').toUpperCase();
     const courseName = text(entry.courseName).slice(0, 120);
-    const location = [text(entry.room), text(entry.section) ? `Section ${text(entry.section)}` : ''].filter(Boolean).join(' - ');
+    const location = [text(entry.buildingName ?? entry.room), text(entry.section) ? `Section ${text(entry.section)}` : ''].filter(Boolean).join(' - ');
     const seriesId = `${importBatchId}-${index}-${courseCode || 'course'}`.slice(0, 128);
     return weeklyScheduleTimes(entry, index, semesterStart, semesterEnd).map(({endAt, startAt}) => ({
       color: '#6F8F6D',

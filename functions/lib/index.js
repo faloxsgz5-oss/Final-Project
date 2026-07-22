@@ -9,14 +9,20 @@ const storage_1 = require("firebase-admin/storage");
 const firestore_2 = require("firebase-functions/v2/firestore");
 const https_1 = require("firebase-functions/v2/https");
 const params_1 = require("firebase-functions/params");
+const deterministic_receipt_1 = require("./receipt-parsers/deterministic-receipt");
+const gemini_receipt_1 = require("./receipt-parsers/gemini-receipt");
 const university_router_1 = require("./schedule-parsers/university-router");
+const gemini_fallback_1 = require("./schedule-parsers/gemini-fallback");
+const vision_course_table_1 = require("./schedule-parsers/vision-course-table");
+const vision_exam_table_1 = require("./schedule-parsers/vision-exam-table");
+const vision_grid_table_1 = require("./schedule-parsers/vision-grid-table");
 if (!(0, app_1.getApps)().length)
     (0, app_1.initializeApp)();
 const db = (0, firestore_1.getFirestore)();
 const bucket = (0, storage_1.getStorage)().bucket();
 const vision = new vision_1.ImageAnnotatorClient();
 const region = "asia-southeast1";
-const openAiApiKey = (0, params_1.defineSecret)("OPENAI_API_KEY");
+const geminiApiKey = (0, params_1.defineSecret)("GEMINI_API_KEY");
 function requireAdmin(request) {
     if (request.auth?.token.admin !== true) {
         throw new https_1.HttpsError("permission-denied", "Administrator access required.");
@@ -51,30 +57,32 @@ function sortByCreatedAt(items) {
 function cleanOcrText(text) {
     return text.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\r/g, "").trim();
 }
-function parseMoney(text) {
-    const patterns = [
-        /(?:ยอด(?:เงิน)?รวม|ยอดชำระ|จำนวนเงิน|ยอดสุทธิ|grand\s*total|total\s*amount|total)[^\d]{0,24}(?:฿\s*)?([\d,]+(?:\.\d{1,2})?)/gi,
-        /(?:฿|THB)\s*([\d,]+(?:\.\d{1,2})?)/gi,
-        /([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|THB)\b/gi,
-    ];
-    for (const pattern of patterns) {
-        const matches = [...text.matchAll(pattern)];
-        const value = matches.at(-1)?.[1];
-        if (value)
-            return Number(value.replace(/,/g, ""));
-    }
-    return null;
+/* Legacy receipt helpers kept in source history while the v2 parser settles.
+function parseMoney(text: string) {
+  const patterns = [
+    /(?:ยอด(?:เงิน)?รวม|ยอดชำระ|จำนวนเงิน|ยอดสุทธิ|grand\s*total|total\s*amount|total)[^\d]{0,24}(?:฿\s*)?([\d,]+(?:\.\d{1,2})?)/gi,
+    /(?:฿|THB)\s*([\d,]+(?:\.\d{1,2})?)/gi,
+    /([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|THB)\b/gi,
+  ];
+  for (const pattern of patterns) {
+    const matches = [...text.matchAll(pattern)];
+    const value = matches.at(-1)?.[1];
+    if (value) return Number(value.replace(/,/g, ""));
+  }
+  return null;
 }
-function parseDate(text) {
-    const numeric = text.match(/\b(\d{1,2}[\/-]\d{1,2}[\/-](?:\d{2}|\d{4}))\b/);
-    if (numeric)
-        return numeric[1];
-    return text.match(/\b(\d{1,2}\s+(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{2,4})\b/i)?.[1] ?? null;
+
+function parseDate(text: string) {
+  const numeric = text.match(/\b(\d{1,2}[\/-]\d{1,2}[\/-](?:\d{2}|\d{4}))\b/);
+  if (numeric) return numeric[1];
+  return text.match(/\b(\d{1,2}\s+(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s+\d{2,4})\b/i)?.[1] ?? null;
 }
-function parseTime(text) {
-    const match = text.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\b/);
-    return match ? `${match[1].padStart(2, "0")}:${match[2]}` : null;
+
+function parseTime(text: string) {
+  const match = text.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\b/);
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : null;
 }
+*/
 function parseTimeRange(text) {
     const match = text.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(?:-|–|—|ถึง)\s*([01]?\d|2[0-3])[:.]([0-5]\d)\b/);
     return match ? { startTime: `${match[1].padStart(2, "0")}:${match[2]}`, endTime: `${match[3].padStart(2, "0")}:${match[4]}` } : { startTime: null, endTime: null };
@@ -124,31 +132,74 @@ function extractCourseMatches(text) {
     }));
 }
 function classifyDocument(text) {
+    return (0, deterministic_receipt_1.classifyScanText)(text);
+    /* Legacy scoring retained temporarily for deployment compatibility.
     const receiptSignals = [
-        /สำเร็จ/gi, /ชำระเงิน/gi, /รหัสอ้างอิง/gi, /จำนวนเงิน/gi, /ยอดรวม/gi,
-        /ผู้รับเงิน|ไปยัง|บัญชีผู้รับ/gi, /K[ -]?PLUS|เป๋าตัง|PromptPay|พร้อมเพย์/gi, /(?:฿|บาท|THB)/gi,
+      /สำเร็จ/gi, /ชำระเงิน/gi, /รหัสอ้างอิง/gi, /จำนวนเงิน/gi, /ยอดรวม/gi,
+      /ผู้รับเงิน|ไปยัง|บัญชีผู้รับ/gi, /K[ -]?PLUS|เป๋าตัง|PromptPay|พร้อมเพย์/gi, /(?:฿|บาท|THB)/gi,
     ];
     const scheduleSignals = [
-        /ปีการศึกษา|ภาคการศึกษา/gi, /จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์/gi,
-        /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue(?:s)?|wed|thu(?:rs)?|fri|sat|sun)\b/gi,
-        /รายวิชา|รหัสวิชา|ตารางเรียน|ห้องเรียน/gi, /คาบ\s*\d+|period\s*\d+|พักเที่ยง|lunch(?:\s*break)?/gi,
-        /\b\d{6,8}\b/g, /\b\d{1,2}[:.]\d{2}\s*(?:-|–|—|ถึง)\s*\d{1,2}[:.]\d{2}\b/g,
+      /ปีการศึกษา|ภาคการศึกษา/gi, /จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์/gi,
+      /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue(?:s)?|wed|thu(?:rs)?|fri|sat|sun)\b/gi,
+      /รายวิชา|รหัสวิชา|ตารางเรียน|ห้องเรียน/gi, /คาบ\s*\d+|period\s*\d+|พักเที่ยง|lunch(?:\s*break)?/gi,
+      /\b\d{6,8}\b/g, /\b\d{1,2}[:.]\d{2}\s*(?:-|–|—|ถึง)\s*\d{1,2}[:.]\d{2}\b/g,
     ];
-    const score = (patterns) => patterns.reduce((total, pattern) => total + Math.min(3, [...text.matchAll(pattern)].length), 0);
+    const score = (patterns: RegExp[]) => patterns.reduce((total, pattern) => total + Math.min(3, [...text.matchAll(pattern)].length), 0);
     const receiptScore = score(receiptSignals);
     const alphanumericCourseScore = extractCourseCodes(text).filter((code) => /^[A-Z]/.test(code)).length;
     const scheduleScore = score(scheduleSignals) + Math.min(3, alphanumericCourseScore);
-    const type = scheduleScore > receiptScore ? "schedule" : "receipt";
+    const type: ScanType = scheduleScore > receiptScore ? "schedule" : "receipt";
     const total = Math.max(1, receiptScore + scheduleScore);
-    return { type, confidence: Number((Math.max(receiptScore, scheduleScore) / total).toFixed(2)), scores: { receipt: receiptScore, schedule: scheduleScore } };
+    return {type, confidence: Number((Math.max(receiptScore, scheduleScore) / total).toFixed(2)), scores: {receipt: receiptScore, schedule: scheduleScore}}; */
 }
-function parseReceipt(text) {
+function parseReceiptFallback(text) {
+    return (0, deterministic_receipt_1.parseReceiptDeterministic)(text);
+    /* Legacy fallback retained temporarily for deployment compatibility.
     const lines = cleanOcrText(text).split("\n").map((line) => line.trim()).filter(Boolean);
     const labeledMerchant = text.match(/(?:ผู้รับเงิน|บัญชีผู้รับ|ชำระให้|ไปยัง|ร้านค้า|merchant|payee|to)\s*[:\-]?\s*([^\n]{2,80})/i)?.[1]?.trim();
     const ignored = /สำเร็จ|ชำระเงิน|รหัสอ้างอิง|จำนวนเงิน|ยอดรวม|ค่าธรรมเนียม|วันที่|เวลา|receipt|invoice|ธนาคาร|bank|promptpay|พร้อมเพย์|K[ -]?PLUS|เป๋าตัง/i;
     const merchant = labeledMerchant ?? lines.find((line) => /[A-Za-zก-๙]{2,}/.test(line) && !ignored.test(line) && !/^\d[\d\s.,:/-]+$/.test(line)) ?? null;
     const reference = text.match(/(?:รหัสอ้างอิง|เลขที่รายการ|reference(?:\s*no\.?)?|transaction\s*id)\s*[:#\-]?\s*([A-Z0-9-]{5,})/i)?.[1] ?? null;
-    return { merchant, total: parseMoney(text), currency: "THB", date: parseDate(text), time: parseTime(text), reference };
+    return {merchant, total: parseMoney(text), currency: "THB", date: parseDate(text), time: parseTime(text), reference}; */
+}
+async function parseReceipt(text, apiKey, imageDataUrl) {
+    const fallback = parseReceiptFallback(text);
+    if (!apiKey || !imageDataUrl) {
+        return fallback;
+    }
+    try {
+        const gemini = await (0, gemini_receipt_1.extractReceiptWithGemini)(text, apiKey, imageDataUrl);
+        const trustedFallbackMerchant = typeof fallback.merchantName === "string" &&
+            (/(?:BIG\s*C|MR\.?\s*D\.?\s*I\.?\s*Y|MCDONALD|KFC|STARBUCKS|7[ -]?ELEVEN|LOTUS|MAKRO|TOPS|FOODLAND|CJ\s*EXPRESS|PTT|BANGCHAK|SHELL)/i.test(fallback.merchantName) ||
+                /^ร้าน(?!ค้า\s*$)/u.test(fallback.merchantName));
+        const merchantName = trustedFallbackMerchant
+            ? fallback.merchantName
+            : gemini.merchantName ?? fallback.merchantName;
+        const totalAmount = fallback.totalAmount ?? gemini.totalAmount;
+        const category = fallback.category !== "Others" ? fallback.category : gemini.category;
+        // Keep the most complete list. Gemini is useful for semantic enrichment,
+        // but it must not replace three OCR-backed rows with one partial row.
+        const items = fallback.items.length >= gemini.items.length
+            ? fallback.items
+            : gemini.items;
+        return {
+            ...fallback,
+            ...gemini,
+            category,
+            confidenceScore: Math.max(fallback.confidenceScore, gemini.confidenceScore),
+            date: fallback.date ?? gemini.date,
+            items,
+            merchant: merchantName,
+            merchantName,
+            parserSource: "deterministic-receipt-v3+gemini-financial-nlp",
+            total: totalAmount,
+            totalAmount,
+        };
+    }
+    catch (error) {
+        console.warn("[Receipt OCR] Gemini enrichment failed; keeping deterministic OCR result.", error);
+        return fallback;
+    }
 }
 function parseScheduleFallback(text) {
     const lines = cleanOcrText(text).split("\n").map((line) => line.trim()).filter(Boolean);
@@ -180,51 +231,6 @@ const dayAliases = [
 function normalizeDayLabel(value) {
     const normalized = value.toLowerCase().replace(/[.,:()\s]/g, "").replace(/^วัน/, "");
     return dayAliases.find(([, aliases]) => aliases.some((alias) => normalized === alias.replace(/[.,:()\s]/g, "")))?.[0] ?? null;
-}
-function wordText(word) {
-    return (word.symbols ?? []).map((symbol) => symbol.text ?? "").join("").trim();
-}
-function positionedText(vertices, text, confidence) {
-    const xs = vertices.map((vertex) => Number(vertex.x ?? 0));
-    const ys = vertices.map((vertex) => Number(vertex.y ?? 0));
-    if (!text || xs.length < 4 || ys.length < 4)
-        return null;
-    const left = Math.min(...xs);
-    const right = Math.max(...xs);
-    const top = Math.min(...ys);
-    const bottom = Math.max(...ys);
-    return { bottom, confidence, cx: (left + right) / 2, cy: (top + bottom) / 2, left, right, text, top };
-}
-function positionedWords(annotation) {
-    const pages = annotation?.pages ?? [];
-    return pages.flatMap((page) => (page.blocks ?? []).flatMap((block) => (block.paragraphs ?? []).flatMap((paragraph) => (paragraph.words ?? []).flatMap((word) => {
-        const positioned = positionedText(word.boundingBox?.vertices ?? [], wordText(word), Number(word.confidence ?? 0));
-        return positioned ? [positioned] : [];
-    }))));
-}
-function positionedBlocks(annotation) {
-    const pages = annotation?.pages ?? [];
-    return pages.flatMap((page) => (page.blocks ?? []).flatMap((block) => {
-        const paragraphs = block.paragraphs ?? [];
-        const text = paragraphs.map((paragraph) => (paragraph.words ?? []).map(wordText).filter(Boolean).join(" ")).filter(Boolean).join("\n");
-        let positioned = positionedText(block.boundingBox?.vertices ?? [], text, Number(block.confidence ?? 0));
-        if (!positioned) {
-            const words = paragraphs.flatMap((paragraph) => paragraph.words ?? []).flatMap((word) => {
-                const item = positionedText(word.boundingBox?.vertices ?? [], wordText(word), Number(word.confidence ?? 0));
-                return item ? [item] : [];
-            });
-            if (!words.length)
-                return [];
-            const vertices = [
-                { x: Math.min(...words.map((word) => word.left)), y: Math.min(...words.map((word) => word.top)) },
-                { x: Math.max(...words.map((word) => word.right)), y: Math.min(...words.map((word) => word.top)) },
-                { x: Math.max(...words.map((word) => word.right)), y: Math.max(...words.map((word) => word.bottom)) },
-                { x: Math.min(...words.map((word) => word.left)), y: Math.max(...words.map((word) => word.bottom)) },
-            ];
-            positioned = positionedText(vertices, text, Number(block.confidence ?? 0));
-        }
-        return positioned ? [{ ...positioned, paragraphs }] : [];
-    }));
 }
 function normalizedScheduleDate(dayValue, monthValue, yearValue) {
     const day = Number(dayValue);
@@ -259,83 +265,64 @@ function parseParenthesizedTimeRange(text) {
         ? { ...exactRange, periodLabel: null }
         : parseHighSchoolPeriod(text);
 }
-function parseCourseNameFromBlock(text, rawCourseCode) {
-    const labeled = text.match(/(?:ชื่อวิชา|รายวิชา|course(?:\s*name)?|subject)\s*[:\-]?\s*([^\n]{2,120})/i)?.[1];
-    const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
-    const codePattern = new RegExp(rawCourseCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*"), "i");
-    const codeLineIndex = lines.findIndex((line) => codePattern.test(line));
-    const nearby = codeLineIndex >= 0
-        ? [lines[codeLineIndex].replace(codePattern, " "), ...lines.slice(codeLineIndex + 1, codeLineIndex + 3)]
-        : [];
-    const candidates = [labeled, ...nearby].filter((value) => Boolean(value));
-    for (const value of candidates) {
-        const cleaned = value
-            .replace(/^\s*[,;]\s*[A-Z0-9-]{1,6}\b/i, " ")
-            .replace(/\b(?:section|sec\.?)\s*[:#-]?\s*[A-Z0-9-]+\b/gi, " ")
-            .replace(/(?:กลุ่ม|หมู่เรียน)\s*[:#-]?\s*[A-Z0-9-]+/gi, " ")
-            .replace(/\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}(?:\s*(?:-|–|—|ถึง|to)\s*\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4})?\b/gi, " ")
-            .replace(/\(?\b(?:[01]?\d|2[0-3])[:.]\d{2}\s*(?:-|–|—|ถึง|to)\s*(?:[01]?\d|2[0-3])[:.]\d{2}\b\)?/gi, " ")
-            .replace(/(?:ห้อง|room|อาคาร|building)\s*[:-]?\s*[A-Zก-๙0-9-]+/gi, " ")
-            .replace(/\b(?:MON|TUE|WED|THU|FRI|SAT|SUN|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/gi, " ")
-            .replace(/(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)/g, " ")
-            .replace(/^[\s,;:|\-]+|[\s,;:|\-]+$/g, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-        if (/^(?:[A-Z]{1,5}\d{2,5}(?:-[A-Z0-9]+)?)$/i.test(cleaned))
-            continue;
-        if (cleaned.length >= 2 && cleaned.length <= 120 && /[A-Za-zก-๙]{2,}/.test(cleaned))
-            return cleaned;
-    }
-    return null;
+function scheduleCodeKey(value) {
+    return String(value ?? "").replace(/[\s-]/g, "").toUpperCase();
 }
-function parseCourseBlockFields(text, rawCourseCode) {
-    const tail = text.slice(Math.max(0, text.toUpperCase().indexOf(rawCourseCode.toUpperCase()) + rawCourseCode.length));
-    const section = tail.match(/^\s*[,;]\s*([A-Z0-9-]{1,6})\b/i)?.[1] ??
-        text.match(/(?:section|sec\.?|กลุ่ม|หมู่เรียน)\s*[:#-]?\s*([A-Z0-9-]+)/i)?.[1] ?? null;
-    const room = text.match(/(?:ห้อง|room|อาคาร|building)\s*[:-]?\s*([A-Zก-๙]{0,8}\s*[A-Z]{0,3}\d{3,5}(?:-[A-Z0-9]+)?)/i)?.[1]?.trim() ??
-        text.match(/\b[A-Z]{1,3}\d{3,5}(?:-[A-Z0-9]+)?\b/)?.[0] ?? null;
-    const courseName = parseCourseNameFromBlock(text, rawCourseCode);
-    return { ...parseScheduleDateRange(text), ...parseParenthesizedTimeRange(text), courseName, room, section };
+function missingHighResolutionFields(entry) {
+    return !entry.courseName || !entry.buildingName || !entry.startTime || !entry.endTime;
 }
-function parseScheduleGrid(annotation) {
-    const words = positionedWords(annotation);
-    const blocks = positionedBlocks(annotation);
-    if (!words.length || !blocks.length)
-        return [];
-    const maxY = Math.max(...words.map((word) => word.bottom));
-    const dayAnchors = words.flatMap((word) => {
-        const day = normalizeDayLabel(word.text);
-        return day ? [{ ...word, day }] : [];
-    });
-    if (!dayAnchors.length)
-        return [];
-    return blocks.flatMap((block) => {
-        const matches = extractCourseMatches(block.text);
-        if (!matches.length)
-            return [];
-        const dayAnchor = [...dayAnchors].sort((first, second) => Math.abs(first.cy - block.cy) - Math.abs(second.cy - block.cy))[0];
-        const yDistance = dayAnchor ? Math.abs(dayAnchor.cy - block.cy) : Number.POSITIVE_INFINITY;
-        if (!dayAnchor || yDistance > maxY * 0.14)
-            return [];
-        return matches.map((match, index) => {
-            const nextIndex = matches[index + 1]?.index ?? block.text.length;
-            const segment = block.text.slice(match.index, nextIndex).trim();
-            const fields = parseCourseBlockFields(segment, match.raw);
-            return {
-                ...fields,
-                courseCode: match.courseCode,
-                day: dayAnchor.day,
-                gridConfidence: Number(Math.max(0, Math.min(1, 1 - yDistance / Math.max(1, maxY * 0.14))).toFixed(2)),
-                parserSource: "vision-course-block",
-                raw: segment,
-            };
-        });
+function mergeHighResolutionEntries(base, supplements) {
+    const used = new Set();
+    return base.map((entry) => {
+        const candidates = supplements.map((candidate, index) => ({ candidate, index }))
+            .filter(({ candidate, index }) => !used.has(index) && scheduleCodeKey(candidate.courseCode) === scheduleCodeKey(entry.courseCode))
+            .map(({ candidate, index }) => ({
+            candidate,
+            index,
+            score: Number(Boolean(entry.day && candidate.day && entry.day === candidate.day)) * 3 +
+                Number(Boolean(entry.buildingName && candidate.buildingName && entry.buildingName === candidate.buildingName)) * 4 +
+                Number(Boolean(entry.startTime && candidate.startTime && entry.startTime === candidate.startTime)) * 2,
+        }))
+            .sort((first, second) => second.score - first.score);
+        const match = candidates[0];
+        if (!match)
+            return entry;
+        used.add(match.index);
+        const candidate = match.candidate;
+        const startTime = entry.startTime ?? candidate.startTime ?? null;
+        const endTime = entry.endTime ?? candidate.endTime ?? null;
+        return {
+            ...entry,
+            buildingName: entry.buildingName ?? candidate.buildingName ?? candidate.room ?? null,
+            classTime: entry.classTime ?? candidate.classTime ?? (startTime && endTime ? `${startTime}-${endTime}` : null),
+            courseName: entry.courseName ?? candidate.courseName ?? null,
+            day: entry.day ?? candidate.day ?? null,
+            endTime,
+            finalExam: entry.finalExam ?? candidate.finalExam ?? null,
+            midtermExam: entry.midtermExam ?? candidate.midtermExam ?? null,
+            parserSource: `${entry.parserSource ?? "schedule"}+gemini-high-resolution-vision`,
+            room: entry.room ?? candidate.room ?? candidate.buildingName ?? null,
+            section: entry.section ?? candidate.section ?? null,
+            startTime,
+        };
     });
 }
-async function parseSchedule(text, annotation, apiKey) {
+async function storageImageDataUrl(storagePath) {
+    const file = bucket.file(storagePath);
+    const [[bytes], [metadata]] = await Promise.all([file.download(), file.getMetadata()]);
+    if (!bytes.length || bytes.length > 15 * 1024 * 1024)
+        return undefined;
+    const contentType = String(metadata.contentType ?? "image/jpeg");
+    if (!contentType.startsWith("image/"))
+        return undefined;
+    return `data:${contentType};base64,${bytes.toString("base64")}`;
+}
+async function parseSchedule(text, annotation, apiKey, imageDataUrl) {
     const fallback = parseScheduleFallback(text);
+    const courseTableLookup = (0, vision_course_table_1.buildCourseTableLookup)(text, annotation);
+    const examTable = (0, vision_exam_table_1.parseOptionalExamTable)(text, annotation);
     const normalizedFallback = fallback.entries.map((entry) => ({ ...entry, day: normalizeDayLabel(String(entry.day ?? "")) ?? entry.day }));
-    const gridEntries = parseScheduleGrid(annotation);
+    const gridEntries = (0, vision_grid_table_1.parseSpatialScheduleGrid)(annotation);
     const withRange = (entries) => {
         const starts = entries.map((entry) => entry.startDate).filter((value) => Boolean(value)).sort();
         const ends = entries.map((entry) => entry.endDate).filter((value) => Boolean(value)).sort();
@@ -343,33 +330,36 @@ async function parseSchedule(text, annotation, apiKey) {
     };
     const fallbackByCode = new Map(normalizedFallback.map((entry) => [entry.courseCode.replace(/\s+/g, "").toUpperCase(), entry]));
     const mergedGridEntries = gridEntries.map((entry) => {
-        const fallbackEntry = fallbackByCode.get(entry.courseCode);
+        const fallbackEntry = fallbackByCode.get(String(entry.courseCode ?? "").replace(/\s+/g, "").toUpperCase());
         return {
             ...fallbackEntry,
             ...entry,
             endDate: entry.endDate ?? fallbackEntry?.endDate ?? null,
-            endTime: entry.endTime ?? fallbackEntry?.endTime ?? null,
-            room: entry.room ?? fallbackEntry?.room ?? null,
+            endTime: entry.endTime ?? null,
+            room: entry.room ?? null,
             section: entry.section ?? fallbackEntry?.section ?? null,
             startDate: entry.startDate ?? fallbackEntry?.startDate ?? null,
-            startTime: entry.startTime ?? fallbackEntry?.startTime ?? null,
+            startTime: entry.startTime ?? null,
         };
     });
-    const uniqueGridEntries = [...new Map(mergedGridEntries.map((entry) => [`${entry.courseCode}-${entry.day}-${entry.startTime}`, entry])).values()];
-    const normalizedLegacyEntries = normalizedFallback.map((entry) => ({
+    const uniqueGridEntries = [...new Map(mergedGridEntries.map((entry) => [`${entry.courseCode}-${entry.day}-${entry.startTime}-${entry.buildingName ?? entry.room ?? ""}`, entry])).values()];
+    const normalizedLegacyEntries = (0, vision_course_table_1.mergeCourseTableNames)(normalizedFallback.map((entry) => ({
         ...entry,
         courseName: "courseName" in entry && typeof entry.courseName === "string" ? entry.courseName : null,
         parserSource: "text-fallback",
-    }));
-    const normalizedGridEntries = uniqueGridEntries.map((entry) => ({
+    })), courseTableLookup);
+    const normalizedGridEntries = (0, vision_course_table_1.mergeCourseTableNames)(uniqueGridEntries.map((entry) => ({
         ...entry,
         courseName: entry.courseName ?? null,
+    })), courseTableLookup).map((entry) => ({
+        ...entry,
+        parserSource: courseTableLookup.has(entry.courseCode?.replace(/[\s-]/g, "") ?? "") ? "vision-grid-cross-reference" : entry.parserSource,
     }));
     const legacyStrategies = [
         {
-            id: "vision-course-block",
+            id: "vision-spatial-grid",
             institution: "Vision grid timetable",
-            detect: () => normalizedGridEntries.length ? 0.92 : 0,
+            detect: () => normalizedGridEntries.length ? 1.1 : 0,
             parse: () => normalizedGridEntries,
         },
         {
@@ -379,18 +369,46 @@ async function parseSchedule(text, annotation, apiKey) {
             parse: () => normalizedLegacyEntries,
         },
     ];
-    const routed = await new university_router_1.UniversityRouter(apiKey, legacyStrategies).parse({ annotation, rawText: text });
+    const routed = await new university_router_1.UniversityRouter(apiKey, legacyStrategies).parse({ annotation, imageDataUrl, rawText: text });
+    let enrichedEntries = (0, vision_exam_table_1.mergeExamFields)((0, vision_course_table_1.mergeCourseTableNames)(routed.entries, courseTableLookup), examTable);
+    let usedHighResolutionVision = routed.usedLlm && Boolean(imageDataUrl);
+    if (apiKey && imageDataUrl && !routed.usedLlm && enrichedEntries.some(missingHighResolutionFields)) {
+        try {
+            const supplements = await (0, gemini_fallback_1.extractScheduleWithGemini)(text, apiKey, imageDataUrl);
+            enrichedEntries = mergeHighResolutionEntries(enrichedEntries, supplements);
+            usedHighResolutionVision = supplements.length > 0;
+        }
+        catch (error) {
+            console.warn("[Schedule OCR] High-resolution vision enrichment failed; keeping deterministic OCR result.", error);
+        }
+    }
+    const literalAcademicYear = text.match(/(?:\u0e1b\u0e35\u0e01\u0e32\u0e23\u0e28\u0e36\u0e01\u0e29\u0e32|\u0e1e\.\u0e28\.)\s*[:\-]?\s*(\d{4})/)?.[1] ?? fallback.academicYear;
+    const literalDateRange = text.match(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{4}\s*(?:-|\u2013|\u2014|\u0e16\u0e36\u0e07)\s*\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{4}\b/)?.[0]?.replace(/\s+/g, " ") ?? null;
+    console.info("[Schedule OCR] deterministic extraction", {
+        courseTableMatches: courseTableLookup.size,
+        examTableMatches: examTable.entries.size,
+        gridEntries: gridEntries.length,
+        gridEntriesWithNames: normalizedGridEntries.filter((entry) => Boolean(entry.courseName)).length,
+        gridEntriesWithTimes: normalizedGridEntries.filter((entry) => Boolean(entry.startTime && entry.endTime)).length,
+    });
     return {
         ...fallback,
-        ...withRange(routed.entries),
-        entries: routed.entries,
+        academicYear: literalAcademicYear,
+        academicYearLiteral: literalAcademicYear,
+        ...withRange(enrichedEntries),
+        courseTableMatches: courseTableLookup.size,
+        entries: enrichedEntries,
+        examTableFound: examTable.found,
+        examTableMatches: examTable.entries.size,
         institution: routed.institution,
+        semesterDateRangeLiteral: literalDateRange,
         parserConfidence: routed.confidence,
         parserSource: routed.strategyId,
-        usedLlm: routed.usedLlm,
+        usedHighResolutionVision,
+        usedLlm: routed.usedLlm || usedHighResolutionVision,
     };
 }
-exports.analyzeScan = (0, https_1.onCall)({ region, memory: "512MiB", timeoutSeconds: 120, enforceAppCheck: false, secrets: [openAiApiKey] }, async (request) => {
+exports.analyzeScan = (0, https_1.onCall)({ region, memory: "512MiB", timeoutSeconds: 120, enforceAppCheck: false, secrets: [geminiApiKey] }, async (request) => {
     const uid = request.auth?.uid;
     if (!uid)
         throw new https_1.HttpsError("unauthenticated", "Please sign in before scanning.");
@@ -424,7 +442,10 @@ exports.analyzeScan = (0, https_1.onCall)({ region, memory: "512MiB", timeoutSec
             throw new https_1.HttpsError("not-found", "No readable text was found in this image.");
         const classification = classifyDocument(rawText);
         const scanType = requestedType === "auto" ? classification.type : requestedType;
-        const parsed = scanType === "receipt" ? parseReceipt(rawText) : await parseSchedule(rawText, result.fullTextAnnotation, openAiApiKey.value());
+        const imageDataUrl = await storageImageDataUrl(storagePath);
+        const parsed = scanType === "receipt"
+            ? await parseReceipt(rawText, geminiApiKey.value(), imageDataUrl)
+            : await parseSchedule(rawText, result.fullTextAnnotation, geminiApiKey.value(), imageDataUrl);
         await logRef.update({
             kind: scanType,
             status: "completed",
