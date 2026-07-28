@@ -1,9 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.classifyScanText = classifyScanText;
+exports.extractAnchoredReceiptTotal = extractAnchoredReceiptTotal;
 exports.parseReceiptDeterministic = parseReceiptDeterministic;
 const RECEIPT_SIGNALS = [
     { pattern: /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี)/gi, weight: 10 },
+    // Payment-success slips may not use the word "receipt", but their wallet and
+    // paid-amount labels are stronger evidence than incidental timetable text.
+    { pattern: /(?:ทำรายการสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi, weight: 12 },
     { pattern: /(?:GRAND\s*TOTAL|TOTAL\s*(?:INCL\.?\s*VAT|AMOUNT)?|ยอดรวม|ยอดสุทธิ|ยอดชำระ)/gi, weight: 5 },
     { pattern: /(?:QR\s*PAYMENT|PROMPT\s*QR|PROMPTPAY|พร้อมเพย์)/gi, weight: 4 },
     { pattern: /(?:TAX\s*ID|POS\s*ID|APPROVAL\s*CODE|TRC\s*NUM|BATCH\s*NO)/gi, weight: 3 },
@@ -28,8 +32,11 @@ function classifyScanText(rawText) {
     const text = rawText.replace(/\u00a0/g, " ");
     let receipt = weightedScore(text, RECEIPT_SIGNALS);
     let schedule = weightedScore(text, SCHEDULE_SIGNALS);
-    const hardReceipt = matchCount(text, /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี)/gi);
+    const hardReceipt = matchCount(text, /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี|ทำรายการสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi);
     const hardSchedule = matchCount(text, /(?:ตารางเรียน|ตารางสอบ|ปีการศึกษา|DAY\s*\/\s*TIME)/gi);
+    // Financial documents can contain dates, times, and long numeric IDs. Two
+    // receipt anchors are enough to distinguish them from timetable evidence.
+    const receiptAnchors = matchCount(text, /(?:RECEIPT(?:\s*\/\s*TAX\s*INVOICE)?|TAX\s*ID|POS\s*ID|QR\s*PAYMENT|PROMPT\s*QR|APPROVAL\s*CODE|VAT(?:ABLE|\s*7|\s*INCLUDED)|GRAND\s*TOTAL|TOTAL\s*(?:INCL\.?\s*VAT|AMOUNT)?|\u0e43\u0e1a\u0e01\u0e33\u0e01\u0e31\u0e1a\u0e20\u0e32\u0e29\u0e35|\u0e0a\u0e33\u0e23\u0e30\u0e40\u0e07\u0e34\u0e19\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08|\u0e08\u0e33\u0e19\u0e27\u0e19(?:\u0e40\u0e07\u0e34\u0e19)?(?:\u0e17\u0e35\u0e48)?(?:\u0e0a\u0e33\u0e23\u0e30|\u0e08\u0e48\u0e32\u0e22))/gi);
     const weekdayCount = new Set([...text.matchAll(/(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY)/gi)]
         .map((match) => match[0].toLowerCase())).size;
     // Long product, tax, POS, and reference numbers are not course codes.
@@ -40,6 +47,8 @@ function classifyScanText(rawText) {
     }
     let type = schedule > receipt ? "schedule" : "receipt";
     if (hardReceipt > 0 && hardSchedule === 0)
+        type = "receipt";
+    if (receiptAnchors >= 2 && hardSchedule === 0)
         type = "receipt";
     if (hardSchedule > 0 && hardReceipt === 0 && schedule >= receipt)
         type = "schedule";
@@ -71,8 +80,20 @@ function normalizedAmount(value) {
     const amount = Number(value.replace(/,/g, ""));
     return Number.isFinite(amount) && amount >= 0 ? Number(amount.toFixed(2)) : null;
 }
-const NON_PRODUCT_TEXT = /(?:\b(?:TOTAL|SUBTOTAL|VAT|VATABLE|QR\s*PAYMENT|PROMPT\s*QR|APPROVAL|TAX|POS\s*ID|TRC\s*NUM|BATCH\s*NO|HOST\s*NUM|OPERATOR|CASHIER|CHANGE|DISCOUNT|BRANCH|TEL\.?|RECEIPT|INVOICE|QUESTIONNAIRE|SURVEY|DOWNLOAD|EXCHANGE|REFUND)\b|ITEM\s*\(\s*S\s*\)|QTY\s*\(\s*S\s*\)|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14|\u0e40\u0e07\u0e34\u0e19\u0e17\u0e2d\u0e19|\u0e41\u0e1a\u0e1a\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21|\u0e23\u0e48\u0e27\u0e21\u0e15\u0e2d\u0e1a|\u0e14\u0e32\u0e27\u0e19\u0e4c\u0e42\u0e2b\u0e25\u0e14|\u0e43\u0e1a\u0e01\u0e33\u0e01\u0e31\u0e1a\u0e20\u0e32\u0e29\u0e35|\u0e40\u0e1b\u0e25\u0e35\u0e48\u0e22\u0e19\s*\/\s*\u0e04\u0e37\u0e19)/i;
+const NON_PRODUCT_TEXT = /(?:\b(?:TOTAL|SUBTOTAL|NET|VAT|VATABLE|QR\s*PAYMENT|PROMPT\s*QR|TRUE\s*MONEY|TRUEMONEY|PAYMENT|APPROVAL|TAX|POS\s*ID|TRC\s*NUM|BATCH\s*NO|HOST\s*NUM|OPERATOR|CASHIER|CHANGE|DISCOUNT|BRANCH|TEL\.?|RECEIPT|INVOICE|QUESTIONNAIRE|SURVEY|DOWNLOAD|EXCHANGE|REFUND|CASH|CREDIT\s*CARD|DEBIT\s*CARD)\b|ITEM\s*\(\s*S\s*\)|QTY\s*\(\s*S\s*\)|\u0e22\u0e2d\u0e14\u0e23\u0e27\u0e21|\u0e22\u0e2d\u0e14\u0e2a\u0e38\u0e17\u0e18\u0e34|\u0e22\u0e2d\u0e14\u0e0a\u0e33\u0e23\u0e30|\u0e08\u0e33\u0e19\u0e27\u0e19\u0e40\u0e07\u0e34\u0e19\u0e17\u0e35\u0e48\u0e0a\u0e33\u0e23\u0e30|\u0e17\u0e23\u0e39\u0e21\u0e31\u0e19\u0e19\u0e35\u0e48|\u0e27\u0e34\u0e18\u0e35\u0e01\u0e32\u0e23\u0e0a\u0e33\u0e23\u0e30|\u0e0a\u0e33\u0e23\u0e30\u0e14\u0e49\u0e27\u0e22|\u0e40\u0e07\u0e34\u0e19\u0e2a\u0e14|\u0e1a\u0e31\u0e15\u0e23\u0e40\u0e04\u0e23\u0e14\u0e34\u0e15|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14|\u0e40\u0e07\u0e34\u0e19\u0e17\u0e2d\u0e19|\u0e41\u0e1a\u0e1a\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21|\u0e23\u0e48\u0e27\u0e21\u0e15\u0e2d\u0e1a|\u0e14\u0e32\u0e27\u0e19\u0e4c\u0e42\u0e2b\u0e25\u0e14|\u0e43\u0e1a\u0e01\u0e33\u0e01\u0e31\u0e1a\u0e20\u0e32\u0e29\u0e35|\u0e40\u0e1b\u0e25\u0e35\u0e48\u0e22\u0e19\s*\/\s*\u0e04\u0e37\u0e19)/i;
 const QUANTITY_BREAKDOWN_ONLY = /^(?:\d{5,14}\s+)?\d+(?:\.\d+)?\s+\d[\d,]*(?:\.\d{1,4})?\s*\/?\s*(?:PCS?|EA|UNIT|\u0e0a\u0e34\u0e49\u0e19)\s*$/i;
+const RECEIPT_FOOTER_TEXT = /(?:^\s*\*|\u0e40\u0e07\u0e37\u0e48\u0e2d\u0e19\u0e44\u0e02|\u0e44\u0e21\u0e48\u0e23\u0e31\u0e1a\u0e40\u0e1b\u0e25\u0e35\u0e48\u0e22\u0e19|\u0e40\u0e1b\u0e25\u0e35\u0e48\u0e22\u0e19(?:\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32)?\u0e04\u0e37\u0e19|\u0e02\u0e2d\u0e1a\u0e04\u0e38\u0e13|\u0e01\u0e23\u0e38\u0e13\u0e32|\u0e17\u0e38\u0e01\u0e27\u0e31\u0e19|\u0e25\u0e38\u0e49\u0e19\u0e0a\u0e34\u0e07\u0e42\u0e0a\u0e04|\u0e0a\u0e34\u0e07\u0e42\u0e0a\u0e04|EXCHANGE\s+(?:ARE|IS)|RETURN\s+POLICY|THANK\s+YOU)/i;
+const RECEIPT_ITEM_HEADER = /^(?:#?\s*(?:\u0e22\u0e01\u0e40\u0e27\u0e49\u0e19|\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32|\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e21\u0e35\u0e20\u0e32\u0e29\u0e35|\u0e23\u0e32\u0e04\u0e32\u0e23\u0e27\u0e21\u0e20\u0e32\u0e29\u0e35(?:\u0e21\u0e39\u0e25\u0e04\u0e48\u0e32\u0e40\u0e1e\u0e34\u0e48\u0e21)?\u0e41\u0e25\u0e49\u0e27|\u0e20\.?\u0e1e\.?|EXEMPT|DESCRIPTION|QTY|PRICE|AMOUNT|ITEMS?))\s*$/i;
+const RECEIPT_ITEM_END = /^(?:(?:ยอดสุทธิ|ยอดรวม|ยอดชำระ|จำนวนเงินที่ชำระ)(?:\s|[:：])|(?:GRAND\s*TOTAL|TOTAL(?:\s*INCL\.?\s*VAT)?|QR\s*PAYMENT|NET)\b)/i;
+function cleanPurchasedItemName(value) {
+    return value
+        .replace(/\b\d{8,14}\b/g, " ")
+        .replace(/\b\d+(?:\.\d+)?\s*(?:ML|MEB|L|G|KG|PCS?)\b/gi, " ")
+        .replace(/\d+(?:\.\d+)?\s*(?:\u0e21\u0e25\.?|\u0e01\.?|\u0e01\u0e01\.?|\u0e0a\u0e34\u0e49\u0e19)\b/gi, " ")
+        .replace(/\s*[\[({]?\s*[xX@]\s*\d+(?:\.\d+)?\s*[\])}]?/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
 function normalizedItemName(value) {
     return value
         .normalize("NFKC")
@@ -115,6 +136,7 @@ function isPurchasedProductName(value) {
     return Boolean(name &&
         /[A-Za-z\u0e00-\u0e7f]{2,}/u.test(name) &&
         !NON_PRODUCT_TEXT.test(name) &&
+        !RECEIPT_ITEM_HEADER.test(name) &&
         !QUANTITY_BREAKDOWN_ONLY.test(name) &&
         !/^(?:(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14)\s*|(?:disc(?:ount)?|promo(?:tion)?)\b)/i.test(name));
 }
@@ -126,9 +148,11 @@ function receiptItems(lines) {
     const metadata = NON_PRODUCT_TEXT;
     const codeOnly = /^(?:[A-Z0-9_-]{4,}\s*(?:[-/]\s*\d+\/\d+)?)$/i;
     let ignoreDiscountBreakdown = false;
+    let footerStarted = false;
     const flushPending = () => {
         if (!pending)
             return;
+        pending.name = cleanPurchasedItemName(pending.name).slice(0, 180);
         if (pending.quantity === null)
             pending.quantity = 1;
         if (pending.totalPrice <= 0 &&
@@ -167,6 +191,21 @@ function receiptItems(lines) {
         const line = rawLine.replace(/\s+/g, " ").trim();
         if (!line)
             continue;
+        if (footerStarted)
+            continue;
+        // Policy, survey, and thank-you text appears after the purchase section.
+        // It is never a product, even when OCR associates a nearby total with it.
+        if (RECEIPT_FOOTER_TEXT.test(line)) {
+            footerStarted = true;
+            continue;
+        }
+        // A printed total closes the product section. Never parse totals or a
+        // following payment method (for example TrueMoney) as products.
+        if (RECEIPT_ITEM_END.test(line)) {
+            flushPending();
+            footerStarted = true;
+            continue;
+        }
         if (QUANTITY_BREAKDOWN_ONLY.test(line))
             continue;
         const discountLine = line.match(/^(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14|disc(?:ount)?|promo(?:tion)?)\s+(.+?)\s+-\s*(\d[\d,]*(?:\.\d{1,2})?)\s*(?:THB|\u0e3f|\u0e1a\u0e32\u0e17)?$/i);
@@ -183,12 +222,6 @@ function receiptItems(lines) {
         // A printed quantity breakdown belongs to a discount only when it is the
         // immediately following line. Do not suppress later real products.
         ignoreDiscountBreakdown = false;
-        // Document Text Detection can return a product's price row after the
-        // printed Total heading. Keep the pending product alive until its price
-        // is found instead of treating Total as the end of the item stream.
-        if (/^\s*(?:GRAND\s*TOTAL|TOTAL\b|TAL\s*INCL\.?\s*VAT|TOTA[L1]\b)/i.test(line)) {
-            continue;
-        }
         if (metadata.test(line))
             continue;
         if (/^(?:\u0e25\u0e14|DISC(?:OUNT)?)\b/i.test(line) || /-\s*\d[\d,]*\.\d{2}\s*$/.test(line)) {
@@ -217,6 +250,27 @@ function receiptItems(lines) {
             pending.quantity = normalizedAmount(quantityOnly[1]);
             continue;
         }
+        // Some Thai tax invoices print a product name, a barcode, then one dense
+        // quantity/price row (for example "1.0 ... @x48.00 ... 48.00"). Keep the
+        // preceding product name instead of replacing it with that technical row.
+        const pendingPriceValues = amountsOnLine(line);
+        const pendingQuantity = line.match(/^(\d+(?:\.\d+)?)\s+/)?.[1];
+        if (pending &&
+            pendingQuantity &&
+            pendingPriceValues.length &&
+            /(?:@|[xX]|\/\s*(?:PCS?|EA|UNIT))/i.test(line)) {
+            const quantity = normalizedAmount(pendingQuantity);
+            const totalPrice = pendingPriceValues.at(-1) ?? null;
+            const unitPrice = pendingPriceValues.length > 1
+                ? pendingPriceValues.at(-2) ?? totalPrice
+                : totalPrice;
+            if (quantity !== null && totalPrice !== null && totalPrice > 0) {
+                pending.quantity = quantity;
+                pending.unitPrice = unitPrice;
+                pending.totalPrice = totalPrice;
+                continue;
+            }
+        }
         // Vision commonly returns a product name and its amount as two separate
         // lines. Bind the amount-only row to the closest pending product name.
         const amountOnly = line.match(/^(?:THB|\u0e3f)?\s*(\d[\d,]*\.\d{2})\s*$/i);
@@ -232,15 +286,23 @@ function receiptItems(lines) {
             }
             continue;
         }
-        const directItem = line.match(/^(.+?)\s+(-?\d[\d,]*\.\d{2})\s*$/);
+        const directItem = line.match(/^(?:(\d+(?:\.\d+)?)\s+)?(.+?)\s+(-?\d[\d,]*\.\d{2})\s*$/);
         if (directItem) {
-            const name = directItem[1].trim();
-            const totalPrice = normalizedAmount(directItem[2]);
+            const parsedQuantity = normalizedAmount(directItem[1]);
+            const quantity = parsedQuantity !== null && parsedQuantity > 0 ? parsedQuantity : 1;
+            const name = directItem[2].trim();
+            const totalPrice = normalizedAmount(directItem[3]);
             if (totalPrice !== null && totalPrice > 0 &&
                 /[A-Za-z\u0e00-\u0e7f]{2,}/.test(name) &&
                 isPurchasedProductName(name) && !codeOnly.test(name)) {
                 flushPending();
-                pending = { discount: null, name, quantity: null, totalPrice, unitPrice: null };
+                pending = {
+                    discount: null,
+                    name,
+                    quantity,
+                    totalPrice,
+                    unitPrice: Number((totalPrice / quantity).toFixed(2)),
+                };
             }
             continue;
         }
@@ -259,70 +321,25 @@ function receiptItems(lines) {
     flushPending();
     return items.slice(0, 200);
 }
-function receiptTotalLegacy(lines) {
-    const priorities = [
-        /^\s*(?:GRAND\s*TOTAL|TOTAL\s*(?:INCL\.?\s*(?:VAT)?)?|TOTAL\s*AMOUNT|NET\s*TOTAL|ยอดรวม|ยอดสุทธิ|ยอดชำระ)\b/i,
-        /^\s*(?:TAL\s*INCL\.?\s*VAT|TOTA[L1]\b)/i,
-        /(?:QR\s*PAYMENT|PROMPT\s*QR|AMOUNT\s*(?:PAID|DUE)|จำนวนเงินที่ชำระ)/i,
-    ];
-    for (const priority of priorities) {
-        for (const [index, line] of lines.entries()) {
-            if (!priority.test(line) || /(?:SUBTOTAL|VATABLE|VAT\s*7|CHANGE|DISCOUNT|ส่วนลด|เงินทอน)/i.test(line))
-                continue;
-            const directAmount = amountsOnLine(line).at(-1);
-            if (directAmount !== undefined)
-                return directAmount;
-            const nearbyLines = lines.slice(index + 1, index + 8);
-            const currencyAmount = nearbyLines
-                .filter((nearby) => /^\s*(?:THB|\u0e3f)\b/i.test(nearby))
-                .flatMap((nearby) => amountsOnLine(nearby))
-                .at(0);
-            if (currencyAmount !== undefined)
-                return currencyAmount;
-            const nearbyAmounts = amountsOnLine(nearbyLines.join(" "));
-            if (nearbyAmounts.length)
-                return Math.max(...nearbyAmounts);
-        }
-    }
-    for (const [index, line] of lines.entries()) {
-        if (!/(?:จำนวนเงินที่ชำระ|จำนวนเงินที่จ่าย|ยอดชำระ|ยอดรวมสุทธิ|ยอดสุทธิ|ยอดรวม)/i.test(line))
-            continue;
-        const nearby = lines.slice(index, index + 5).join(" ");
-        const match = nearby.match(/(?:จำนวนเงินที่ชำระ|จำนวนเงินที่จ่าย|ยอดชำระ|ยอดรวมสุทธิ|ยอดสุทธิ|ยอดรวม)\s*[:：]?\s*([0-9][0-9,]*(?:\.\d{1,2})?)\s*(?:บาท|THB|\u0e3f)?/i);
-        const amount = normalizedAmount(match?.[1]);
-        if (amount !== null)
-            return amount;
-    }
-    for (const line of lines) {
-        if (!/(?:THB|บาท|\u0e3f)/i.test(line) || /(?:VAT|TAX|CHANGE|DISCOUNT|ส่วนลด|เงินทอน)/i.test(line))
-            continue;
-        const amount = amountsOnLine(line).at(-1);
-        if (amount !== undefined)
-            return amount;
-    }
-    // Cropped mobile screenshots can hide the Total row while retaining
-    // "Vatable 54.00 Vat 3.53". The first value is the purchase amount.
-    for (const line of lines) {
-        if (!/(?:VATABLE|TOTAL\s+INCL\.?\s+VAT)/i.test(line))
-            continue;
-        const amount = amountsOnLine(line).at(0);
-        if (amount !== undefined)
-            return amount;
-    }
-    return null;
-}
 function receiptTotal(lines) {
-    const paidLabel = /(?:AMOUNT\s*(?:PAID|DUE)|NET\s*PAID|\u0e08\u0e33\u0e19\u0e27\u0e19\u0e40\u0e07\u0e34\u0e19\u0e17\u0e35\u0e48(?:\u0e0a\u0e33\u0e23\u0e30|\u0e08\u0e48\u0e32\u0e22)|\u0e22\u0e2d\u0e14\u0e0a\u0e33\u0e23\u0e30|\u0e22\u0e2d\u0e14\u0e2a\u0e38\u0e17\u0e18\u0e34)/i;
-    const totalLabel = /(?:GRAND\s*TOTAL|TOTAL\s*(?:INCL\.?\s*(?:VAT)?)?|TOTAL\s*AMOUNT|NET\s*TOTAL|TAL\s*INCL\.?\s*VAT|TOTA[L1]|QR\s*PAYMENT|PROMPT\s*QR|\u0e22\u0e2d\u0e14\u0e23\u0e27\u0e21)/i;
-    const excluded = /(?:SUBTOTAL|VATABLE|VAT\s*7|CHANGE|DISCOUNT|\u0e04\u0e48\u0e32\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32|\u0e2a\u0e34\u0e17\u0e18\u0e34|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14|\u0e40\u0e07\u0e34\u0e19\u0e17\u0e2d\u0e19)/i;
-    for (const label of [paidLabel, totalLabel]) {
-        for (const [index, line] of lines.entries()) {
-            if (!label.test(line) || excluded.test(line))
+    const footerIndex = lines.findIndex((line) => RECEIPT_FOOTER_TEXT.test(line));
+    const contentLines = footerIndex >= 0 ? lines.slice(0, footerIndex) : lines;
+    const paidLabel = /(?:จำนวนเงินที่ชำระ|ยอดสุทธิ|ยอดชำระ)/i;
+    // A payment confirmation is authoritative. OCR can misread decorative
+    // characters next to Total (for example "(4)********54.00").
+    const paymentLabel = /QR\s*PAYMENT/i;
+    const totalLabel = /(?:\bTOTAL\s*INCL\.?\s*VAT\b|\bTOTAL\b|\bNET\b|ยอดรวม)/i;
+    const excluded = /(?:SUBTOTAL|VATABLE|VAT\s*7|CHANGE|DISCOUNT|ค่าสินค้า|สิทธิ|ส่วนลด|เงินทอน)/i;
+    for (const label of [paidLabel, paymentLabel, totalLabel]) {
+        for (const [index, line] of contentLines.entries()) {
+            // A final paid-amount label remains authoritative even when OCR merged
+            // it with the preceding discount line (for example, "-24 บาท ... 16 บาท").
+            if (!label.test(line) || (label !== paidLabel && excluded.test(line)))
                 continue;
             const direct = moneyValuesOnLine(line).at(-1);
             if (direct !== undefined)
                 return direct;
-            const following = lines.slice(index + 1, index + (label === paidLabel ? 4 : 8));
+            const following = contentLines.slice(index + 1, index + (label === paidLabel ? 4 : 8));
             const amountWithCurrency = following
                 .filter((nearby) => /(?:THB|\u0e3f|\u0e1a\u0e32\u0e17)/i.test(nearby) && !excluded.test(nearby))
                 .flatMap((nearby) => moneyValuesOnLine(nearby))
@@ -337,21 +354,14 @@ function receiptTotal(lines) {
                 return amountOnly;
         }
     }
-    for (const line of lines) {
-        if (!/(?:THB|\u0e1a\u0e32\u0e17|\u0e3f)/i.test(line) || excluded.test(line))
-            continue;
-        const amount = moneyValuesOnLine(line).at(-1);
-        if (amount !== undefined)
-            return amount;
-    }
-    for (const line of lines) {
-        if (!/(?:VATABLE|TOTAL\s+INCL\.?\s+VAT)/i.test(line))
-            continue;
-        const amount = amountsOnLine(line).at(0);
-        if (amount !== undefined)
-            return amount;
-    }
-    return receiptTotalLegacy(lines);
+    // Never guess from the last/largest currency number. Without an approved
+    // anchor the correct result is unknown and must remain empty for review.
+    return null;
+}
+function extractAnchoredReceiptTotal(rawText) {
+    const text = cleanText(rawText);
+    const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+    return receiptTotal(lines);
 }
 function knownMerchant(lines, text) {
     const findLine = (pattern) => lines.find((line) => pattern.test(line));
@@ -420,8 +430,16 @@ function receiptDate(text) {
     return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 function receiptTime(text) {
-    const match = [...text.matchAll(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\b/g)].at(-1);
-    return match ? `${match[1].padStart(2, "0")}:${match[2]}` : null;
+    // Receipt totals frequently contain decimals such as "3.14" (VAT). A
+    // colon is the normal printed time separator, so it must win over decimal
+    // numbers. Accept a dot only when OCR also read a time label beside it.
+    const colonTime = [...text.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)].at(-1);
+    if (colonTime)
+        return `${colonTime[1].padStart(2, "0")}:${colonTime[2]}`;
+    const labelledDotTime = [...text.matchAll(/(?:\u0e40\u0e27\u0e25\u0e32|TIME)\D{0,12}([01]?\d|2[0-3])\.([0-5]\d)\b/gi)].at(-1);
+    return labelledDotTime
+        ? `${labelledDotTime[1].padStart(2, "0")}:${labelledDotTime[2]}`
+        : null;
 }
 function receiptReference(text) {
     return text.match(/\bR\d{8,}[A-Z0-9]*\b/i)?.[0] ??
@@ -434,13 +452,10 @@ function parseReceiptDeterministic(rawText) {
     const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
     const items = receiptItems(lines);
     const merchant = knownMerchant(lines, text);
-    const itemTotal = items.length
-        ? Number(items.reduce((sum, item) => sum + item.totalPrice, 0).toFixed(2))
-        : null;
     const detectedTotal = receiptTotal(lines);
-    // The explicitly printed total is authoritative. The net item sum is only
-    // a fallback when a cropped image does not contain a total line.
-    const total = detectedTotal ?? itemTotal;
+    // Copy only an explicitly anchored amount. Never manufacture a grand total
+    // by summing or multiplying product rows.
+    const total = detectedTotal;
     const date = receiptDate(text);
     const time = receiptTime(text);
     const reference = receiptReference(text);
@@ -454,7 +469,7 @@ function parseReceiptDeterministic(rawText) {
         items,
         merchant,
         merchantName: merchant,
-        parserSource: "deterministic-receipt-v4",
+        parserSource: "deterministic-receipt-v5",
         reference,
         time,
         total,

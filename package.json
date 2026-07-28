@@ -8,6 +8,8 @@
     "@expo/ui": "~57.0.4",
     "@firebase/firestore": "^4.16.0",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-firebase/app": "^25.1.0",
+    "@react-native-firebase/app-check": "^25.1.0",
     "@react-native-google-signin/google-signin": "^16.1.2",
     "@react-native-voice/voice": "^3.2.4",
     "expo": "~57.0.4",
@@ -46,6 +48,7 @@
     "@types/react": "~19.2.2",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~57.0.0",
+    "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -55,13 +58,16 @@
     "tunnel": "expo start --dev-client --tunnel",
     "deploy:firestore-rules": "npx -y firebase-tools@latest deploy --only firestore:rules --project smartlife-budget",
     "doctor": "node ./scripts/check-runtime-config.cjs",
+    "doctor:release": "node ./scripts/check-release-readiness.cjs",
     "migrate:html": "node ./scripts/migrate-html-to-tsx.mjs",
+    "postinstall": "patch-package",
     "typecheck": "tsc --noEmit",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test:assistant-intents": "node --experimental-strip-types ./scripts/test-assistant-intents.mjs"
   },
   "private": true
 }

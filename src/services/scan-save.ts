@@ -41,6 +41,25 @@ const THAI_DIGITS: Record<string, string> = {
   '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9',
 };
 
+const THAI_MONTHS: Record<string, number> = {
+  'มค': 1, 'มกราคม': 1,
+  'กพ': 2, 'กุมภาพันธ์': 2,
+  'มีค': 3, 'มีนาคม': 3,
+  'เมย': 4, 'เมษายน': 4,
+  'พค': 5, 'พฤษภาคม': 5,
+  'มิย': 6, 'มิถุนายน': 6,
+  'กค': 7, 'กรกฎาคม': 7,
+  'สค': 8, 'สิงหาคม': 8,
+  'กย': 9, 'กันยายน': 9,
+  'ตค': 10, 'ตุลาคม': 10,
+  'พย': 11, 'พฤศจิกายน': 11,
+  'ธค': 12, 'ธันวาคม': 12,
+};
+
+function normalizeThaiDigits(value: unknown) {
+  return text(value).replace(/[๐-๙]/g, (digit) => THAI_DIGITS[digit] ?? '');
+}
+
 export function parseCurrencyAmount(value: unknown) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   let normalized = String(value ?? '')
@@ -78,6 +97,33 @@ function firstAmountValue(draft: Record<string, unknown>) {
   );
 }
 
+function receiptItemsForStorage(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    const name = text(item.name).slice(0, 180);
+    const finalPrice = Number(item.totalPrice);
+    if (!name || !Number.isFinite(finalPrice)) return [];
+    const rawQuantity = Number(item.quantity);
+    const quantity = Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 1;
+    const rawUnitPrice = Number(item.unitPrice);
+    const unitPrice = Number.isFinite(rawUnitPrice)
+      ? Number(rawUnitPrice.toFixed(2))
+      : Number((finalPrice / quantity).toFixed(2));
+    const rawDiscount = Number(item.discount);
+    return [{
+      discountAmount: Number.isFinite(rawDiscount) && rawDiscount > 0
+        ? Number(rawDiscount.toFixed(2))
+        : 0,
+      finalPrice: Number(finalPrice.toFixed(2)),
+      name,
+      quantity,
+      unitPrice,
+    }];
+  }).slice(0, 100);
+}
+
 function bangkokDateParts(value = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     day: '2-digit',
@@ -108,6 +154,54 @@ function parseTime(value: unknown, fallbackHour: number) {
 
 function bangkokDate(year: number, month: number, day: number, hour: number, minute: number) {
   return new Date(Date.UTC(year, month - 1, day, hour - 7, minute));
+}
+
+function examScheduleTime(value: unknown) {
+  const raw = normalizeThaiDigits(value).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw || /^[-–—]+$/.test(raw)) return null;
+
+  let day = 0;
+  let month = 0;
+  let year = 0;
+  const namedDate = raw.match(/(\d{1,2})\s*([ก-๙.]+)\s*(\d{2,4})/);
+  const numericDate = raw.match(/(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{2,4})/);
+  if (namedDate) {
+    day = Number(namedDate[1]);
+    month = THAI_MONTHS[namedDate[2].replace(/[.\s]/g, '')] ?? 0;
+    year = Number(namedDate[3]);
+  } else if (numericDate) {
+    day = Number(numericDate[1]);
+    month = Number(numericDate[2]);
+    year = Number(numericDate[3]);
+  }
+  if (year > 2400) year -= 543;
+  if (year < 100) year += 2000;
+
+  const timeRange = raw.match(/(\d{1,2})\s*[:.]\s*(\d{2})\s*(?:-|–|—|ถึง)\s*(\d{1,2})\s*[:.]\s*(\d{2})/);
+  if (!day || !month || !year || !timeRange) return null;
+  const startHour = Number(timeRange[1]);
+  const startMinute = Number(timeRange[2]);
+  const endHour = Number(timeRange[3]);
+  const endMinute = Number(timeRange[4]);
+  if (
+    month < 1 || month > 12 || day < 1 || day > 31 ||
+    startHour > 23 || endHour > 23 || startMinute > 59 || endMinute > 59
+  ) return null;
+
+  const startAt = bangkokDate(year, month, day, startHour, startMinute);
+  const endAt = bangkokDate(year, month, day, endHour, endMinute);
+  if (
+    Number.isNaN(startAt.getTime()) ||
+    Number.isNaN(endAt.getTime()) ||
+    endAt.getTime() <= startAt.getTime()
+  ) return null;
+
+  const location = raw
+    .slice((timeRange.index ?? 0) + timeRange[0].length)
+    .replace(/^[\s,;:()-]+/, '')
+    .trim()
+    .slice(0, 120);
+  return {endAt, location, raw, startAt};
 }
 
 function receiptOccurredAt(dateValue: unknown, timeValue: unknown) {
@@ -198,14 +292,23 @@ export async function saveOcrResult({
   if (result.scanType === 'receipt') {
     const amount = parseCurrencyAmount(firstAmountValue(draft));
     if (amount === null) throw new Error('\u0e01\u0e23\u0e38\u0e13\u0e32\u0e01\u0e23\u0e2d\u0e01\u0e22\u0e2d\u0e14\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1b\u0e47\u0e19\u0e15\u0e31\u0e27\u0e40\u0e25\u0e02 \u0e40\u0e0a\u0e48\u0e19 90 \u0e2b\u0e23\u0e37\u0e2d 1,250.00');
+    const rawConfidence = Number(draft.confidenceScore ?? result.classification.confidence);
+    const confidence = Number.isFinite(rawConfidence)
+      ? Number(Math.min(1, Math.max(0, rawConfidence)).toFixed(2))
+      : 0;
 
     const id = await transactions.create(uid, {
       amount,
       category: text(draft.category) || 'Others',
+      confidence,
+      items: receiptItemsForStorage(draft.items),
       merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',
       note: '\u0e19\u0e33\u0e40\u0e02\u0e49\u0e32\u0e08\u0e32\u0e01 Smart Scan OCR',
       occurredAt: Timestamp.fromDate(receiptOccurredAt(draft.date, draft.time)),
-      receiptPath: '',
+      receiptPath: text(result.storagePath),
+      reviewedByUser: Boolean(result.parsed.needsReview),
+      scanId: result.logId,
+      status: 'verified',
       type: 'expense',
     });
     return {destination: 'smartlife_finance_month', documentIds: [id]};
@@ -239,8 +342,41 @@ export async function saveOcrResult({
       title: ([courseCode, courseName].filter(Boolean).join(' ') || `\u0e23\u0e32\u0e22\u0e27\u0e34\u0e0a\u0e32\u0e08\u0e32\u0e01 OCR ${index + 1}`).slice(0, 120),
     }));
   });
+  const examItemsByKey = new Map<string, (typeof scheduleItems)[number]>();
+  entries.forEach((entry, index) => {
+    const courseCode = text(entry.courseCode).replace(/\s+/g, '').toUpperCase();
+    const courseName = text(entry.courseName).slice(0, 120);
+    const section = text(entry.section);
+    const exams = [
+      {label: 'สอบกลางภาค', type: 'midterm', value: entry.midtermExam},
+      {label: 'สอบปลายภาค', type: 'final', value: entry.finalExam},
+    ];
+    exams.forEach((exam) => {
+      const parsed = examScheduleTime(exam.value);
+      if (!parsed) return;
+      const title = `${exam.label} ${[courseCode, courseName].filter(Boolean).join(' ') || `รายวิชา ${index + 1}`}`.slice(0, 120);
+      const location = [
+        parsed.location,
+        section ? `Section ${section}` : '',
+      ].filter(Boolean).join(' - ');
+      const key = `${exam.type}|${courseCode}|${parsed.startAt.toISOString()}`;
+      if (examItemsByKey.has(key)) return;
+      examItemsByKey.set(key, {
+        color: '#C08282',
+        courseCode,
+        courseName,
+        endAt: Timestamp.fromDate(parsed.endAt),
+        location,
+        seriesId: `${importBatchId}-exam-${exam.type}-${courseCode || index}`.slice(0, 128),
+        source: 'ocr' as const,
+        startAt: Timestamp.fromDate(parsed.startAt),
+        title,
+      });
+    });
+  });
+  const allScheduleItems = [...scheduleItems, ...examItemsByKey.values()];
   if (!scheduleItems.length) throw new Error('\u0e44\u0e21\u0e48\u0e1e\u0e1a\u0e27\u0e31\u0e19\u0e40\u0e23\u0e35\u0e22\u0e19\u0e43\u0e19\u0e0a\u0e48\u0e27\u0e07\u0e20\u0e32\u0e04\u0e40\u0e23\u0e35\u0e22\u0e19\u0e17\u0e35\u0e48\u0e40\u0e25\u0e37\u0e2d\u0e01');
-  if (scheduleItems.length > 500) throw new Error('\u0e08\u0e33\u0e19\u0e27\u0e19\u0e04\u0e25\u0e32\u0e2a\u0e40\u0e01\u0e34\u0e19 500 \u0e23\u0e32\u0e22\u0e01\u0e32\u0e23 \u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e14\u0e0a\u0e48\u0e27\u0e07\u0e20\u0e32\u0e04\u0e40\u0e23\u0e35\u0e22\u0e19');
-  const documentIds = await schedules.createMany(uid, scheduleItems);
+  if (allScheduleItems.length > 500) throw new Error('\u0e08\u0e33\u0e19\u0e27\u0e19\u0e04\u0e25\u0e32\u0e2a\u0e40\u0e01\u0e34\u0e19 500 \u0e23\u0e32\u0e22\u0e01\u0e32\u0e23 \u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e14\u0e0a\u0e48\u0e27\u0e07\u0e20\u0e32\u0e04\u0e40\u0e23\u0e35\u0e22\u0e19');
+  const documentIds = await schedules.createMany(uid, allScheduleItems);
   return {destination: 'smartlife_calendar_month', documentIds};
 }

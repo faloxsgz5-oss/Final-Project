@@ -1,20 +1,26 @@
 import {Timestamp} from 'firebase/firestore';
+import {getFunctions, httpsCallable} from 'firebase/functions';
 
+import {isDemoMode} from '@/lib/demo-mode';
+import {ensureAppCheckReady} from '@/lib/app-check';
+import {firebaseApp} from '@/lib/firebase';
+import {thailandRange} from '@/lib/thailand-time';
+import {classifyAssistantIntent, latestConversationIntent, type AssistantIntent} from '@/services/assistant-intent';
 import {loadAssistantPreferences, saveAssistantPreference, type AssistantPreferences} from '@/services/assistant-memory';
 import {activities, notes, schedules, transactions} from '@/services/firestore';
-import type {AssistantMemoryPayload, AssistantProposedAction, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
+import type {AssistantChatMessage, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, Schedule, Transaction, WithId} from '@/types/smartlife';
 
 export const assistantToolSchemas: AssistantToolSchema[] = [
-  {description: 'อ่านตารางตามช่วงเวลา', mutates: false, name: 'get_schedule', parameters: {date: 'ISO date', range: ['day', 'week', 'month']}},
-  {description: 'เสนอสร้างรายการตาราง/งาน/นัดหมาย ต้อง confirm ก่อนเขียน', mutates: true, name: 'create_schedule_item', parameters: {payload: 'SchedulePayload'}},
+  {description: 'อ่านตารางเรียน กิจกรรม วันสอบ งานส่ง และสถานที่จากข้อมูลจริงของผู้ใช้', mutates: false, name: 'get_user_schedule', parameters: {date: 'ISO date', range: ['day', 'week', 'month']}},
+  {description: 'อ่านงานค้างและงานเร่งด่วนจากกิจกรรมที่ผู้ใช้บันทึกไว้', mutates: false, name: 'get_pending_tasks', parameters: {range: ['day', 'week', 'month']}},
+  {description: 'เสนอสร้างกิจกรรม งาน หรือนัดหมาย และรอผู้ใช้ยืนยันก่อนเขียน', mutates: true, name: 'add_event', parameters: {payload: 'SchedulePayload'}},
   {description: 'เสนอแก้ไขรายการตาราง ต้อง confirm ก่อนเขียน', mutates: true, name: 'update_schedule_item', parameters: {id: 'string', payload: 'partial SchedulePayload'}},
   {description: 'เสนอ delete รายการตาราง ต้อง confirm ก่อนเขียน', mutates: true, name: 'delete_schedule_item', parameters: {id: 'string'}},
-  {description: 'อ่านสรุปการเงินตามช่วงเวลา', mutates: false, name: 'get_finance_summary', parameters: {period: ['day', 'week', 'month']}},
-  {description: 'เสนอเพิ่มรายจ่าย ต้อง confirm ก่อนเขียน', mutates: true, name: 'log_expense', parameters: {payload: 'FinancePayload'}},
-  {description: 'เสนอเพิ่มรายรับ ต้อง confirm ก่อนเขียน', mutates: true, name: 'log_income', parameters: {payload: 'FinancePayload'}},
-  {description: 'อ่านโน้ตล่าสุด', mutates: false, name: 'get_notes', parameters: {tag: ['all', 'class', 'idea', 'task']}},
-  {description: 'เสนอสร้างโน้ต ต้อง confirm ก่อนเขียน', mutates: true, name: 'create_note', parameters: {payload: 'NotePayload'}},
+  {description: 'อ่านยอดคงเหลือ งบรายวัน และรายการการเงินจริงตามช่วงเวลา', mutates: false, name: 'get_financial_summary', parameters: {category: 'optional category', timeframe: ['today', 'week', 'month']}},
+  {description: 'เสนอเพิ่มรายรับหรือรายจ่าย และรอผู้ใช้ยืนยันก่อนเขียน', mutates: true, name: 'add_transaction', parameters: {payload: 'FinancePayload'}},
+  {description: 'อ่านโน้ตล่าสุดจากข้อมูลจริงของผู้ใช้', mutates: false, name: 'get_user_notes', parameters: {tag: ['all', 'class', 'idea', 'task']}},
+  {description: 'เสนอสร้างโน้ต และรอผู้ใช้ยืนยันก่อนเขียน', mutates: true, name: 'add_note', parameters: {payload: 'NotePayload'}},
   {description: 'เสนอแก้ไขโน้ต ต้อง confirm ก่อนเขียน', mutates: true, name: 'update_note', parameters: {id: 'string', payload: 'partial NotePayload'}},
   {description: 'เสนอจดจำงบหรือช่วงโฟกัสส่วนตัวในเครื่อง ต้อง confirm ก่อนบันทึก', mutates: true, name: 'save_preference', parameters: {key: ['dailyBudget', 'studyMinutes'], value: 'number'}},
 ];
@@ -27,29 +33,113 @@ export type AssistantContext = {
   notes: WithId<Note>[];
   todayActivities: WithId<Activity>[];
   todaySchedules: WithId<Schedule>[];
+  upcomingActivities: WithId<Activity>[];
+  upcomingSchedules: WithId<Schedule>[];
   weekActivities: WithId<Activity>[];
   weekSchedules: WithId<Schedule>[];
+  weekTransactions: WithId<Transaction>[];
 };
 
 const THAI_TIME_ZONE = 'Asia/Bangkok';
+const EXAM_PATTERN = /(สอบ|กลางภาค|ปลายภาค|midterm|final|quiz|ควิซ|test|exam)/i;
+const assistantFunctions = getFunctions(firebaseApp, 'asia-southeast1');
+const smartLifeAssistantReply = httpsCallable<
+  {history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string},
+  {content: string}
+>(assistantFunctions, 'smartLifeAssistantReply');
+const assistantTelemetry = httpsCallable<
+  {
+    errorKind?: AssistantErrorKind;
+    helpful?: AssistantFeedbackRating;
+    intent: AssistantIntent;
+    interactionId: string;
+    latencyMs: number;
+    source: AssistantReplySource;
+  },
+  {ok: true}
+>(assistantFunctions, 'assistantTelemetry');
+
+export type AssistantReply = {
+  content: string;
+  errorKind?: AssistantErrorKind;
+  intent: AssistantIntent;
+  latencyMs: number;
+  proposedAction?: AssistantProposedAction;
+  source: AssistantReplySource;
+};
+
+function classifyAssistantError(error: unknown): AssistantErrorKind {
+  const code = String((error as {code?: unknown})?.code ?? '').toLowerCase();
+  const message = String((error as {message?: unknown})?.message ?? '').toLowerCase();
+  if (/app.?check|play integrity|native-module-missing|rnfbappmodule/.test(`${code} ${message}`)) return 'app_check';
+  if (/unauthenticated|permission-denied|auth/.test(`${code} ${message}`)) return 'authentication';
+  if (/resource-exhausted|quota|429|rate.?limit/.test(`${code} ${message}`)) return 'quota';
+  if (/network|unavailable|deadline-exceeded|timeout|fetch/.test(`${code} ${message}`)) return 'network';
+  if (/data-loss|internal|gemini|empty response|invalid response/.test(`${code} ${message}`)) return 'gemini';
+  if (/firestore|firebase|functions\//.test(`${code} ${message}`)) return 'firebase';
+  return 'unknown';
+}
+
+function assistantErrorMessage(kind: AssistantErrorKind) {
+  if (kind === 'app_check') return 'App Check ยังไม่พร้อมในแอปที่ติดตั้งอยู่ครับ กรุณาสร้างและติดตั้ง Android build ใหม่ แล้วลองอีกครั้ง';
+  if (kind === 'authentication') return 'เซสชันเข้าสู่ระบบหมดอายุครับ กรุณาออกแล้วเข้าสู่ระบบใหม่';
+  if (kind === 'quota') return 'วันนี้มีการเรียก AI ถึงขีดจำกัดชั่วคราวแล้วครับ รอสักครู่แล้วลองใหม่ โดยข้อมูลตารางและการเงินที่อ่านจากระบบตรง ๆ ยังใช้งานได้';
+  if (kind === 'network') return 'ตอนนี้เชื่อมต่อบริการ AI ไม่สำเร็จครับ ตรวจอินเทอร์เน็ตแล้วลองอีกครั้ง';
+  if (kind === 'gemini') return 'Gemini ตอบกลับไม่สมบูรณ์ครับ ลองส่งคำถามเดิมอีกครั้งได้เลย';
+  if (kind === 'firebase') return 'ตอนนี้อ่านข้อมูลจาก Firebase ไม่สำเร็จครับ กรุณาลองใหม่อีกครั้ง';
+  return 'ตอนนี้ AI ตอบคำถามนี้ไม่สำเร็จครับ กรุณาลองอีกครั้ง';
+}
+
+export async function recordAssistantTelemetry(data: {
+  errorKind?: AssistantErrorKind;
+  helpful?: AssistantFeedbackRating;
+  intent: AssistantIntent;
+  interactionId: string;
+  latencyMs: number;
+  source: AssistantReplySource;
+}) {
+  if (isDemoMode) return;
+  await ensureAppCheckReady();
+  await assistantTelemetry(data);
+}
 
 function rangeFor(period: 'day' | 'month' | 'week', base = new Date()) {
-  const local = new Date(new Intl.DateTimeFormat('en-CA', {day: '2-digit', month: '2-digit', timeZone: THAI_TIME_ZONE, year: 'numeric'}).format(base));
-  const start = new Date(local);
-  if (period === 'week') start.setDate(start.getDate() - start.getDay());
-  if (period === 'month') start.setDate(1);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  if (period === 'day') end.setDate(start.getDate() + 1);
-  if (period === 'week') end.setDate(start.getDate() + 7);
-  if (period === 'month') end.setMonth(start.getMonth() + 1);
-  return {end, start};
+  const {from, to} = thailandRange(period, base);
+  return {end: new Date(to.getTime() + 1), start: from};
 }
 
 function parseAmount(message: string) {
   const match = message.replace(/,/g, '').match(/(\d+(?:\.\d+)?)\s*(?:บาท|฿|thb)?/i);
   const amount = match ? Number(match[1]) : 0;
   return Number.isFinite(amount) && amount > 0 ? amount : 0;
+}
+
+const THAI_DIGITS: Record<string, string> = {
+  '๐': '0',
+  '๑': '1',
+  '๒': '2',
+  '๓': '3',
+  '๔': '4',
+  '๕': '5',
+  '๖': '6',
+  '๗': '7',
+  '๘': '8',
+  '๙': '9',
+};
+
+function normalizeNaturalLanguageInput(message: string) {
+  return message
+    .normalize('NFKC')
+    .replace(/[๐-๙]/g, (digit) => THAI_DIGITS[digit] ?? digit)
+    .replace(/([ก-๙])(?=\d)/g, '$1 ')
+    .replace(/(\d)(?=[ก-๙])/g, '$1 ')
+    .replace(/เท่าไหร(?:่)?|เท่าไหหล่|เท่าไหร่หรอ/gi, 'เท่าไหร่')
+    .replace(/ยังงัย|ยังไงดีอะ|ยังไงอะ/gi, 'ยังไง')
+    .replace(/มีไรบ้าง|มีอะไรมั่ง/gi, 'มีอะไรบ้าง')
+    .replace(/งานไรบ้าง/gi, 'งานอะไรบ้าง')
+    .replace(/พฤหัดบดี|พฤหัด/gi, 'พฤหัสบดี')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function todayAt(hour: number, minute = 0, dayOffset = 0) {
@@ -90,8 +180,14 @@ function parseEndAt(message: string, start: Date) {
   return end;
 }
 
+function isAdviceOrLookupIntent(message: string) {
+  return /(ควร|แนะนำ|วิเคราะห์|จัดลำดับ|แบ่ง(?:เงิน|งบ|ใช้)?|จัดสรร|วางแผน|ใช้.*(?:กี่|ต่อ|วัน|สัปดาห์|เดือน)|พอ.*(?:วัน|สัปดาห์|เดือน)|อะไร.*ก่อน|วิชา.*ก่อน|อ่าน.*ก่อน|ก่อนดี|ดีไหม|เมื่อไหร่|กี่โมง|ตอนไหน|มีอะไร|ไหม|หรือเปล่า|หรือยัง|สำคัญ.*แค่ไหน|\?)/i.test(message);
+}
+
 function isScheduleIntent(message: string) {
-  return /(นัด|ตาราง|เวลา|ตอน|เรียน|lab|แล็บ|quiz|ควิซ|สอบ|schedule|task)/i.test(message) || hasExplicitTime(message);
+  const explicitWrite = /(เพิ่ม|สร้าง|บันทึก|จด|ลง(?:ใน)?ตาราง|จัดตาราง|กำหนด|เตือน|นัดให้)/i.test(message);
+  const scheduleRecord = /(นัด|ตาราง|เวลา|ตอน|เรียน|lab|แล็บ|แลบ|quiz|ควิซ|สอบ|schedule|task|งาน)/i.test(message) || hasExplicitTime(message);
+  return explicitWrite && scheduleRecord;
 }
 
 function scheduleTitleFromMessage(message: string, fallback: string) {
@@ -120,21 +216,55 @@ function titleFromMessage(message: string, fallback: string) {
     .slice(0, 80) || fallback;
 }
 
+function noteTitleFromMessage(message: string) {
+  const title = message
+    .replace(/^(?:ช่วย)?\s*(?:เพิ่ม|บันทึก|จด|สร้าง)\s*(?:โน้ต|note|บันทึก)?\s*(?:ให้)?\s*(?:หน่อย)?\s*/i, '')
+    .replace(/^(?:ว่า|เรื่อง|เมื่อ|สำหรับ|ต้อง)\s*/i, '')
+    .replace(/(?:วันที่|วันนี้|พรุ่งนี้|คืนนี้|วัน(?:จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์)|เวลา|ตอน)\s*.*/i, '')
+    .replace(/\d{1,2}\s*[/.-]\s*\d{1,2}\s*[/.-]\s*\d{2,4}.*$/i, '')
+    .replace(/(?:ด้วย|นะ|ครับ|ค่ะ|คับ|หน่อย)\s*$/i, '')
+    .trim();
+  return title.slice(0, 80) || 'โน้ตใหม่';
+}
+
+function noteBodyFromMessage(message: string) {
+  const body = message
+    .replace(/^(?:ช่วย)?\s*(?:เพิ่ม|บันทึก|จด|สร้าง)\s*(?:โน้ต|note|บันทึก)?\s*(?:ให้)?\s*(?:หน่อย)?\s*/i, '')
+    .replace(/^(?:ว่า|เรื่อง|เมื่อ|สำหรับ)\s*/i, '')
+    .trim();
+  return body || message.trim();
+}
+
+function noteTagFromMessage(message: string): NotePayload['tag'] {
+  if (/(ไอเดีย|idea)/i.test(message)) return 'idea';
+  if (/(อ่านหนังสือ|ทบทวน|เรียน|วิชา|สอบ)/i.test(message)) return 'class';
+  if (/(ทำการบ้าน|ทำงาน|ส่งงาน|โปรเจกต์|project|task)/i.test(message)) return 'task';
+  return 'all';
+}
+
 export async function loadAssistantContext(uid: string): Promise<AssistantContext> {
   const today = rangeFor('day');
   const week = rangeFor('week');
   const month = rangeFor('month');
-  const [todaySchedules, todayActivities, weekSchedules, weekActivities, monthTransactions, noteList] = await Promise.all([
+  const upcomingEnd = new Date(today.start);
+  // Look across a full semester so exam dates are not missed when they are
+  // more than two months away.
+  upcomingEnd.setDate(upcomingEnd.getDate() + 180);
+  const monthQueryEnd = new Date(month.end.getTime() - 1);
+  const [todaySchedules, todayActivities, weekSchedules, weekActivities, upcomingSchedules, upcomingActivities, weekTransactions, monthTransactions, noteList] = await Promise.all([
     schedules.between(uid, today.start, today.end),
     activities.between(uid, today.start, today.end),
     schedules.between(uid, week.start, week.end),
     activities.between(uid, week.start, week.end),
-    transactions.between(uid, month.start, month.end),
+    schedules.between(uid, today.start, upcomingEnd),
+    activities.between(uid, today.start, upcomingEnd),
+    transactions.between(uid, week.start, new Date(week.end.getTime() - 1)),
+    transactions.between(uid, month.start, monthQueryEnd),
     notes.list(uid),
   ]);
   const monthIncome = monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
   const monthExpense = monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
-  return {balance: monthIncome - monthExpense, monthExpense, monthIncome, monthTransactions, notes: noteList, todayActivities, todaySchedules, weekActivities, weekSchedules};
+  return {balance: monthIncome - monthExpense, monthExpense, monthIncome, monthTransactions, notes: noteList, todayActivities, todaySchedules, upcomingActivities, upcomingSchedules, weekActivities, weekSchedules, weekTransactions};
 }
 
 function checklistItems(message: string) {
@@ -174,6 +304,7 @@ function proposePreferenceFromMessage(message: string): AssistantProposedAction 
 export function proposeActionFromMessage(message: string): AssistantProposedAction | null {
   const normalized = message.trim();
   if (!normalized) return null;
+  if (isAdviceOrLookupIntent(normalized)) return null;
 
   const checklist = proposeChecklistFromMessage(normalized);
   if (checklist) return checklist;
@@ -202,17 +333,12 @@ export function proposeActionFromMessage(message: string): AssistantProposedActi
   }
 
   if (/(โน้ต|note|จด)/i.test(normalized)) {
-    const payload: NotePayload = {body: normalized, tag: /ไอเดีย|idea/i.test(normalized) ? 'idea' : 'all', title: titleFromMessage(normalized, 'โน้ตจากแชท')};
+    const payload: NotePayload = {
+      body: noteBodyFromMessage(normalized),
+      tag: noteTagFromMessage(normalized),
+      title: noteTitleFromMessage(normalized),
+    };
     return {entity: 'note', id: actionId(), payload, status: 'pending', summary: `สร้างโน้ต "${payload.title}"`, type: 'create'};
-  }
-
-  if (/(เพิ่ม|มี|นัด|เรียน|lab|แลบ|งาน|quiz|ควิซ|สอบ|schedule|task)/i.test(normalized)) {
-    const start = parseStartAt(normalized);
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
-    const location = normalized.match(/(?:ที่|ห้อง)\s*([A-Za-z0-9ก-๙._-]+)/)?.[1] ?? '';
-    const type: SchedulePayload['type'] = /(งาน|task|quiz|ควิซ|สอบ)/i.test(normalized) ? 'task' : /(เรียน|lab|แลบ|class)/i.test(normalized) ? 'class' : 'appointment';
-    const payload: SchedulePayload = {endAt: end.toISOString(), location, startAt: start.toISOString(), title: titleFromMessage(normalized, type === 'task' ? 'งานจากแชท' : 'นัดหมายจากแชท'), type};
-    return {entity: 'schedule', id: actionId(), payload, status: 'pending', summary: `เพิ่ม${type === 'class' ? 'คลาส' : type === 'task' ? 'งาน' : 'นัดหมาย'} "${payload.title}" เวลา ${textDate(start)}`, type: 'create'};
   }
 
   return null;
@@ -270,6 +396,224 @@ function buildBudgetGuard(context: AssistantContext, preferences: AssistantPrefe
   return headline;
 }
 
+function isFinanceLookupIntent(message: string) {
+  const hasFinanceWord = /(เงิน|รายรับ|รายจ่าย|ยอดคงเหลือ|งบ|ค่าใช้จ่าย|ใช้จ่าย|ซื้อข้าว|ค่าอาหาร|ข้าว|อาหาร|บาท|budget|finance|income|expense)/i.test(message);
+  const asksForFactOrAdvice = /(เท่าไหร่|เท่าไร|กี่บาท|เหลือ|พอไหม|ควร|แนะนำ|วิเคราะห์|สรุป|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|เดือนนี้|วันนี้|พรุ่งนี้|ถึงสิ้นเดือน|ถ้ามี|สมมติ)/i.test(message);
+  // A short follow-up such as "มี 200 ควรแบ่งใช้ยังไง" is still a money
+  // question even when the user does not repeat the word "เงิน" or "งบ".
+  // Keep it local so the response always uses the supplied amount instead of
+  // falling back to a generic assistant reply.
+  const hasBareAmountForAdvice = /(?:มี|เหลือ)\s*[\d,]+(?:\.\d+)?\s*(?:บาท)?\s*(?:ควร|แบ่ง|ใช้|พอ|อยู่)/i.test(message)
+    || /[\d,]+(?:\.\d+)?\s*บาท\s*(?:ควร|แบ่ง|ใช้|พอ)/i.test(message);
+  const compactBudgetPlan = hasFinanceWord &&
+    /[\d,]+(?:\.\d+)?/.test(message) &&
+    /(?:\d+\s*วัน|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ)\s*วัน/i.test(message);
+  return (hasFinanceWord && asksForFactOrAdvice) || hasBareAmountForAdvice || compactBudgetPlan;
+}
+
+function daysUntilMonthEnd(fromTomorrow = false) {
+  const now = new Date();
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return Math.max(1, lastDay - now.getDate() + (fromTomorrow ? 0 : 1));
+}
+
+type FinancePeriod = 'day' | 'month' | 'week';
+
+function financePeriod(message: string): FinancePeriod {
+  if (/(สัปดาห์|อาทิตย์นี้|week)/i.test(message)) return 'week';
+  if (/(วันนี้|รายวัน|ต่อวัน|daily|today)/i.test(message)) return 'day';
+  return 'month';
+}
+
+function financePeriodSummary(message: string, context: AssistantContext, preferences: AssistantPreferences) {
+  const period = financePeriod(message);
+  const now = new Date();
+  let transactionsForPeriod = context.monthTransactions;
+  let label = 'เดือนนี้';
+  let daysLeft = daysUntilMonthEnd();
+
+  if (period === 'week') {
+    transactionsForPeriod = context.weekTransactions;
+    label = 'สัปดาห์นี้';
+    const week = rangeFor('week');
+    daysLeft = Math.max(1, Math.ceil((week.end.getTime() - now.getTime()) / 86_400_000));
+  } else if (period === 'day') {
+    transactionsForPeriod = context.monthTransactions.filter(
+      (item) => sameThailandDay(item.occurredAt.toDate(), now),
+    );
+    label = 'วันนี้';
+    daysLeft = 1;
+  }
+
+  const income = transactionsForPeriod
+    .filter((item) => item.type === 'income')
+    .reduce((sum, item) => sum + item.amount, 0);
+  const expense = transactionsForPeriod
+    .filter((item) => item.type === 'expense')
+    .reduce((sum, item) => sum + item.amount, 0);
+  const recordedBalance = income - expense;
+  const balance = period === 'day' && preferences.dailyBudget
+    ? Math.max(0, preferences.dailyBudget - expense)
+    : recordedBalance;
+
+  return {balance, daysLeft, expense, income, label, period};
+}
+
+function financeRecommendation(summary: ReturnType<typeof financePeriodSummary>, message: string) {
+  const {balance, daysLeft, expense, income, label} = summary;
+  if (balance <= 0) {
+    return `${label}มีรายรับ ${income.toLocaleString('th-TH')} บาท รายจ่าย ${expense.toLocaleString('th-TH')} บาท จึงไม่มียอดคงเหลือบวกสำหรับแบ่งใช้ครับ ควรชะลอรายจ่ายที่ไม่จำเป็นและตรวจสอบว่ามีรายรับที่ยังไม่ได้บันทึกหรือไม่`;
+  }
+
+  return dailySpendingPlan(balance, daysLeft);
+}
+
+function explicitAdviceBudget(message: string) {
+  const asksForAdvice = /(ควร|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|พอ|ซื้อ|กิน|ข้าว|อาหาร)/i.test(message);
+  const isCompactPlan = /(เงิน|งบ|บาท)/i.test(message) &&
+    /(?:\d+|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ)\s*วัน/i.test(message);
+  if (!asksForAdvice && !isCompactPlan) return null;
+
+  const patterns = [
+    /(?:ถ้า|สมมติ)?\s*(?:มี(?:เงิน|งบ)?|เงินเหลือ|งบ(?:เหลือ)?|เหลือ)\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?/i,
+    /([\d,]+(?:\.\d+)?)\s*บาท\s*(?:ควร|แบ่ง|จัดสรร|ใช้|พอ|ซื้อ|กิน)/i,
+    /(?:เงิน|งบ)\s*([\d,]+(?:\.\d+)?)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(message);
+    if (!match) continue;
+    const amount = Number(match[1].replace(/,/g, ''));
+    if (Number.isFinite(amount) && amount > 0) return amount;
+  }
+  return null;
+}
+
+function explicitBudgetDays(message: string) {
+  const numeric = /(\d+)\s*วัน/i.exec(message);
+  if (numeric) return Math.max(1, Number(numeric[1]));
+  const thaiNumberWords: Record<string, number> = {
+    หนึ่ง: 1,
+    สอง: 2,
+    สาม: 3,
+    สี่: 4,
+    ห้า: 5,
+    หก: 6,
+    เจ็ด: 7,
+    แปด: 8,
+    เก้า: 9,
+    สิบ: 10,
+  };
+  const word = /(หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ)\s*วัน/i.exec(message)?.[1];
+  return word ? thaiNumberWords[word] : null;
+}
+
+function explicitBudgetRecommendation(message: string, amount: number) {
+  const formattedAmount = amount.toLocaleString('th-TH');
+  const explicitDays = explicitBudgetDays(message);
+  if (explicitDays) return dailySpendingPlan(amount, explicitDays);
+
+  if (/(ถึงสิ้นเดือน|สิ้นเดือน)/i.test(message)) {
+    const daysLeft = daysUntilMonthEnd(/พรุ่งนี้/i.test(message));
+    return dailySpendingPlan(amount, daysLeft);
+  }
+
+  if (/(สัปดาห์|7\s*วัน|เจ็ดวัน)/i.test(message)) {
+    return dailySpendingPlan(amount, 7);
+  }
+
+  if (/(วันนี้|1\s*วัน|หนึ่งวัน)/i.test(message)) {
+    return dailySpendingPlan(amount, 1);
+  }
+
+  return `รับงบใหม่ ${formattedAmount} บาทครับ บอกฉันเพิ่มว่าจะต้องใช้กี่วัน เช่น “มี ${formattedAmount} บาท ใช้ 3 วัน” แล้วฉันจะแบ่งงบเช้า กลางวัน เย็น และเงินสำรองให้ โดยไม่ใช้ยอดรายเดือนในระบบมาปน`;
+}
+
+function dailySpendingPlan(totalBudget: number, days: number) {
+  const safeDays = Math.max(1, Math.floor(days));
+  const dailyBudget = totalBudget / safeDays;
+  const roundedDaily = Math.floor(dailyBudget);
+  const minimumBreakfast = 20;
+  const minimumMainMeal = 35;
+  const typicalThreeMealMinimum = minimumBreakfast + minimumMainMeal * 2;
+
+  if (roundedDaily < typicalThreeMealMinimum) {
+    const afternoon = Math.min(minimumMainMeal, Math.max(0, roundedDaily - minimumBreakfast));
+    const remaining = Math.max(0, roundedDaily - minimumBreakfast - afternoon);
+    const shortage = typicalThreeMealMinimum - roundedDaily;
+    return [
+      `สรุปงบประมาณ`,
+      `- เงินทั้งหมด ${totalBudget.toLocaleString('th-TH')} บาท สำหรับ ${safeDays} วัน`,
+      `- เฉลี่ยวันละ ${dailyBudget.toLocaleString('th-TH', {maximumFractionDigits: 2})} บาท`,
+      `- งบนี้ต่ำกว่าค่าอาหารพื้นฐาน 3 มื้อประมาณ ${shortage.toLocaleString('th-TH')} บาทต่อวัน`,
+      ``,
+      `แผนประคองงบต่อวัน`,
+      `1. มื้อเช้า กันไว้ ${Math.min(minimumBreakfast, roundedDaily).toLocaleString('th-TH')} บาท สำหรับอาหารเช้าง่าย ๆ และน้ำเปล่า`,
+      `2. มื้อกลางวัน กันไว้ ${afternoon.toLocaleString('th-TH')} บาท เลือกโรงอาหารหรือร้านราคาประหยัด`,
+      `3. มื้อเย็น เหลือ ${remaining.toLocaleString('th-TH')} บาท ควรทำอาหารที่หอหรือใช้วัตถุดิบที่ซื้อรวมหลายมื้อ เพราะไม่พอซื้ออาหารทั่วไปหนึ่งมื้อ`,
+      `4. งบสำรอง 0 บาท จึงควรงดเครื่องดื่มหวานและของที่ยังไม่จำเป็น`,
+      ``,
+      `ทริคประหยัด`,
+      `- อาหารเช้าควรเผื่ออย่างน้อย 20 บาท และมื้อหลักที่ซื้อทั่วไปควรเผื่ออย่างน้อยมื้อละ 35 บาท`,
+      `- พกน้ำและซื้อไข่ ข้าว หรืออาหารแห้งเป็นชุด เพื่อเฉลี่ยต้นทุนหลายมื้อ`,
+    ].join('\n');
+  }
+
+  const morning = Math.max(minimumBreakfast, Math.floor(roundedDaily * 0.2));
+  const afternoon = Math.max(minimumMainMeal, Math.floor(roundedDaily * 0.3));
+  const evening = Math.max(minimumMainMeal, Math.floor(roundedDaily * 0.3));
+  const buffer = Math.max(0, roundedDaily - morning - afternoon - evening);
+
+  return [
+    `สรุปงบประมาณ`,
+    `- เงินทั้งหมด ${totalBudget.toLocaleString('th-TH')} บาท สำหรับ ${safeDays} วัน`,
+    `- เฉลี่ยวันละ ${dailyBudget.toLocaleString('th-TH', {maximumFractionDigits: 2})} บาท`,
+    ``,
+    `แผนใช้จ่ายต่อวัน`,
+    `1. มื้อเช้า อาหารเช้าง่าย ๆ และน้ำเปล่า ไม่เกิน ${morning.toLocaleString('th-TH')} บาท`,
+    `2. มื้อกลางวัน ข้าวโรงอาหารหรืออาหารตามสั่ง ไม่เกิน ${afternoon.toLocaleString('th-TH')} บาท`,
+    `3. มื้อเย็น อาหารมื้อหลักและงดเครื่องดื่มราคาแพง ไม่เกิน ${evening.toLocaleString('th-TH')} บาท`,
+    `4. เงินสำรอง ${buffer.toLocaleString('th-TH')} บาท เก็บไว้ใช้เมื่อจำเป็น`,
+    ``,
+    `ทริคประหยัด`,
+    `- อาหารเช้าควรเผื่ออย่างน้อย 20 บาท และมื้อหลักทั่วไปควรเผื่ออย่างน้อยมื้อละ 35 บาท`,
+    `- พกน้ำเปล่าและตัดของหวานหรือเครื่องดื่มก่อน หากเริ่มใช้เกินงบ`,
+  ].join('\n');
+}
+
+function buildFinanceAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
+  const userProvidedBudget = explicitAdviceBudget(message);
+  if (userProvidedBudget) return explicitBudgetRecommendation(message, userProvidedBudget);
+
+  const summary = financePeriodSummary(message, context, preferences);
+  const asksForRecommendation = /(ควร|แบ่ง|แนะนำ|ใช้ยังไง|ใช้เท่าไหร่|ใช้เท่าไร|ซื้อ|ข้าว|อาหาร|กิน|มื้อ|จัดสรร|วางแผน)/i.test(message);
+  if (asksForRecommendation && !/พรุ่งนี้/i.test(message)) {
+    return financeRecommendation(summary, message);
+  }
+
+  if (/พรุ่งนี้.*(ควร|ใช้)|(?:ควร|ใช้).*พรุ่งนี้/i.test(message)) {
+    if (preferences.dailyBudget) {
+      return `พรุ่งนี้ควรใช้ไม่เกินงบที่ตั้งไว้ ${preferences.dailyBudget.toLocaleString('th-TH')} บาทครับ`;
+    }
+    if (context.balance <= 0) {
+      return `จากข้อมูลจริงเดือนนี้มีรายรับ ${context.monthIncome.toLocaleString('th-TH')} บาท และรายจ่าย ${context.monthExpense.toLocaleString('th-TH')} บาท จึงยังไม่มียอดคงเหลือบวกสำหรับคำนวณงบพรุ่งนี้ครับ กรุณาตรวจสอบยอดเงินจริงหรือเพิ่มรายรับที่ยังไม่ได้บันทึกก่อน`;
+    }
+    const daysLeft = daysUntilMonthEnd(true);
+    const dailyAllowance = Math.floor(context.balance / daysLeft);
+    return `จากยอดคงเหลือจริง ${context.balance.toLocaleString('th-TH')} บาท และเหลืออีก ${daysLeft} วันตั้งแต่พรุ่งนี้ ควรใช้ไม่เกินประมาณ ${dailyAllowance.toLocaleString('th-TH')} บาทต่อวันครับ`;
+  }
+
+  if (/รายรับ/i.test(message) && !/รายจ่าย/i.test(message)) {
+    return `รายรับที่บันทึกไว้${summary.label}คือ ${summary.income.toLocaleString('th-TH')} บาทครับ`;
+  }
+  if (/รายจ่าย|ค่าใช้จ่าย/i.test(message) && !/รายรับ/i.test(message)) {
+    return `รายจ่ายที่บันทึกไว้${summary.label}คือ ${summary.expense.toLocaleString('th-TH')} บาทครับ`;
+  }
+  if (/(เหลือ|ยอดคงเหลือ)/i.test(message)) {
+    return `${summary.label}มีรายรับ ${summary.income.toLocaleString('th-TH')} บาท รายจ่าย ${summary.expense.toLocaleString('th-TH')} บาท และคงเหลือ ${summary.balance.toLocaleString('th-TH')} บาทตามรายการที่บันทึกไว้ครับ`;
+  }
+  return financeRecommendation(summary, message);
+}
+
 function formatTime(date: Date) {
   return new Intl.DateTimeFormat('th-TH', {hour: '2-digit', hour12: false, minute: '2-digit', timeZone: THAI_TIME_ZONE}).format(date);
 }
@@ -289,6 +633,529 @@ function buildPriorityPlan(context: AssistantContext, preferences: AssistantPref
   return `งานที่ควรโฟกัสก่อน\n${lines.join('\n')}\nเริ่มรอบแรกแค่ ${focus} นาที แล้วค่อยพักก็พอ`;
 }
 
+function normalizedStudyText(value: string) {
+  return value.toLocaleLowerCase('th-TH').replace(/[^a-z0-9ก-๙]+/gi, ' ').trim();
+}
+
+function notesRelatedToStudyItem(item: {id: string; title: string}, notesToCheck: WithId<Note>[]) {
+  const itemText = normalizedStudyText(item.title);
+  const itemWords = itemText.split(/\s+/).filter((word) => word.length >= 3);
+  return notesToCheck.filter((note) => {
+    if (note.relatedScheduleId && note.relatedScheduleId === item.id) return true;
+    const noteText = normalizedStudyText(`${note.title} ${note.content}`);
+    return itemWords.some((word) => noteText.includes(word)) ||
+      normalizedStudyText(note.title).split(/\s+/).some((word) => word.length >= 3 && itemText.includes(word));
+  });
+}
+
+function buildStudyPriorityAdvice(context: AssistantContext, preferences: AssistantPreferences) {
+  const scheduleCandidates = context.upcomingSchedules
+    .filter((item) => EXAM_PATTERN.test(`${item.title} ${item.courseName ?? ''} ${item.courseCode}`))
+    .map((item) => ({
+      id: item.id,
+      priority: '',
+      startAt: item.startAt,
+      title: item.title || item.courseName || item.courseCode,
+    }));
+  const activityCandidates = context.upcomingActivities
+    .filter((item) => item.status !== 'completed' && item.status !== 'cancelled' && EXAM_PATTERN.test(`${item.title} ${item.note ?? ''}`))
+    .map((item) => ({
+      id: item.id,
+      priority: item.priority ?? '',
+      startAt: item.startAt,
+      title: item.title,
+    }));
+  const exams = [...scheduleCandidates, ...activityCandidates]
+    .map((item) => ({
+      ...item,
+      relatedNotes: notesRelatedToStudyItem(item, context.notes),
+    }))
+    .sort((left, right) => {
+      const dateDifference = left.startAt.toMillis() - right.startAt.toMillis();
+      if (Math.abs(dateDifference) >= 24 * 60 * 60 * 1000) return dateDifference;
+      const priorityScore = (value: string) => /ด่วน|สูง|high|urgent/i.test(value) ? 2 : /กลาง|medium/i.test(value) ? 1 : 0;
+      return priorityScore(right.priority) - priorityScore(left.priority) || dateDifference;
+    });
+
+  if (!exams.length) {
+    const pendingStudyTasks = context.upcomingActivities
+      .filter((item) => item.type === 'task' && item.status !== 'completed' && item.status !== 'cancelled')
+      .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+    if (pendingStudyTasks.length) {
+      const first = pendingStudyTasks[0];
+      return `ยังไม่พบกำหนดสอบที่บันทึกไว้ จึงจัดลำดับวิชาแบบชัวร์ ๆ ไม่ได้ครับ แต่ตอนนี้งานที่ถึงก่อนคือ "${first.title}" วันที่ ${textDate(first.startAt.toDate())} ลองเริ่มจากงานนี้ก่อนและตรวจตารางสอบเพิ่มเติมนะ`;
+    }
+    const studyNotes = context.notes.filter((note) => note.category === 'study');
+    if (studyNotes.length) {
+      return `ยังไม่พบกำหนดสอบหรืองานส่งที่ใช้จัดลำดับครับ มีโน้ตการเรียนอยู่ ${studyNotes.length} รายการ เช่น "${studyNotes.slice(0, 3).map((note) => note.title).join('", "')}" แต่ควรเพิ่มวันสอบก่อน แล้วฉันจะบอกได้แม่นขึ้นว่าวิชาไหนควรอ่านก่อน`;
+    }
+    return 'ยังไม่พบตารางสอบ งานส่ง หรือโน้ตการเรียนที่ใช้จัดลำดับครับ เพิ่มวันสอบของแต่ละวิชาก่อน แล้วฉันจะเรียงให้ตามวันสอบและความสำคัญได้แม่นขึ้น';
+  }
+
+  const first = exams[0];
+  const firstNoteReason = first.relatedNotes.length
+    ? ` และมีโน้ตเกี่ยวข้อง ${first.relatedNotes.length} รายการให้ใช้ทบทวน`
+    : ' แต่ยังไม่พบโน้ตที่เชื่อมกับวิชานี้';
+  const nextItems = exams.slice(1, 3).map((item, index) =>
+    `${index + 2}. ${item.title} — ${textDate(item.startAt.toDate())}${item.relatedNotes.length ? ` มีโน้ต ${item.relatedNotes.length} รายการ` : ''}`,
+  );
+  const focusMinutes = preferences.studyMinutes ?? 45;
+  return `ควรอ่าน "${first.title}" ก่อนครับ เพราะมีกำหนดก่อนสุดในวันที่ ${textDate(first.startAt.toDate())}${firstNoteReason}\n${nextItems.length ? `ลำดับถัดไป\n${nextItems.join('\n')}\n` : ''}เริ่มทบทวนรอบแรก ${focusMinutes} นาที แล้วเน้นหัวข้อที่ยังไม่เข้าใจจากโน้ตก่อนนะ`;
+}
+
+function isExamScheduleLookupIntent(message: string) {
+  const hasExamWord = EXAM_PATTERN.test(message);
+  const asksForSavedExamFact = /(วันแรก|วันไหน|เมื่อไหร่|กี่โมง|เริ่มวัน|เริ่มเมื่อ|มีสอบ|สอบ.*บ้าง|ตารางสอบ|วิชาอะไรบ้าง)/i.test(message);
+  return hasExamWord && asksForSavedExamFact;
+}
+
+function examTypePattern(message: string) {
+  if (/(กลางภาค|midterm)/i.test(message)) return /(กลางภาค|midterm)/i;
+  if (/(ปลายภาค|final)/i.test(message)) return /(ปลายภาค|final)/i;
+  if (/(quiz|ควิซ)/i.test(message)) return /(quiz|ควิซ)/i;
+  return EXAM_PATTERN;
+}
+
+function bangkokDateKey(date: Date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: THAI_TIME_ZONE,
+    year: 'numeric',
+  }).format(date);
+}
+
+function buildExamScheduleAnswer(message: string, context: AssistantContext) {
+  const requestedType = examTypePattern(message);
+  const requestedLabel = /(กลางภาค|midterm)/i.test(message)
+    ? 'สอบกลางภาค'
+    : /(ปลายภาค|final)/i.test(message)
+      ? 'สอบปลายภาค'
+      : /(quiz|ควิซ)/i.test(message)
+        ? 'ควิซ'
+        : 'สอบ';
+  const scheduleCandidates = context.upcomingSchedules
+    .filter((item) => {
+      const searchableText = `${item.title} ${item.courseName ?? ''} ${item.courseCode}`;
+      return EXAM_PATTERN.test(searchableText) && requestedType.test(searchableText);
+    })
+    .map((item) => ({
+      startAt: item.startAt,
+      title: item.title || item.courseName || item.courseCode,
+    }));
+  const activityCandidates = context.upcomingActivities
+    .filter((item) => {
+      const searchableText = `${item.title} ${item.note ?? ''}`;
+      return item.status !== 'completed' &&
+        item.status !== 'cancelled' &&
+        EXAM_PATTERN.test(searchableText) &&
+        requestedType.test(searchableText);
+    })
+    .map((item) => ({
+      startAt: item.startAt,
+      title: item.title,
+    }));
+  const exams = [...scheduleCandidates, ...activityCandidates]
+    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+
+  if (!exams.length) {
+    return `ยังไม่พบกำหนด${requestedLabel}ที่บันทึกไว้ในตารางหรือกิจกรรมครับ จึงยังบอกวันแรกแบบแน่นอนไม่ได้ ถ้ามีตารางสอบแล้วให้เพิ่มหรือสแกนเข้าระบบก่อนนะ`;
+  }
+
+  const asksForList = /(บ้าง|ทั้งหมด|ตารางสอบ|มีสอบ)/i.test(message) && !/(วันแรก|เริ่มวัน|เริ่มเมื่อ)/i.test(message);
+  if (asksForList) {
+    const lines = exams.slice(0, 6).map((exam, index) =>
+      `${index + 1}. ${exam.title} — ${textDate(exam.startAt.toDate())}`,
+    );
+    return `พบ${requestedLabel} ${exams.length} รายการครับ\n${lines.join('\n')}`;
+  }
+
+  const first = exams[0];
+  const firstDayKey = bangkokDateKey(first.startAt.toDate());
+  const examsOnFirstDay = exams.filter((exam) => bangkokDateKey(exam.startAt.toDate()) === firstDayKey);
+  const firstDaySubjects = examsOnFirstDay.map((exam) => exam.title).join(', ');
+  return `${requestedLabel}วันแรกที่บันทึกไว้คือ ${textDate(first.startAt.toDate())} ครับ${firstDaySubjects ? ` มี ${firstDaySubjects}` : ''}`;
+}
+
+function isUpcomingClassLookupIntent(message: string) {
+  return /(มีเรียน.*(วันไหน|เมื่อไหร่|อะไรบ้าง)|เรียน.*วันไหนบ้าง|วันที่มีเรียน|ตารางเรียน.*(วันไหน|ทั้งหมด)|วิชา.*(ใกล้|ถัดไป)|เรียน.*(ใกล้สุด|ถัดไป|ครั้งต่อไป)|คาบ.*(ใกล้สุด|ถัดไป)|คลาส.*(ใกล้สุด|ถัดไป)|(วัน(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)).*เรียน|เรียน.*(วัน(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)))/i.test(message);
+}
+
+function classTitle(item: WithId<Schedule>) {
+  return item.courseName || item.title || item.courseCode || 'ไม่ระบุชื่อวิชา';
+}
+
+function weekdayName(date: Date) {
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: THAI_TIME_ZONE,
+    weekday: 'long',
+  }).format(date);
+}
+
+function requestedWeekdays(message: string) {
+  const weekdays: string[] = [];
+  const pattern = /(?:วัน)?(จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|พฤหัด(?:บดี)?|ศุกร์|เสาร์)|วัน(อาทิตย์)/gi;
+  for (const match of message.matchAll(pattern)) {
+    const rawDay = match[1] || match[2];
+    const canonicalDay = /^พฤห(?:ัส|ัด)/i.test(rawDay)
+      ? 'วันพฤหัสบดี'
+      : `วัน${rawDay}`;
+    if (!weekdays.includes(canonicalDay)) weekdays.push(canonicalDay);
+  }
+  return weekdays;
+}
+
+function requestedWeekday(message: string) {
+  return requestedWeekdays(message)[0] ?? '';
+}
+
+type CalendarCategory = 'appointment' | 'personal' | 'study' | 'work';
+
+type CalendarLookupItem = {
+  category: CalendarCategory;
+  endAt: Timestamp;
+  id: string;
+  location: string;
+  startAt: Timestamp;
+  title: string;
+};
+
+const CALENDAR_CATEGORY_LABELS: Record<CalendarCategory, string> = {
+  appointment: 'นัดหมาย',
+  personal: 'กิจกรรมส่วนตัว',
+  study: 'เรียน',
+  work: 'งาน',
+};
+
+function requestedCalendarCategory(message: string): CalendarCategory | null {
+  if (/(เรียน|คลาส|วิชา|สอบ|มหาลัย|มหาวิทยาลัย|class|course|exam)/i.test(message)) return 'study';
+  if (/(นัดหมาย|นัด|หมอ|เจอเพื่อน|appointment)/i.test(message)) return 'appointment';
+  if (/(งาน|โปรเจกต์|ประชุม|ทำงาน|project|meeting)/i.test(message)) return 'work';
+  if (/(กิจกรรมส่วนตัว|กิจกรรม|ส่วนตัว|เที่ยว|พักผ่อน|ดูซีรีส์|personal)/i.test(message)) return 'personal';
+  return null;
+}
+
+function activityCalendarCategory(item: WithId<Activity>): CalendarCategory {
+  const text = `${item.category ?? ''} ${item.title} ${item.note ?? ''}`;
+  if (/(เรียน|คลาส|วิชา|สอบ|การบ้าน|งานส่ง|มหาลัย|มหาวิทยาลัย|study|class|course|exam|quiz|assignment)/i.test(text)) return 'study';
+  if (item.type === 'appointment' || /(นัดหมาย|นัด|หมอ|เจอเพื่อน|appointment)/i.test(text)) return 'appointment';
+  if (item.type === 'task' || /(งาน|โปรเจกต์|ประชุม|ทำงาน|work|project|meeting)/i.test(text)) return 'work';
+  return 'personal';
+}
+
+function parseExplicitCalendarDate(message: string) {
+  const iso = message.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
+  if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+
+  const numeric = message.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+  if (numeric) {
+    let year = Number(numeric[3]);
+    if (year < 100) year += 2000;
+    if (year >= 2400) year -= 543;
+    return new Date(year, Number(numeric[2]) - 1, Number(numeric[1]));
+  }
+
+  const thaiMonths: Record<string, number> = {
+    มกราคม: 0,
+    กุมภาพันธ์: 1,
+    มีนาคม: 2,
+    เมษายน: 3,
+    พฤษภาคม: 4,
+    มิถุนายน: 5,
+    กรกฎาคม: 6,
+    สิงหาคม: 7,
+    กันยายน: 8,
+    ตุลาคม: 9,
+    พฤศจิกายน: 10,
+    ธันวาคม: 11,
+  };
+  const thaiDate = message.match(/(\d{1,2})\s*(มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)(?:\s*(\d{4}))?/i);
+  if (!thaiDate) return null;
+  let year = thaiDate[3] ? Number(thaiDate[3]) : new Date().getFullYear();
+  if (year >= 2400) year -= 543;
+  return new Date(year, thaiMonths[thaiDate[2]], Number(thaiDate[1]));
+}
+
+function calendarLookupRange(message: string) {
+  const now = new Date();
+  const explicitDate = parseExplicitCalendarDate(message);
+  if (explicitDate) {
+    const range = rangeFor('day', explicitDate);
+    return {label: new Intl.DateTimeFormat('th-TH', {dateStyle: 'long', timeZone: THAI_TIME_ZONE}).format(explicitDate), ...range};
+  }
+  if (/สัปดาห์หน้า|อาทิตย์หน้า|next\s*week/i.test(message)) {
+    const nextWeek = new Date(now);
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    return {label: 'สัปดาห์หน้า', ...rangeFor('week', nextWeek)};
+  }
+  if (/เดือนหน้า|next\s*month/i.test(message)) {
+    const nextMonth = new Date(now);
+    nextMonth.setMonth(nextMonth.getMonth() + 1);
+    return {label: 'เดือนหน้า', ...rangeFor('month', nextMonth)};
+  }
+  if (/พรุ่งนี้|tomorrow/i.test(message)) {
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return {label: 'พรุ่งนี้', ...rangeFor('day', tomorrow)};
+  }
+  if (/วันนี้|today/i.test(message)) return {label: 'วันนี้', ...rangeFor('day', now)};
+
+  // A weekday without an explicit week always belongs to the current week.
+  if (requestedWeekdays(message).length) return {label: 'สัปดาห์นี้', ...rangeFor('week', now)};
+  if (/เดือนนี้|this\s*month/i.test(message)) return {label: 'เดือนนี้', ...rangeFor('month', now)};
+  return {label: 'สัปดาห์นี้', ...rangeFor('week', now)};
+}
+
+function isCalendarTimeLookupIntent(message: string) {
+  const asksToWrite = /(เพิ่ม|สร้าง|บันทึก|จด|กำหนด|ลบ|แก้ไข|เลื่อน)/i.test(message);
+  if (asksToWrite) return false;
+  const hasTimeframe = /(วันนี้|พรุ่งนี้|สัปดาห์นี้|อาทิตย์นี้|สัปดาห์หน้า|อาทิตย์หน้า|เดือนนี้|เดือนหน้า|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|พฤหัด(?:บดี)?|ศุกร์|เสาร์)|วันอาทิตย์|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม|\b20\d{2}-\d{1,2}-\d{1,2}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)/i.test(message);
+  const asksForSchedule = /(มีอะไร|อะไรบ้าง|มี.*ไหม|กี่โมง|ตาราง|เรียน|คลาส|วิชา|สอบ|งาน|โปรเจกต์|ประชุม|นัด|หมอ|เจอเพื่อน|กิจกรรม|เที่ยว|พักผ่อน|ดูซีรีส์)/i.test(message);
+  return hasTimeframe && asksForSchedule;
+}
+
+function buildCalendarTimeAnswer(message: string, context: AssistantContext) {
+  const range = calendarLookupRange(message);
+  const weekdays = requestedWeekdays(message);
+  const requestedCategory = requestedCalendarCategory(message);
+  const scheduleItems: CalendarLookupItem[] = [...context.weekSchedules, ...context.upcomingSchedules]
+    .map((item) => ({
+      category: 'study',
+      endAt: item.endAt,
+      id: `schedule:${item.id}`,
+      location: item.location,
+      startAt: item.startAt,
+      title: classTitle(item),
+    }));
+  const activityItems: CalendarLookupItem[] = [...context.weekActivities, ...context.upcomingActivities]
+    .filter((item) => item.status !== 'completed' && item.status !== 'cancelled')
+    .map((item) => ({
+      category: activityCalendarCategory(item),
+      endAt: item.endAt,
+      id: `activity:${item.id}`,
+      location: item.location,
+      startAt: item.startAt,
+      title: item.title,
+    }));
+
+  const uniqueItems = new Map<string, CalendarLookupItem>();
+  [...scheduleItems, ...activityItems].forEach((item) => {
+    const key = `${item.id}|${item.startAt.toMillis()}|${item.endAt.toMillis()}`;
+    if (!uniqueItems.has(key)) uniqueItems.set(key, item);
+  });
+  const items = [...uniqueItems.values()]
+    .filter((item) =>
+      item.endAt.toMillis() >= range.start.getTime() &&
+      item.startAt.toMillis() < range.end.getTime() &&
+      (!weekdays.length || weekdays.includes(weekdayName(item.startAt.toDate()))) &&
+      (!requestedCategory || item.category === requestedCategory) &&
+      (!EXAM_PATTERN.test(message) || EXAM_PATTERN.test(item.title)),
+    )
+    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+
+  const weekdayLabel = weekdays.length > 1
+    ? `${weekdays.slice(0, -1).join(', ')} และ${weekdays.at(-1)}`
+    : weekdays[0] ?? '';
+  const periodLabel = weekdayLabel ? `${weekdayLabel}ของ${range.label}` : range.label;
+  if (!items.length) {
+    const categoryLabel = requestedCategory ? CALENDAR_CATEGORY_LABELS[requestedCategory] : 'รายการ';
+    return `${periodLabel}ยังไม่พบ${categoryLabel}ที่บันทึกไว้ครับ`;
+  }
+
+  const categories: CalendarCategory[] = requestedCategory
+    ? [requestedCategory]
+    : ['study', 'work', 'appointment', 'personal'];
+  if (weekdays.length > 1) {
+    const daySections = weekdays.map((day) => {
+      const dayItems = items.filter((item) => weekdayName(item.startAt.toDate()) === day);
+      if (!dayItems.length) {
+        const categoryLabel = requestedCategory ? CALENDAR_CATEGORY_LABELS[requestedCategory] : 'รายการ';
+        return `${day}: ไม่พบ${categoryLabel}ที่บันทึกไว้`;
+      }
+      const categorySections = categories.flatMap((category) => {
+        const categoryItems = dayItems.filter((item) => item.category === category);
+        if (!categoryItems.length) return [];
+        const lines = categoryItems.map((item) =>
+          `• ${formatTime(item.startAt.toDate())}-${formatTime(item.endAt.toDate())} ${item.title}${item.location ? ` ที่ ${item.location}` : ''}`,
+        );
+        return [`${CALENDAR_CATEGORY_LABELS[category]}\n${lines.join('\n')}`];
+      });
+      const date = dayItems[0].startAt.toDate();
+      const dateLabel = new Intl.DateTimeFormat('th-TH', {
+        dateStyle: 'long',
+        timeZone: THAI_TIME_ZONE,
+      }).format(date);
+      return `${day}ที่ ${dateLabel}\n${categorySections.join('\n')}`;
+    });
+    return `${periodLabel}มีทั้งหมด ${items.length} รายการครับ\n${daySections.join('\n\n')}`;
+  }
+
+  const spansMultipleDays = weekdays.length > 1 ||
+    (range.end.getTime() - range.start.getTime() > 2 * 86_400_000 && !weekdays.length);
+  const sections = categories.flatMap((category) => {
+    const categoryItems = items.filter((item) => item.category === category);
+    if (!categoryItems.length) return [];
+    const lines = categoryItems.map((item) => {
+      const datePrefix = spansMultipleDays ? `${dayLabel(item.startAt.toDate())} ` : '';
+      return `• ${datePrefix}${formatTime(item.startAt.toDate())}-${formatTime(item.endAt.toDate())} ${item.title}${item.location ? ` ที่ ${item.location}` : ''}`;
+    });
+    return [`${CALENDAR_CATEGORY_LABELS[category]}\n${lines.join('\n')}`];
+  });
+  return `${periodLabel}มี ${items.length} รายการครับ\n${sections.join('\n\n')}`;
+}
+
+function buildUpcomingClassAnswer(message: string, context: AssistantContext) {
+  const now = Date.now();
+  const allClasses = context.upcomingSchedules
+    .filter((item) => item.endAt.toMillis() >= now)
+    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+  const weekday = requestedWeekday(message);
+  const classes = weekday
+    ? allClasses.filter((item) => weekdayName(item.startAt.toDate()) === weekday)
+    : allClasses;
+
+  if (!classes.length) {
+    return weekday
+      ? `ยังไม่พบวิชาที่บันทึกไว้ใน${weekday}ที่กำลังจะมาถึงครับ`
+      : 'ยังไม่พบตารางเรียนที่กำลังจะมาถึงในระบบครับ ลองเพิ่มหรือสแกนตารางเรียนก่อน แล้วฉันจะบอกวันเรียนและวิชาที่ใกล้ที่สุดให้ได้';
+  }
+
+  const nearest = classes[0];
+  const nearestText = `วิชาที่ใกล้ถึงวันเรียนที่สุดคือ "${classTitle(nearest)}" วันที่ ${textDate(nearest.startAt.toDate())}${nearest.location ? ` ที่ ${nearest.location}` : ''}`;
+  if (weekday) {
+    const nearestDateKey = bangkokDateKey(nearest.startAt.toDate());
+    const classesOnNearestDate = classes.filter(
+      (item) => bangkokDateKey(item.startAt.toDate()) === nearestDateKey,
+    );
+    const uniqueClasses = new Map<string, WithId<Schedule>>();
+    classesOnNearestDate.forEach((item) => {
+      const key = `${classTitle(item)}|${formatTime(item.startAt.toDate())}|${formatTime(item.endAt.toDate())}`;
+      if (!uniqueClasses.has(key)) uniqueClasses.set(key, item);
+    });
+    const lines = [...uniqueClasses.values()].map((item) =>
+      `• ${classTitle(item)} เวลา ${formatTime(item.startAt.toDate())}-${formatTime(item.endAt.toDate())}${item.location ? ` ที่ ${item.location}` : ''}`,
+    );
+    return `${weekday}ที่ใกล้ที่สุดคือวันที่ ${new Intl.DateTimeFormat('th-TH', {
+      dateStyle: 'long',
+      timeZone: THAI_TIME_ZONE,
+    }).format(nearest.startAt.toDate())} มีเรียน ${lines.length} รายการครับ\n${lines.join('\n')}`;
+  }
+  const asksOnlyForNearest = /(ใกล้สุด|ถัดไป|ครั้งต่อไป)/i.test(message) && !/(วันไหนบ้าง|ทั้งหมด|วันที่มีเรียน)/i.test(message);
+  if (asksOnlyForNearest) return `${nearestText} ครับ`;
+
+  const grouped = new Map<string, {
+    firstStartAt: number;
+    items: Map<string, string>;
+  }>();
+  classes.forEach((item) => {
+    const start = item.startAt.toDate();
+    const weekday = weekdayName(start);
+    const time = formatTime(start);
+    const key = `${classTitle(item)}|${time}`;
+    const current = grouped.get(weekday) ?? {
+      firstStartAt: item.startAt.toMillis(),
+      items: new Map<string, string>(),
+    };
+    current.firstStartAt = Math.min(current.firstStartAt, item.startAt.toMillis());
+    current.items.set(key, `${time} ${classTitle(item)}`);
+    grouped.set(weekday, current);
+  });
+
+  const weekdayLines = [...grouped.entries()]
+    .sort((left, right) => left[1].firstStartAt - right[1].firstStartAt)
+    .map(([weekday, value]) => `• ${weekday}: ${[...value.items.values()].join(', ')}`);
+
+  return `${nearestText} ครับ\nวันที่มีเรียนทั้งหมด ${grouped.size} วันต่อสัปดาห์:\n${weekdayLines.join('\n')}`;
+}
+
+function isActivityLookupIntent(message: string) {
+  const hasActivityWord = /(กิจกรรม|นัดหมาย|งานในตาราง|ตารางกิจกรรม)/i.test(message);
+  const asksForFact = /(มี|อะไร|ไหน|เมื่อไหร่|กี่โมง|ช่วงนี้|วันนี้|พรุ่งนี้|สัปดาห์|เดือน|ใกล้|ถัดไป|บ้าง|หรือไม่|ไหม)/i.test(message);
+  const asksToWrite = /(เพิ่ม|สร้าง|บันทึก|จด|นัดให้|กำหนด|ลบ|แก้ไข)/i.test(message);
+  return hasActivityWord && asksForFact && !asksToWrite;
+}
+
+function activityRange(message: string) {
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+  let label = 'ช่วง 7 วันข้างหน้า';
+
+  if (/พรุ่งนี้/i.test(message)) {
+    start.setDate(start.getDate() + 1);
+    start.setHours(0, 0, 0, 0);
+    end.setTime(start.getTime());
+    end.setDate(end.getDate() + 1);
+    label = 'พรุ่งนี้';
+  } else if (/วันนี้/i.test(message)) {
+    start.setHours(0, 0, 0, 0);
+    end.setTime(start.getTime());
+    end.setDate(end.getDate() + 1);
+    label = 'วันนี้';
+  } else if (/(เดือนนี้|เดือน)/i.test(message)) {
+    start.setHours(0, 0, 0, 0);
+    end.setTime(start.getTime());
+    end.setDate(end.getDate() + 30);
+    label = 'ช่วง 30 วันข้างหน้า';
+  } else {
+    end.setDate(end.getDate() + 7);
+    if (/(อื่น|อีก)/i.test(message)) {
+      start.setDate(start.getDate() + 1);
+      start.setHours(0, 0, 0, 0);
+      label = 'ช่วงที่เหลือของ 7 วันข้างหน้า';
+    }
+  }
+
+  return {end: end.getTime(), label, start: start.getTime()};
+}
+
+function buildActivityAnswer(message: string, context: AssistantContext) {
+  const range = activityRange(message);
+  const savedActivities = context.upcomingActivities
+    .filter((item) =>
+      item.status !== 'completed' &&
+      item.status !== 'cancelled' &&
+      item.endAt.toMillis() >= range.start &&
+      item.startAt.toMillis() < range.end,
+    )
+    .map((item) => ({
+      endAt: item.endAt,
+      kind: item.type === 'task' ? 'งาน' : 'กิจกรรม',
+      location: item.location,
+      startAt: item.startAt,
+      title: item.title,
+    }));
+  const savedClasses = context.upcomingSchedules
+    .filter((item) =>
+      item.endAt.toMillis() >= range.start &&
+      item.startAt.toMillis() < range.end,
+    )
+    .map((item) => ({
+      endAt: item.endAt,
+      kind: 'เรียน',
+      location: item.location,
+      startAt: item.startAt,
+      title: classTitle(item),
+    }));
+  const activityList = [...savedActivities, ...savedClasses]
+    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+
+  if (!activityList.length) {
+    return `${range.label}ยังไม่พบตารางเรียน กิจกรรม งาน หรือนัดหมายที่บันทึกไว้ครับ`;
+  }
+
+  const nearest = activityList[0];
+  const nearestText = `กิจกรรมที่ใกล้ที่สุดคือ "${nearest.title}" วันที่ ${textDate(nearest.startAt.toDate())}${nearest.location ? ` ที่ ${nearest.location}` : ''}`;
+  const asksOnlyForNearest = /(ใกล้สุด|ถัดไป|ต่อไป)/i.test(message) && !/(อะไรบ้าง|ทั้งหมด|มี.*ไหม|ช่วงนี้)/i.test(message);
+  if (asksOnlyForNearest) return `${nearestText} ครับ`;
+
+  const lines = activityList.slice(0, 8).map((item) => {
+    return `• ${item.kind} ${item.title} — ${textDate(item.startAt.toDate())}${item.location ? ` ที่ ${item.location}` : ''}`;
+  });
+  const remaining = activityList.length - lines.length;
+  return `${range.label}มี ${activityList.length} รายการครับ\n${lines.join('\n')}${remaining > 0 ? `\nและอีก ${remaining} รายการในตาราง` : ''}`;
+}
+
 function buildWorkloadSummary(context: AssistantContext) {
   const scheduledHours = [...context.weekSchedules, ...context.weekActivities]
     .filter((item) => !('status' in item) || item.status !== 'cancelled')
@@ -300,34 +1167,310 @@ function buildWorkloadSummary(context: AssistantContext) {
   return `สัปดาห์นี้มีตารางและกิจกรรมประมาณ ${roundedHours} ชั่วโมง กับงานค้าง ${pendingTasks} งาน จังหวะยังพอดี ลองกันเวลาโฟกัสไว้ล่วงหน้าสักช่วงหนึ่ง`;
 }
 
-function buildFreeTime(context: AssistantContext, preferences: AssistantPreferences) {
+function requestedStudyDuration(message: string) {
+  const hours = /(\d+(?:\.\d+)?)\s*(?:ชั่วโมง|ชม\.?)/i.exec(message);
+  if (hours) return Math.round(Number(hours[1]) * 60);
+  const minutes = /(\d+)\s*(?:นาที|min(?:ute)?s?)/i.exec(message);
+  return minutes ? Number(minutes[1]) : null;
+}
+
+function requestedStudyPeriod(message: string) {
+  const unavailable = (period: string) => new RegExp(
+    `(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา)(?:ใน|ตอน|ช่วง)?\\s*${period}|${period}(?:นี้)?(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา)`,
+    'i',
+  ).test(message);
+  if (/(ช่วงเช้า|ตอนเช้า|เช้านี้)/i.test(message) && !unavailable('เช้า')) {
+    return {endHour: 12, label: 'ช่วงเช้า', preferredStartHour: 9, startHour: 8};
+  }
+  if (/(ช่วงบ่าย|ตอนบ่าย|บ่ายนี้)/i.test(message) && !unavailable('บ่าย')) {
+    return {endHour: 17, label: 'ช่วงบ่าย', preferredStartHour: 14, startHour: 13};
+  }
+  if (/(ช่วงเย็น|ตอนเย็น|เย็นนี้)/i.test(message) && !unavailable('เย็น')) {
+    return {endHour: 21, label: 'ช่วงเย็น', preferredStartHour: 18, startHour: 17};
+  }
+  if (/(ช่วงค่ำ|ตอนค่ำ|คืนนี้)/i.test(message) && !unavailable('ค่ำ')) {
+    return {endHour: 22, label: 'ช่วงค่ำ', preferredStartHour: 19, startHour: 18};
+  }
+  return null;
+}
+
+function requestedStudyStart(message: string, targetDate: Date) {
+  const numeric = /(?:เริ่ม|ตั้งแต่|ตอน)\s*(\d{1,2})\s*[:.]\s*(\d{2})/i.exec(message);
+  const hourOnly = /(?:เริ่ม|ตั้งแต่|ตอน)\s*(\d{1,2})\s*(?:นาฬิกา|น\.|โมง)/i.exec(message);
+  if (!numeric && !hourOnly) return null;
+  let hour = Number(numeric?.[1] ?? hourOnly?.[1]);
+  const minute = Number(numeric?.[2] ?? 0);
+  const matchedText = numeric?.[0] ?? hourOnly?.[0] ?? '';
+  if (/บ่าย/i.test(matchedText) && hour < 12) hour += 12;
+  if (/(เย็น|ค่ำ)/i.test(matchedText) && hour < 12) hour += 12;
+  if (hour > 23 || minute > 59) return null;
+  const start = new Date(targetDate);
+  start.setHours(hour, minute, 0, 0);
+  return start;
+}
+
+function studyEventsForDate(date: Date, context: AssistantContext) {
+  return [
+    ...context.upcomingSchedules.filter((item) => sameThailandDay(item.startAt.toDate(), date)),
+    ...context.upcomingActivities.filter((item) =>
+      item.status !== 'cancelled' && sameThailandDay(item.startAt.toDate(), date),
+    ),
+  ].sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+}
+
+function suggestedStudyDate(
+  context: AssistantContext,
+  now: Date,
+  minimumMinutes: number,
+  period: ReturnType<typeof requestedStudyPeriod>,
+) {
+  for (let offset = 0; offset < 7; offset += 1) {
+    const date = new Date(now);
+    date.setDate(date.getDate() + offset);
+    const windowStart = new Date(date);
+    windowStart.setHours(period?.startHour ?? 9, 0, 0, 0);
+    const windowEnd = new Date(date);
+    windowEnd.setHours(period?.endHour ?? 21, 0, 0, 0);
+    let cursor = Math.max(windowStart.getTime(), offset === 0 ? now.getTime() : windowStart.getTime());
+    const events = studyEventsForDate(date, context)
+      .filter((item) => item.endAt.toMillis() > windowStart.getTime() && item.startAt.toMillis() < windowEnd.getTime());
+    for (const event of events) {
+      if (event.startAt.toMillis() - cursor >= minimumMinutes * 60_000) return date;
+      cursor = Math.max(cursor, event.endAt.toMillis());
+    }
+    if (windowEnd.getTime() - cursor >= minimumMinutes * 60_000) return date;
+  }
+  return new Date(now);
+}
+
+function buildFreeTime(message: string, context: AssistantContext, preferences: AssistantPreferences) {
   const now = new Date();
-  const dayStart = new Date(now);
-  dayStart.setHours(9, 0, 0, 0);
-  const dayEnd = new Date(now);
-  dayEnd.setHours(21, 0, 0, 0);
-  let cursor = Math.max(dayStart.getTime(), now.getTime());
+  const period = requestedStudyPeriod(message);
+  const explicitMinutes = requestedStudyDuration(message);
+  const minimumMinutes = explicitMinutes ?? preferences.studyMinutes ?? 45;
+  const targetDate = /วันไหน/i.test(message)
+    ? suggestedStudyDate(context, now, minimumMinutes, period)
+    : new Date(now);
+  if (!/วันไหน/i.test(message) && /พรุ่งนี้/i.test(message)) targetDate.setDate(targetDate.getDate() + 1);
+  const explicitStart = requestedStudyStart(message, targetDate);
+  const dayStart = new Date(targetDate);
+  dayStart.setHours(period?.startHour ?? 9, 0, 0, 0);
+  const dayEnd = new Date(targetDate);
+  dayEnd.setHours(period?.endHour ?? 21, 0, 0, 0);
+  const targetsToday = sameThailandDay(targetDate, now);
+  let cursor = Math.max(dayStart.getTime(), targetsToday ? now.getTime() : dayStart.getTime());
   const gaps: {end: Date; start: Date}[] = [];
-  const events = [...context.todaySchedules, ...context.todayActivities.filter((item) => item.status !== 'cancelled')]
+  const scheduleSource = targetsToday ? context.todaySchedules : context.upcomingSchedules;
+  const activitySource = targetsToday ? context.todayActivities : context.upcomingActivities;
+  const events = [
+    ...scheduleSource.filter((item) => sameThailandDay(item.startAt.toDate(), targetDate)),
+    ...activitySource.filter((item) => item.status !== 'cancelled' && sameThailandDay(item.startAt.toDate(), targetDate)),
+  ]
+    .filter((item) => item.endAt.toMillis() > dayStart.getTime() && item.startAt.toMillis() < dayEnd.getTime())
     .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
   events.forEach((item) => {
     const start = item.startAt.toDate();
     const end = item.endAt.toDate();
-    if (start.getTime() - cursor >= 45 * 60 * 1000) gaps.push({end: start, start: new Date(cursor)});
+    if (start.getTime() > cursor) gaps.push({end: start, start: new Date(cursor)});
     cursor = Math.max(cursor, end.getTime());
   });
-  if (dayEnd.getTime() - cursor >= 45 * 60 * 1000) gaps.push({end: dayEnd, start: new Date(cursor)});
-  if (!gaps.length) return 'วันนี้ยังไม่เจอช่วงว่างอย่างน้อย 45 นาทีแล้ว ลองพักสั้น ๆ ระหว่างกิจกรรม หรือเลื่อนงานที่ไม่ด่วนไปพรุ่งนี้นะ';
-  const focus = preferences.studyMinutes ?? 45;
-  const choices = gaps.slice(0, 3).map((gap) => `${formatTime(gap.start)}-${formatTime(gap.end)}`).join(', ');
-  return `ช่วงว่างที่เจอวันนี้: ${choices}\nถ้าจะอ่านหนังสือ ลองเลือกช่วงแรกและโฟกัส ${focus} นาที`;
+  if (dayEnd.getTime() > cursor) gaps.push({end: dayEnd, start: new Date(cursor)});
+
+  const nearestExam = context.upcomingSchedules
+    .filter((item) => EXAM_PATTERN.test(`${item.title} ${item.courseName ?? ''}`) && item.startAt.toMillis() > now.getTime())
+    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis())[0];
+  const daysToExam = nearestExam
+    ? Math.ceil((nearestExam.startAt.toMillis() - now.getTime()) / 86_400_000)
+    : null;
+  const suggestedMinutes = explicitMinutes ?? preferences.studyMinutes ??
+    (daysToExam !== null && daysToExam <= 7 ? 60 : daysToExam !== null && daysToExam <= 21 ? 50 : 45);
+  const targetMinutes = explicitMinutes
+    ? Math.min(240, Math.max(15, Math.round(suggestedMinutes / 5) * 5))
+    : Math.min(90, Math.max(30, Math.round(suggestedMinutes / 5) * 5));
+
+  const slots = gaps.flatMap((gap) => {
+    const gapMinutes = Math.floor((gap.end.getTime() - gap.start.getTime()) / 60_000);
+    if (gapMinutes < Math.min(30, targetMinutes)) return [];
+    const duration = explicitMinutes
+      ? targetMinutes
+      : Math.min(targetMinutes, Math.floor(gapMinutes / 5) * 5);
+    if (gapMinutes < duration) return [];
+    let start = new Date(gap.start);
+    if (explicitStart) {
+      if (
+        explicitStart.getTime() < gap.start.getTime() ||
+        explicitStart.getTime() + duration * 60_000 > gap.end.getTime()
+      ) return [];
+      start = explicitStart;
+    } else if (period) {
+      const preferredStart = new Date(targetDate);
+      preferredStart.setHours(period.preferredStartHour, 0, 0, 0);
+      if (
+        preferredStart.getTime() >= gap.start.getTime() &&
+        preferredStart.getTime() + duration * 60_000 <= gap.end.getTime()
+      ) {
+        start = preferredStart;
+      }
+    }
+    if (!explicitMinutes && start.getTime() > dayStart.getTime() && gapMinutes >= duration + 15) {
+      start = new Date(start.getTime() + 15 * 60_000);
+    }
+    const roundedMinutes = Math.ceil(start.getMinutes() / 5) * 5;
+    start.setMinutes(roundedMinutes, 0, 0);
+    const end = new Date(start.getTime() + duration * 60_000);
+    if (end.getTime() > gap.end.getTime()) return [];
+    return [{duration, end, start}];
+  }).slice(0, 3);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dayWord = targetsToday
+    ? 'วันนี้'
+    : sameThailandDay(targetDate, tomorrow)
+      ? 'พรุ่งนี้'
+      : new Intl.DateTimeFormat('th-TH', {
+        day: 'numeric',
+        month: 'short',
+        timeZone: THAI_TIME_ZONE,
+        weekday: 'long',
+        year: 'numeric',
+      }).format(targetDate);
+  if (!slots.length) {
+    const requestedText = explicitMinutes ? `${explicitMinutes} นาที` : `${targetMinutes} นาที`;
+    return `${dayWord}${period ? `${period.label}` : ''}ยังไม่มีช่วงว่างต่อเนื่อง ${requestedText} ตามตารางที่บันทึกไว้ครับ ลองลดระยะเวลาหรือเลือกช่วงอื่น แล้วฉันจะหาเวลาให้ใหม่`;
+  }
+
+  const best = slots[0];
+  const alternatives = slots.slice(1).map((slot) =>
+    `${formatTime(slot.start)}-${formatTime(slot.end)} (${slot.duration} นาที)`,
+  );
+  const plan = best.duration <= 60
+    ? [
+      `1. ใช้เวลาอ่านหรือทำโจทย์ตามที่กำหนด ${best.duration} นาที`,
+      `2. เมื่อจบรอบค่อยพัก 5-10 นาที ไม่หักเวลาพักออกจากเวลาที่ผู้ใช้ต้องการอ่าน`,
+    ]
+    : best.duration <= 120
+      ? [
+        `1. อ่านรอบแรก 50 นาที`,
+        `2. พัก 10 นาที`,
+        `3. ใช้เวลาที่เหลืออ่าน ทำโจทย์ และสรุป โดยให้เวลารวมทั้งช่วงเท่ากับ ${best.duration} นาที`,
+      ]
+      : [
+        `1. แบ่งเป็นรอบละ 50 นาที`,
+        `2. พักระหว่างรอบ 10 นาที`,
+        `3. ใช้ช่วงท้ายทบทวนสรุป เพื่อไม่ให้อ่านต่อเนื่องนานเกินไป`,
+      ];
+  return [
+    `จากตารางที่บันทึกไว้ แนะนำให้อ่าน${dayWord}เวลา ${formatTime(best.start)}-${formatTime(best.end)} รวม ${best.duration} นาทีครับ`,
+    ...plan,
+    nearestExam
+      ? `${plan.length + 1}. เริ่มจาก ${nearestExam.courseName || nearestExam.title} เพราะมีสอบในอีก ${daysToExam} วัน`
+      : `${plan.length + 1}. เลือกวิชาที่ใกล้สอบหรืองานที่กำหนดส่งก่อน`,
+    alternatives.length ? `ช่วงสำรอง: ${alternatives.join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function isStudyTimeIntent(message: string) {
+  const hasStudyAction = /(อ่าน(?:หนังสือ)?|ทบทวน|ทำโจทย์|ทำการบ้าน|study|review)/i.test(message);
+  const asksForTime = /(เมื่อไหร่|กี่โมง|ตอนไหน|เวลาไหน|ช่วงไหนดี|ช่วงไหน|วันไหน|ควร.*(?:เวลา|ช่วง|วัน)|(?:เช้า|บ่าย|เย็น|ค่ำ|คืนนี้)|\d+\s*(?:ชั่วโมง|ชม\.?|นาที))/i.test(message);
+  return hasStudyAction && asksForTime;
+}
+
+type AssistantConversationTurn = Pick<AssistantChatMessage, 'content' | 'role'>;
+
+function recentStudySuggestion(conversation: AssistantConversationTurn[]) {
+  const recent = conversation
+    .filter((turn) => turn.role === 'assistant' || turn.role === 'user')
+    .slice(-12);
+  const assistantIndex = recent.findLastIndex((turn) =>
+    turn.role === 'assistant' &&
+    /(แนะนำให้อ่าน|ช่วงที่เหมาะ.*อ่าน|รวม\s*\d+\s*นาที)/i.test(turn.content) &&
+    /\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}/.test(turn.content),
+  );
+  if (assistantIndex < 0) return null;
+  const assistant = recent[assistantIndex].content;
+  const previousUser = recent
+    .slice(0, assistantIndex)
+    .reverse()
+    .find((turn) => turn.role === 'user' && /(อ่าน|ทบทวน|ทำโจทย์|ทำการบ้าน)/i.test(turn.content));
+  const duration = Number(/รวม\s*(\d+)\s*นาที/i.exec(assistant)?.[1] ?? 0);
+  const subject = /เริ่มจาก\s+(.+?)\s+เพราะ/i.exec(assistant)?.[1]?.trim() ?? '';
+  return {
+    duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+    originalRequest: previousUser?.content ?? 'อ่านหนังสือ',
+    subject,
+  };
+}
+
+function isStudyRescheduleConstraint(message: string) {
+  return message.length <= 180 &&
+    /(ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา|ขอเป็น|เปลี่ยนเป็น|เลื่อน|ว่าง(?:ตอน|ช่วง)?|แทน|เวลาอื่น|วันอื่น|พรุ่งนี้|มะรืน|ช่วงเช้า|ช่วงบ่าย|ช่วงเย็น|ช่วงค่ำ|ตอนเช้า|ตอนบ่าย|ตอนเย็น|ตอนค่ำ)/i.test(message);
+}
+
+function contextualStudyReschedule(
+  message: string,
+  conversation: AssistantConversationTurn[],
+) {
+  if (!isStudyRescheduleConstraint(message)) return null;
+  const previous = recentStudySuggestion(conversation);
+  if (!previous) return null;
+
+  let constraint = message.trim();
+  const hasPositivePeriod = requestedStudyPeriod(constraint) !== null;
+  if (!hasPositivePeriod && /(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา).*เช้า|เช้า.*(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา)/i.test(constraint)) {
+    constraint += ' ช่วงบ่าย';
+  } else if (!hasPositivePeriod && /(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา).*บ่าย|บ่าย.*(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา)/i.test(constraint)) {
+    constraint += ' ช่วงเย็น';
+  } else if (!hasPositivePeriod && /(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา).*เย็น|เย็น.*(?:ไม่ว่าง|ไม่สะดวก|ไม่ได้|ไม่เอา)/i.test(constraint)) {
+    constraint += ' พรุ่งนี้ช่วงเช้า';
+  } else if (!hasPositivePeriod && /(เวลาอื่น|วันอื่น|เลื่อน)/i.test(constraint)) {
+    constraint += ' พรุ่งนี้';
+  }
+
+  const duration = requestedStudyDuration(constraint) ?? previous.duration;
+  const contextualMessage = [
+    'อ่านหนังสือ',
+    constraint,
+    duration ? `${duration} นาที` : '',
+  ].filter(Boolean).join(' ');
+  return {
+    contextualMessage,
+    subject: previous.subject,
+  };
+}
+
+function isStudyPriorityIntent(message: string) {
+  if (isStudyTimeIntent(message)) return false;
+  return /(อ่าน.*(วิชา|อะไร|ก่อน)|วิชา.*อ่าน.*ก่อน|เตรียมสอบ.*ก่อน|สอบ.*(อะไร|วิชา).*ก่อน|ควร.*อ่าน|จัดลำดับ.*อ่าน)/i.test(message);
 }
 
 function contextAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
-  if (/(สรุปวันนี้|briefing|วันนี้ต้องทำอะไร|วันนี้มีอะไรบ้าง)/i.test(message)) return buildDailyBriefing(context, preferences);
+  if (/^(หวัดดี|สวัสดี|ดีจ้า|hello|hi)\b/i.test(message.trim())) {
+    return 'หวัดดีครับ! ฉันช่วยเช็กตาราง งานค้าง เงินคงเหลือ หรือช่วยจดรายการให้ได้เลย วันนี้อยากจัดการเรื่องไหนก่อนครับ?';
+  }
+  if (/(สรุปวันนี้|briefing|วันนี้ต้องทำอะไร)/i.test(message)) return buildDailyBriefing(context, preferences);
+  if (isCalendarTimeLookupIntent(message)) return buildCalendarTimeAnswer(message, context);
+  if (isExamScheduleLookupIntent(message)) return buildExamScheduleAnswer(message, context);
+  if (isUpcomingClassLookupIntent(message)) return buildUpcomingClassAnswer(message, context);
+  if (isActivityLookupIntent(message)) return buildActivityAnswer(message, context);
+  if (isStudyTimeIntent(message)) return buildFreeTime(message, context, preferences);
+  if (isStudyPriorityIntent(message)) return buildStudyPriorityAdvice(context, preferences);
   if (/(จัดลำดับงาน|งานสำคัญ|งานไหนก่อน|ควรทำอะไรก่อน|priority)/i.test(message)) return buildPriorityPlan(context, preferences);
-  if (/(ว่างเมื่อไร|เวลาว่าง|มีเวลาว่าง|free time)/i.test(message)) return buildFreeTime(context, preferences);
+  if (/(งานค้าง|งานที่ยังไม่เสร็จ|pending task|pending tasks)/i.test(message)) {
+    const pending = context.weekActivities
+      .filter((item) => item.status !== 'completed' && item.status !== 'cancelled')
+      .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+    if (!pending.length) return 'ตอนนี้ไม่พบงานค้างที่บันทึกไว้ครับ โล่งขึ้นอีกหนึ่งเรื่องแล้วนะ!';
+    const lines = pending.slice(0, 5).map((item) => `${item.title} เวลา ${formatTime(item.startAt.toDate())}`);
+    return `มีงานค้าง ${pending.length} รายการครับ: ${lines.join(', ')} ลองเริ่มจากรายการแรกก่อนนะ`;
+  }
+  if (/(โน้ต|บันทึกที่มี|จดอะไรไว้|note|notes)/i.test(message) && !/(เพิ่ม|สร้าง|จดให้|บันทึกให้)/i.test(message)) {
+    if (!context.notes.length) return 'ตอนนี้ยังไม่พบโน้ตที่บันทึกไว้ครับ ถ้าอยากจดอะไรใหม่ บอกฉันได้เลยนะ';
+    const titles = context.notes.slice(0, 5).map((item) => item.title).join(', ');
+    return `พบโน้ต ${context.notes.length} รายการครับ โน้ตล่าสุดคือ ${titles}`;
+  }
+  if (/(ว่างเมื่อไร|เวลาว่าง|มีเวลาว่าง|free time)/i.test(message)) return buildFreeTime(message, context, preferences);
   if (/(เรียนหนักไหม|งานเยอะไหม|ภาระงาน|เหนื่อยเกินไปไหม|workload)/i.test(message)) return buildWorkloadSummary(context);
+  if (isFinanceLookupIntent(message)) return buildFinanceAnswer(message, context, preferences);
   if (/(งบตึง|budget guard|เงินพอไหม|ควรใช้วันละ|เช็กงบ|วิเคราะห์งบ)/i.test(message)) return buildBudgetGuard(context, preferences);
   if (/(วันนี้|today).*(เรียน|ตาราง|กี่โมง)|เรียน.*(วันนี้|กี่โมง)/i.test(message)) {
     const all = [...context.todaySchedules, ...context.todayActivities].sort((a, b) => a.startAt.toMillis() - b.startAt.toMillis());
@@ -336,6 +1479,18 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
     return `วันนี้มี ${all.length} รายการนะ\n${lines.join('\n')}`;
   }
   if (/(เงิน|งบ|ใช้ไป|เหลือ|budget|finance)/i.test(message)) {
+    if (/(วันนี้|today|กินข้าว|อาหาร)/i.test(message)) {
+      const today = rangeFor('day');
+      const spentToday = context.monthTransactions
+        .filter((item) => item.type === 'expense' && item.occurredAt.toMillis() >= today.start.getTime() && item.occurredAt.toMillis() < today.end.getTime())
+        .reduce((sum, item) => sum + item.amount, 0);
+      const dailyBudget = preferences.dailyBudget;
+      if (dailyBudget) {
+        const remaining = Math.max(0, dailyBudget - spentToday);
+        return `วันนี้เหลืองบอีก ${remaining.toLocaleString('th-TH')} บาทครับ จากงบ ${dailyBudget.toLocaleString('th-TH')} บาท และใช้ไปแล้ว ${spentToday.toLocaleString('th-TH')} บาท`;
+      }
+      return `วันนี้ใช้ไปแล้ว ${spentToday.toLocaleString('th-TH')} บาทครับ ตอนนี้ยังไม่ได้ตั้งงบรายวัน ถ้าต้องการฉันช่วยตั้งให้ได้นะ`;
+    }
     return `เดือนนี้มีรายรับ ${context.monthIncome.toLocaleString('th-TH')} บาท รายจ่าย ${context.monthExpense.toLocaleString('th-TH')} บาท ตอนนี้คงเหลือประมาณ ${context.balance.toLocaleString('th-TH')} บาทนะ`;
   }
   if (/(เครียด|เหนื่อย|หมดไฟ|ไม่ไหว|ท้อ)/i.test(message)) {
@@ -344,20 +1499,84 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
   return '';
 }
 
-export async function buildAssistantReply(uid: string, message: string) {
-  const [context, preferences] = await Promise.all([loadAssistantContext(uid), loadAssistantPreferences(uid)]);
+export async function buildAssistantReply(
+  uid: string,
+  message: string,
+  conversation: AssistantConversationTurn[] = [],
+): Promise<AssistantReply> {
+  const startedAt = Date.now();
+  const understoodMessage = normalizeNaturalLanguageInput(message);
+  const intent = classifyAssistantIntent(
+    understoodMessage,
+    latestConversationIntent(conversation),
+  );
+  const reply = (
+    content: string,
+    source: AssistantReplySource,
+    options: {
+      errorKind?: AssistantErrorKind;
+      proposedAction?: AssistantProposedAction;
+    } = {},
+  ): AssistantReply => ({
+    content,
+    errorKind: options.errorKind,
+    intent,
+    latencyMs: Date.now() - startedAt,
+    proposedAction: options.proposedAction,
+    source,
+  });
   const proposedAction = proposeActionFromMessage(message);
   if (proposedAction) {
-    return {
-      content: `ได้เลย ฉันแปลงจากข้อความเป็นรายการให้แล้ว ตรวจดูอีกทีนะ ถ้าถูกก็กดยืนยันได้เลย`,
-      proposedAction,
-    };
+    return reply(
+      'ได้เลย ฉันแปลงจากข้อความเป็นรายการให้แล้ว ตรวจดูอีกทีนะ ถ้าถูกก็กดยืนยันได้เลย',
+      'deterministic',
+      {proposedAction},
+    );
   }
-  const answer = contextAnswer(message, context, preferences);
-  if (answer) return {content: answer};
-  return {
-    content: 'ถามได้เลยนะ จะดูตาราง เงิน หรือให้ช่วยจด/เพิ่มรายการก็ได้ ถ้าจะให้ฉันเพิ่มข้อมูล ฉันจะทำเป็นการ์ดให้ยืนยันก่อนเสมอ',
-  };
+  const [context, preferences] = await Promise.all([loadAssistantContext(uid), loadAssistantPreferences(uid)]);
+  const studyReschedule = contextualStudyReschedule(understoodMessage, conversation);
+  if (studyReschedule) {
+    const rescheduled = buildFreeTime(studyReschedule.contextualMessage, context, preferences);
+    const retainedSubject = studyReschedule.subject && !rescheduled.includes(studyReschedule.subject)
+      ? `\nใช้ช่วงใหม่นี้อ่าน ${studyReschedule.subject} ตามที่คุยไว้ได้เลยครับ`
+      : '';
+    return reply(`เข้าใจครับ งั้นปรับเวลาใหม่ตามที่บอกนะ\n${rescheduled}${retainedSubject}`, 'deterministic');
+  }
+  const answer = contextAnswer(understoodMessage, context, preferences);
+  // Factual exam-date questions must use the user's saved records directly.
+  // Do not let a generic model response replace a verified local answer.
+  if (answer && (
+    isExamScheduleLookupIntent(understoodMessage) ||
+    isCalendarTimeLookupIntent(understoodMessage) ||
+    isUpcomingClassLookupIntent(understoodMessage) ||
+    isActivityLookupIntent(understoodMessage) ||
+    isFinanceLookupIntent(understoodMessage) ||
+    isStudyTimeIntent(understoodMessage) ||
+    isStudyPriorityIntent(understoodMessage)
+  )) return reply(answer, 'deterministic');
+  if (!isDemoMode) {
+    try {
+      await ensureAppCheckReady();
+      const history = conversation
+        .filter((turn): turn is AssistantConversationTurn & {role: 'assistant' | 'user'} =>
+          turn.role === 'assistant' || turn.role === 'user',
+        )
+        .slice(-12)
+        .map((turn) => ({content: turn.content.slice(0, 600), role: turn.role}));
+      const result = await smartLifeAssistantReply({history, intent, message: understoodMessage});
+      const content = result.data.content.trim();
+      if (content) return reply(content, 'gemini');
+    } catch (error) {
+      const errorKind = classifyAssistantError(error);
+      if (answer) return reply(answer, 'fallback', {errorKind});
+      return reply(assistantErrorMessage(errorKind), 'fallback', {errorKind});
+    }
+  }
+  if (answer) return reply(answer, 'deterministic');
+  return reply(
+    'ฉันช่วยเช็กตาราง งานค้าง การเงิน และโน้ต หรือช่วยเพิ่มรายการให้ได้ครับ ลองบอกสิ่งที่อยากจัดการมาได้เลย',
+    'fallback',
+  );
 }
 
 export async function confirmAssistantAction(uid: string, action: AssistantProposedAction) {

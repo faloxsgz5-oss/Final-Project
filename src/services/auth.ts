@@ -37,6 +37,15 @@ const demoUser = {
   uid: demoUid,
 } as User;
 
+// OAuth client IDs are public identifiers. This Firebase project's web OAuth
+// client is kept as a safe fallback so native Google Sign-In remains usable
+// when a teammate has not copied the optional value into .env.local yet.
+const FIREBASE_GOOGLE_WEB_CLIENT_ID = '302211453614-ui2mf0hqknu0itr8r4g76g1odrfhc6fe.apps.googleusercontent.com';
+
+function googleWebClientId() {
+  return process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() || FIREBASE_GOOGLE_WEB_CLIENT_ID;
+}
+
 export async function registerWithEmail({ displayName, email, password }: RegisterInput) {
   if (isDemoMode) return {...demoUser, displayName: displayName || demoUser.displayName, email} as User;
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -68,7 +77,7 @@ export async function signInWithEmail(email: string, password: string) {
 
 function logGoogleLoginConfiguration() {
   if (!__DEV__) return;
-  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim();
+  const webClientId = googleWebClientId();
   const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID?.trim();
   console.info('[Google Login] OAuth environment', {
     androidClientIdLoaded: Boolean(androidClientId),
@@ -113,8 +122,7 @@ export async function signInWithGoogle() {
       throw new Error('Google Login บนมือถือใช้ไม่ได้ใน Expo Go กรุณาเปิดด้วย SmartLife development build');
     }
 
-    const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim();
-    if (!webClientId) throw new Error('ยังไม่ได้ตั้งค่า EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ใน .env.local');
+    const webClientId = googleWebClientId();
 
     try {
       const {GoogleSignin, isSuccessResponse} = await import('@react-native-google-signin/google-signin');

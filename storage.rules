@@ -26,6 +26,21 @@ service firebase.storage {
         && fileName.matches('.*[.](jpg|jpeg|png|webp)');
     }
 
+    function isAllowedReceipt(fileName, maxBytes) {
+      return request.resource != null
+        && request.resource.size <= maxBytes
+        && (
+          (
+            request.resource.contentType.matches('image/(jpeg|png)')
+            && fileName.matches('.*[.](jpg|jpeg|png)')
+          )
+          || (
+            request.resource.contentType == 'application/pdf'
+            && fileName.matches('.*[.]pdf')
+          )
+        );
+    }
+
     match /users/{userId}/avatars/{fileName} {
       allow read: if isOwner(userId) || isAdmin();
       allow create, update: if isOwner(userId) && isImageUnder(5 * 1024 * 1024);
@@ -34,7 +49,7 @@ service firebase.storage {
 
     match /users/{userId}/receipts/{fileName} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create, update: if isOwner(userId) && isImageUnder(10 * 1024 * 1024);
+      allow create, update: if isOwner(userId) && isAllowedReceipt(fileName, 10 * 1024 * 1024);
       allow delete: if isOwner(userId);
     }
 
