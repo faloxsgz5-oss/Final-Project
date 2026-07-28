@@ -5,8 +5,16 @@ import {isDemoMode} from '@/lib/demo-mode';
 import {ensureAppCheckReady} from '@/lib/app-check';
 import {firebaseApp} from '@/lib/firebase';
 import {thailandRange} from '@/lib/thailand-time';
+import {
+  explicitMutationClause,
+  financeMutationKind,
+  isExplicitNoteMutation,
+  isReadOnlyOrAdviceRequest,
+  readOnlyClausesFromMixedMessage,
+} from '@/services/assistant-action-intent';
 import {classifyAssistantIntent, latestConversationIntent, type AssistantIntent} from '@/services/assistant-intent';
 import {loadAssistantPreferences, saveAssistantPreference, type AssistantPreferences} from '@/services/assistant-memory';
+import {isNoteLookupIntent, noteLookupTerms} from '@/services/assistant-note-intent';
 import {activities, notes, schedules, transactions} from '@/services/firestore';
 import type {AssistantChatMessage, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, Schedule, Transaction, WithId} from '@/types/smartlife';
@@ -129,7 +137,9 @@ const THAI_DIGITS: Record<string, string> = {
 
 function normalizeNaturalLanguageInput(message: string) {
   return message
-    .normalize('NFKC')
+    // Preserve Thai SARA AM so words such as "ทำ", "คำ" and "แนะนำ"
+    // remain compatible with the intent and response patterns below.
+    .normalize('NFC')
     .replace(/[๐-๙]/g, (digit) => THAI_DIGITS[digit] ?? digit)
     .replace(/([ก-๙])(?=\d)/g, '$1 ')
     .replace(/(\d)(?=[ก-๙])/g, '$1 ')
@@ -142,33 +152,112 @@ function normalizeNaturalLanguageInput(message: string) {
     .trim();
 }
 
-function todayAt(hour: number, minute = 0, dayOffset = 0) {
-  const now = new Date();
-  const date = new Date(now);
-  date.setDate(now.getDate() + dayOffset);
-  date.setHours(hour, minute, 0, 0);
-  return date;
+const THAI_MONTHS: [RegExp, number][] = [
+  [/(?:ม\.?\s*ค\.?|มกราคม)/i, 0],
+  [/(?:ก\.?\s*พ\.?|กุมภาพันธ์)/i, 1],
+  [/(?:มี\.?\s*ค\.?|มีนาคม)/i, 2],
+  [/(?:เม\.?\s*ย\.?|เมษายน)/i, 3],
+  [/(?:พ\.?\s*ค\.?|พฤษภาคม)/i, 4],
+  [/(?:มิ\.?\s*ย\.?|มิถุนายน)/i, 5],
+  [/(?:ก\.?\s*ค\.?|กรกฎาคม)/i, 6],
+  [/(?:ส\.?\s*ค\.?|สิงหาคม)/i, 7],
+  [/(?:ก\.?\s*ย\.?|กันยายน)/i, 8],
+  [/(?:ต\.?\s*ค\.?|ตุลาคม)/i, 9],
+  [/(?:พ\.?\s*ย\.?|พฤศจิกายน)/i, 10],
+  [/(?:ธ\.?\s*ค\.?|ธันวาคม)/i, 11],
+];
+
+function parseThaiNamedDate(message: string, now = new Date()) {
+  for (const [monthPattern, monthIndex] of THAI_MONTHS) {
+    const match = message.match(
+      new RegExp(`(\\d{1,2})\\s*(${monthPattern.source})(?:\\s*(\\d{2,4}))?`, 'i'),
+    );
+    if (!match) continue;
+
+    let year = match[3] ? Number(match[3]) : now.getFullYear();
+    if (year < 100) year += year >= 50 ? 2500 : 2000;
+    if (year > 2400) year -= 543;
+
+    const date = new Date(year, monthIndex, Number(match[1]));
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return null;
 }
 
 function parseStartAt(message: string) {
-  const dayOffset = /พรุ่งนี้|tomorrow/i.test(message) ? 1 : 0;
+  const now = new Date();
+  const explicitDate = message.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/) ??
+    message.match(/\b(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})\b/);
+  const thaiNamedDate = parseThaiNamedDate(message, now);
+  let target = new Date(now);
+  if (explicitDate) {
+    const isIso = explicitDate[0].includes('-') && explicitDate[1].length === 4;
+    let year = Number(isIso ? explicitDate[1] : explicitDate[3]);
+    const month = Number(explicitDate[2]);
+    const day = Number(isIso ? explicitDate[3] : explicitDate[1]);
+    if (year < 100) year += 2000;
+    if (year > 2400) year -= 543;
+    target = new Date(year, month - 1, day);
+  } else if (thaiNamedDate) {
+    target = thaiNamedDate;
+  } else {
+    const weekdayMatch = message.match(/วัน?(อาทิตย์|จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์)/i)?.[1];
+    const weekdayIndexes: Record<string, number> = {
+      อาทิตย์: 0,
+      จันทร์: 1,
+      อังคาร: 2,
+      พุธ: 3,
+      พฤหัส: 4,
+      พฤหัสบดี: 4,
+      ศุกร์: 5,
+      เสาร์: 6,
+    };
+    if (weekdayMatch) {
+      let offset = (weekdayIndexes[weekdayMatch] - now.getDay() + 7) % 7;
+      if (/สัปดาห์หน้า|อาทิตย์หน้า|วีคหน้า/i.test(message)) offset += 7;
+      target.setDate(now.getDate() + offset);
+    } else {
+      const dayOffset = /มะรืน/i.test(message) ? 2 : /พรุ่งนี้|tomorrow/i.test(message) ? 1 : 0;
+      target.setDate(now.getDate() + dayOffset);
+    }
+  }
+
   const explicit = message.match(/([01]?\d|2[0-3])[:.](\d{2})/);
-  if (explicit) return todayAt(Number(explicit[1]), Number(explicit[2]), dayOffset);
-  if (/เที่ยง/.test(message)) return todayAt(12, 0, dayOffset);
+  if (explicit) {
+    target.setHours(Number(explicit[1]), Number(explicit[2]), 0, 0);
+    return target;
+  }
+  if (/เที่ยง/.test(message)) {
+    target.setHours(12, /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
+    return target;
+  }
   if (/บ่าย/.test(message)) {
     const hour = Number(message.match(/บ่าย\s*(\d)/)?.[1] ?? 1);
-    return todayAt(Math.min(23, hour + 12), 0, dayOffset);
+    target.setHours(Math.min(23, hour + 12), /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
+    return target;
   }
   if (/เย็น/.test(message)) {
     const hour = Number(message.match(/(\d{1,2})\s*(?:โมง)?\s*เย็น/)?.[1] ?? 5);
-    return todayAt(hour >= 12 ? hour : hour + 12, 0, dayOffset);
+    target.setHours(hour >= 12 ? hour : hour + 12, /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
+    return target;
+  }
+  const evening = message.match(/(\d{1,2})\s*ทุ่ม/);
+  if (evening) {
+    target.setHours(Math.min(23, Number(evening[1]) + 18), /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
+    return target;
   }
   const hour = Number(message.match(/(\d{1,2})\s*โมง/)?.[1] ?? 9);
-  return todayAt(Math.min(23, hour), 0, dayOffset);
+  target.setHours(Math.min(23, hour), /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
+  return target;
 }
 
 function hasExplicitTime(message: string) {
-  return /([01]?\d|2[0-3])[:.](\d{2})(?:\s*(?:-|–|ถึง)\s*([01]?\d|2[0-3])[:.](\d{2}))?|(?:ตอน|เวลา)\s*\d{1,2}/i.test(message);
+  return /([01]?\d|2[0-3])[:.](\d{2})(?:\s*(?:-|–|ถึง)\s*([01]?\d|2[0-3])[:.](\d{2}))?|(?:ตอน|เวลา)\s*\d{1,2}|(?:บ่าย\s*\d{1,2}|\d{1,2}\s*(?:โมง(?:เช้า|เย็น)?|ทุ่ม))/i.test(message);
+}
+
+function hasExplicitDate(message: string) {
+  return /(?:วันนี้|พรุ่งนี้|มะรืน|สัปดาห์หน้า|อาทิตย์หน้า|วีคหน้า|วัน?(?:อาทิตย์|จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์)|\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b)/i
+    .test(message) || Boolean(parseThaiNamedDate(message));
 }
 
 function parseEndAt(message: string, start: Date) {
@@ -181,13 +270,16 @@ function parseEndAt(message: string, start: Date) {
 }
 
 function isAdviceOrLookupIntent(message: string) {
-  return /(ควร|แนะนำ|วิเคราะห์|จัดลำดับ|แบ่ง(?:เงิน|งบ|ใช้)?|จัดสรร|วางแผน|ใช้.*(?:กี่|ต่อ|วัน|สัปดาห์|เดือน)|พอ.*(?:วัน|สัปดาห์|เดือน)|อะไร.*ก่อน|วิชา.*ก่อน|อ่าน.*ก่อน|ก่อนดี|ดีไหม|เมื่อไหร่|กี่โมง|ตอนไหน|มีอะไร|ไหม|หรือเปล่า|หรือยัง|สำคัญ.*แค่ไหน|\?)/i.test(message);
+  return isReadOnlyOrAdviceRequest(message) ||
+    /(จัดลำดับ|งานไหน.*(?:กำหนดส่ง|ใกล้ส่ง)|ใกล้.*(?:กำหนดส่ง|เดดไลน์)|(?:กำหนดส่ง|เดดไลน์).*ใกล้|ใช้.*(?:กี่|ต่อ|วัน|สัปดาห์|เดือน)|พอ.*(?:วัน|สัปดาห์|เดือน)|อะไร.*ก่อน|วิชา.*ก่อน|อ่าน.*ก่อน|ก่อนดี|หรือยัง|สำคัญ.*แค่ไหน|\?)/i.test(message);
 }
 
 function isScheduleIntent(message: string) {
-  const explicitWrite = /(เพิ่ม|สร้าง|บันทึก|จด|ลง(?:ใน)?ตาราง|จัดตาราง|กำหนด|เตือน|นัดให้)/i.test(message);
+  // "กำหนดส่ง" is a deadline field, not a command to create a schedule.
+  const explicitWrite = /(เพิ่ม|สร้าง|บันทึก|จด|ลง(?:ใน)?ตาราง|จัดตาราง|กำหนด(?:เวลา|นัด|ตาราง)|เตือน|นัดให้)/i.test(message);
+  const statesNewTask = /มีงาน.+(?:ต้องส่ง|ส่งวันที่|กำหนดส่ง|เดดไลน์)/i.test(message);
   const scheduleRecord = /(นัด|ตาราง|เวลา|ตอน|เรียน|lab|แล็บ|แลบ|quiz|ควิซ|สอบ|schedule|task|งาน)/i.test(message) || hasExplicitTime(message);
-  return explicitWrite && scheduleRecord;
+  return (explicitWrite || statesNewTask) && scheduleRecord;
 }
 
 function scheduleTitleFromMessage(message: string, fallback: string) {
@@ -198,6 +290,26 @@ function scheduleTitleFromMessage(message: string, fallback: string) {
     .replace(/([01]?\d|2[0-3])[:.]\d{2}.*$/i, '')
     .trim()
     .slice(0, 80) || fallback;
+}
+
+function explicitScheduleTitle(message: string) {
+  return scheduleTitleFromMessage(message, '')
+    .replace(/^(?:มี)?\s*(?:งาน|นัด|กิจกรรม|คลาส)\s*/i, '')
+    .replace(/วัน(?:อาทิตย์|จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์)(?:นี้|หน้า)?/gi, ' ')
+    .replace(/\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, ' ')
+    .replace(/(?:บ่าย\s*\d{1,2}|\d{1,2}\s*(?:โมง(?:เช้า|เย็น)?|ทุ่ม)|\d{1,2}[:.]\d{2}).*$/i, ' ')
+    .replace(/(?:ต้องส่ง|กำหนดส่ง|เดดไลน์|ส่งวันที่)\s*$/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function scheduleCreationClarification(message: string) {
+  const actionMessage = explicitMutationClause(message) ?? message.trim();
+  if (!actionMessage || isAdviceOrLookupIntent(actionMessage) || !isScheduleIntent(actionMessage)) return null;
+  if (!explicitScheduleTitle(actionMessage)) return 'ต้องการตั้งชื่องานหรือกิจกรรมว่าอะไรครับ';
+  if (!hasExplicitDate(actionMessage)) return 'ต้องการให้บันทึกงานหรือกิจกรรมนี้ในวันไหนครับ';
+  if (!hasExplicitTime(actionMessage)) return 'ต้องการให้กำหนดเวลากี่โมงครับ';
+  return null;
 }
 
 function actionId() {
@@ -304,39 +416,45 @@ function proposePreferenceFromMessage(message: string): AssistantProposedAction 
 export function proposeActionFromMessage(message: string): AssistantProposedAction | null {
   const normalized = message.trim();
   if (!normalized) return null;
-  if (isAdviceOrLookupIntent(normalized)) return null;
+  const mutationClause = explicitMutationClause(normalized);
+  if (isAdviceOrLookupIntent(normalized) && !mutationClause) return null;
+  // Mixed requests may contain a lookup plus one mutation. Parse only the
+  // mutation clause so query wording never leaks into the new record.
+  const actionMessage = mutationClause ?? normalized;
+  if (scheduleCreationClarification(actionMessage)) return null;
 
-  const checklist = proposeChecklistFromMessage(normalized);
+  const checklist = proposeChecklistFromMessage(actionMessage);
   if (checklist) return checklist;
 
-  const preference = proposePreferenceFromMessage(normalized);
+  const preference = proposePreferenceFromMessage(actionMessage);
   if (preference) return preference;
 
-  if (isScheduleIntent(normalized)) {
-    const start = parseStartAt(normalized);
-    const end = parseEndAt(normalized, start);
-    const location = normalized.match(/(?:ที่|ห้อง)\s*([A-Za-z0-9ก-๙._-]+)/)?.[1] ?? '';
-    const type: SchedulePayload['type'] = /(งาน|task|quiz|ควิซ|สอบ)/i.test(normalized) ? 'task' : /(เรียน|lab|แล็บ|class)/i.test(normalized) ? 'class' : 'appointment';
-    const payload: SchedulePayload = {endAt: end.toISOString(), location, startAt: start.toISOString(), title: scheduleTitleFromMessage(normalized, type === 'task' ? 'งานจากแชท' : 'นัดหมายจากแชท'), type};
+  if (isScheduleIntent(actionMessage)) {
+    const start = parseStartAt(actionMessage);
+    const end = parseEndAt(actionMessage, start);
+    const location = actionMessage.match(/(?:ที่|ห้อง)\s*([A-Za-z0-9ก-๙._-]+)/)?.[1] ?? '';
+    const type: SchedulePayload['type'] = /(งาน|task|quiz|ควิซ|สอบ)/i.test(actionMessage) ? 'task' : /(เรียน|lab|แล็บ|class)/i.test(actionMessage) ? 'class' : 'appointment';
+    const payload: SchedulePayload = {endAt: end.toISOString(), location, startAt: start.toISOString(), title: scheduleTitleFromMessage(actionMessage, type === 'task' ? 'งานจากแชท' : 'นัดหมายจากแชท'), type};
     return {entity: 'schedule', id: actionId(), payload, status: 'pending', summary: `เพิ่ม${type === 'class' ? 'คลาส' : type === 'task' ? 'งาน' : 'นัดหมาย'} "${payload.title}" เวลา ${textDate(start)}`, type: 'create'};
   }
 
-  const amount = parseAmount(normalized);
-  if (amount && /(รายรับ|ได้เงิน|income)/i.test(normalized)) {
-    const payload: FinancePayload = {amount, category: 'รายรับ', date: new Date().toISOString(), note: titleFromMessage(normalized, 'รายรับจากแชท'), type: 'income'};
+  const amount = parseAmount(actionMessage);
+  const financeAction = financeMutationKind(actionMessage, amount);
+  if (financeAction === 'income') {
+    const payload: FinancePayload = {amount, category: 'รายรับ', date: new Date().toISOString(), note: titleFromMessage(actionMessage, 'รายรับจากแชท'), type: 'income'};
     return {entity: 'finance', id: actionId(), payload, status: 'pending', summary: `บันทึกรายรับ ${amount.toLocaleString('th-TH')} บาท`, type: 'create'};
   }
-  if (amount && /(จ่าย|ซื้อ|กิน|กาแฟ|ข้าว|expense|บาท|฿)/i.test(normalized)) {
-    const category = /(ข้าว|กิน|อาหาร|กาแฟ)/.test(normalized) ? 'อาหาร' : 'อื่น ๆ';
-    const payload: FinancePayload = {amount, category, date: new Date().toISOString(), note: titleFromMessage(normalized, 'รายจ่ายจากแชท'), type: 'expense'};
+  if (financeAction === 'expense') {
+    const category = /(ข้าว|กิน|อาหาร|กาแฟ)/.test(actionMessage) ? 'อาหาร' : 'อื่น ๆ';
+    const payload: FinancePayload = {amount, category, date: new Date().toISOString(), note: titleFromMessage(actionMessage, 'รายจ่ายจากแชท'), type: 'expense'};
     return {entity: 'finance', id: actionId(), payload, status: 'pending', summary: `บันทึกรายจ่าย ${amount.toLocaleString('th-TH')} บาท หมวด ${category}`, type: 'create'};
   }
 
-  if (/(โน้ต|note|จด)/i.test(normalized)) {
+  if (isExplicitNoteMutation(actionMessage)) {
     const payload: NotePayload = {
-      body: noteBodyFromMessage(normalized),
-      tag: noteTagFromMessage(normalized),
-      title: noteTitleFromMessage(normalized),
+      body: noteBodyFromMessage(actionMessage),
+      tag: noteTagFromMessage(actionMessage),
+      title: noteTitleFromMessage(actionMessage),
     };
     return {entity: 'note', id: actionId(), payload, status: 'pending', summary: `สร้างโน้ต "${payload.title}"`, type: 'create'};
   }
@@ -397,8 +515,8 @@ function buildBudgetGuard(context: AssistantContext, preferences: AssistantPrefe
 }
 
 function isFinanceLookupIntent(message: string) {
-  const hasFinanceWord = /(เงิน|รายรับ|รายจ่าย|ยอดคงเหลือ|งบ|ค่าใช้จ่าย|ใช้จ่าย|ซื้อข้าว|ค่าอาหาร|ข้าว|อาหาร|บาท|budget|finance|income|expense)/i.test(message);
-  const asksForFactOrAdvice = /(เท่าไหร่|เท่าไร|กี่บาท|เหลือ|พอไหม|ควร|แนะนำ|วิเคราะห์|สรุป|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|เดือนนี้|วันนี้|พรุ่งนี้|ถึงสิ้นเดือน|ถ้ามี|สมมติ)/i.test(message);
+  const hasFinanceWord = /(เงิน|รายรับ|รายจ่าย|ยอดคงเหลือ|งบ|ค่าใช้จ่าย|ใช้จ่าย|ซื้อข้าว|ค่าอาหาร|ข้าว|อาหาร|บาท|ออม|เก็บเงิน|เก็บตัง|เงินเก็บ|เป้าหมาย|เงินสำรอง|ลงทุน|หุ้น|กองทุน|ผลตอบแทน|ดอกเบี้ย|ความเสี่ยง|budget|finance|income|expense|saving|investment)/i.test(message);
+  const asksForFactOrAdvice = /(เท่าไหร่|เท่าไร|กี่บาท|เหลือ|พอไหม|ควร|แนะนำ|วิเคราะห์|สรุป|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|เดือนนี้|วันนี้|พรุ่งนี้|ถึงสิ้นเดือน|ถ้ามี|สมมติ|ยังไง|อย่างไร|ทำไง|เริ่ม)/i.test(message);
   // A short follow-up such as "มี 200 ควรแบ่งใช้ยังไง" is still a money
   // question even when the user does not repeat the word "เงิน" or "งบ".
   // Keep it local so the response always uses the supplied amount instead of
@@ -408,7 +526,13 @@ function isFinanceLookupIntent(message: string) {
   const compactBudgetPlan = hasFinanceWord &&
     /[\d,]+(?:\.\d+)?/.test(message) &&
     /(?:\d+\s*วัน|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ)\s*วัน/i.test(message);
-  return (hasFinanceWord && asksForFactOrAdvice) || hasBareAmountForAdvice || compactBudgetPlan;
+  const startsWithCompactBudgetPlan =
+    /^\s*[\d,]+(?:\.\d+)?\s*(?:บาท)?\s*(?:ควร|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|พอ)/i.test(message) &&
+    /(?:\d+\s*วัน|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ)\s*วัน/i.test(message);
+  return (hasFinanceWord && asksForFactOrAdvice) ||
+    hasBareAmountForAdvice ||
+    compactBudgetPlan ||
+    startsWithCompactBudgetPlan;
 }
 
 function daysUntilMonthEnd(fromTomorrow = false) {
@@ -478,6 +602,7 @@ function explicitAdviceBudget(message: string) {
     /(?:ถ้า|สมมติ)?\s*(?:มี(?:เงิน|งบ)?|เงินเหลือ|งบ(?:เหลือ)?|เหลือ)\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?/i,
     /([\d,]+(?:\.\d+)?)\s*บาท\s*(?:ควร|แบ่ง|จัดสรร|ใช้|พอ|ซื้อ|กิน)/i,
     /(?:เงิน|งบ)\s*([\d,]+(?:\.\d+)?)/i,
+    /^\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?\s*(?:ควร|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|พอ)/i,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(message);
@@ -580,7 +705,74 @@ function dailySpendingPlan(totalBudget: number, days: number) {
   ].join('\n');
 }
 
+function numericAmounts(message: string) {
+  return [...message.replace(/,/g, '').matchAll(/(\d+(?:\.\d+)?)/g)]
+    .map((match) => Number(match[1]))
+    .filter((amount) => Number.isFinite(amount) && amount > 0);
+}
+
+function savingsGoalAnswer(message: string, context: AssistantContext) {
+  const amounts = numericAmounts(message);
+  const currentMatch = /(?:ตอนนี้มี|มีเงิน|มีงบ|เงิน)\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?/i.exec(message);
+  const targetMatch = /(?:ให้ได้|ให้ถึง|เป้าหมาย(?:คือ)?|เก็บให้ครบ|ครบ)\s*([\d,]+(?:\.\d+)?)\s*(?:บาท)?/i.exec(message);
+  const statedCurrent = Number((currentMatch?.[1] ?? '').replace(/,/g, ''));
+  const statedTarget = Number((targetMatch?.[1] ?? '').replace(/,/g, ''));
+  const current = Number.isFinite(statedCurrent) && statedCurrent > 0 ? statedCurrent : amounts[0] ?? 0;
+  const target = Number.isFinite(statedTarget) && statedTarget > 0 ? statedTarget : amounts.length >= 2 ? amounts[1] : 0;
+
+  if (current > 0 && target > 0) {
+    const gap = Math.max(0, target - current);
+    if (!gap) {
+      return `ตอนนี้มี ${current.toLocaleString('th-TH')} บาท ซึ่งถึงเป้าหมาย ${target.toLocaleString('th-TH')} บาทแล้วครับ แยกเงินก้อนนี้ไว้ในบัญชีหรือกระเป๋าที่ไม่ใช้จ่ายประจำ จะช่วยรักษาเป้าหมายได้ง่ายขึ้น`;
+    }
+    const dayAmount = Math.ceil(gap / 30);
+    const weekAmount = Math.ceil(gap / 4);
+    return [
+      `เป้าหมายคือ ${target.toLocaleString('th-TH')} บาท ตอนนี้มี ${current.toLocaleString('th-TH')} บาท จึงต้องเก็บเพิ่มอีก ${gap.toLocaleString('th-TH')} บาท`,
+      `1. ถ้าต้องการให้ครบใน 30 วัน เก็บวันละประมาณ ${dayAmount.toLocaleString('th-TH')} บาท`,
+      `2. ถ้าต้องการให้ครบใน 4 สัปดาห์ เก็บสัปดาห์ละประมาณ ${weekAmount.toLocaleString('th-TH')} บาท`,
+      `3. แยกเงินเก็บออกจากเงินใช้ทันทีเมื่อได้รับเงิน และไม่บันทึก ${current.toLocaleString('th-TH')} บาทนี้เป็นรายจ่าย`,
+      `ถ้าบอกวันที่ต้องการให้ครบ ฉันจะคำนวณยอดที่ต้องเก็บต่อวันให้ตรงกว่านี้ครับ`,
+    ].join('\n');
+  }
+
+  const statedBudget = current || explicitAdviceBudget(message);
+  if (statedBudget) {
+    const starterSaving = Math.max(1, Math.floor(statedBudget * 0.15));
+    return [
+      `จากเงินที่ระบุ ${statedBudget.toLocaleString('th-TH')} บาท เริ่มแยกออมประมาณ ${starterSaving.toLocaleString('th-TH')} บาท หรือ 15% ก่อนได้ครับ`,
+      `1. กันค่าใช้จ่ายจำเป็นของช่วงนี้ก่อน`,
+      `2. โอนเงินออมไปอีกกระเป๋าทันที เพื่อลดโอกาสหยิบใช้`,
+      `3. บอกเป้าหมายและวันที่ต้องการใช้เงิน แล้วฉันจะคำนวณยอดออมต่อวันหรือเดือนให้`,
+    ].join('\n');
+  }
+
+  if (context.balance <= 0) {
+    return `จากรายการที่บันทึกไว้ เดือนนี้ยังไม่มียอดคงเหลือบวกสำหรับตั้งแผนออมครับ ควรตรวจรายรับที่ยังไม่ได้บันทึกและลดรายจ่ายไม่จำเป็นก่อน แล้วค่อยตั้งยอดออมที่ทำได้จริง`;
+  }
+  const suggested = Math.max(1, Math.floor(context.balance * 0.15));
+  return `เดือนนี้คงเหลือ ${context.balance.toLocaleString('th-TH')} บาทตามรายการที่บันทึกไว้ ลองเริ่มแยกออม ${suggested.toLocaleString('th-TH')} บาท หรือประมาณ 15% ก่อน และเก็บส่วนที่เหลือไว้สำหรับค่าใช้จ่ายจำเป็นครับ`;
+}
+
+function investmentGuidance(message: string) {
+  const amount = numericAmounts(message)[0] ?? 0;
+  const amountText = amount > 0 ? `สำหรับเงิน ${amount.toLocaleString('th-TH')} บาท ` : '';
+  return [
+    `${amountText}ควรเริ่มจากเช็กเงินสำรองฉุกเฉินและระยะเวลาที่จะใช้เงินก่อนลงทุนครับ`,
+    `1. เงินที่ต้องใช้ภายใน 1-3 ปี ควรเน้นความผันผวนต่ำและสภาพคล่องสูง`,
+    `2. เงินระยะยาวค่อยพิจารณากระจายหลายสินทรัพย์ตามความเสี่ยงที่รับได้`,
+    `3. เริ่มด้วยจำนวนเล็กที่เสียแล้วไม่กระทบค่าเรียน ค่าอาหาร หรือหนี้ และตรวจค่าธรรมเนียมทุกครั้ง`,
+    `การลงทุนมีโอกาสขาดทุนและไม่มีผลตอบแทนรับประกัน ถ้าบอกระยะเวลา เป้าหมาย และระดับความเสี่ยง ฉันจะช่วยทำกรอบจัดสรรเพื่อการศึกษาให้เหมาะขึ้นครับ`,
+  ].join('\n');
+}
+
 function buildFinanceAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
+  if (/(ลงทุน|หุ้น|กองทุน|สินทรัพย์|ผลตอบแทน|พอร์ต|investment)/i.test(message)) {
+    return investmentGuidance(message);
+  }
+  if (/(ออม|เก็บเงิน|เก็บตัง|เงินเก็บ|เป้าหมายการเงิน|เงินสำรอง|ฉุกเฉิน|saving)/i.test(message)) {
+    return savingsGoalAnswer(message, context);
+  }
   const userProvidedBudget = explicitAdviceBudget(message);
   if (userProvidedBudget) return explicitBudgetRecommendation(message, userProvidedBudget);
 
@@ -618,19 +810,100 @@ function formatTime(date: Date) {
   return new Intl.DateTimeFormat('th-TH', {hour: '2-digit', hour12: false, minute: '2-digit', timeZone: THAI_TIME_ZONE}).format(date);
 }
 
-function buildPriorityPlan(context: AssistantContext, preferences: AssistantPreferences) {
-  const now = new Date();
-  const tasks = context.weekActivities
+type TaskDeadlineCandidate = {
+  dueAt: Date | null;
+  hasTime: boolean;
+  source: 'activity' | 'note';
+  title: string;
+};
+
+function noteDeadlineCandidate(note: WithId<Note>): TaskDeadlineCandidate | null {
+  const text = `${note.title} ${note.content}`;
+  if (!/(ส่ง|กำหนดส่ง|เดดไลน์|deadline|due|สอบ)/i.test(text)) return null;
+  if (!hasExplicitDate(text)) {
+    return /(งาน|การบ้าน|โปรเจกต์|โปรเจค|ต้องทำ)/i.test(text)
+      ? {dueAt: null, hasTime: false, source: 'note', title: note.title}
+      : null;
+  }
+  const hasTime = hasExplicitTime(text);
+  const dueAt = parseStartAt(text);
+  if (!hasTime) dueAt.setHours(23, 59, 0, 0);
+  return {dueAt, hasTime, source: 'note', title: note.title};
+}
+
+function upcomingTaskCandidates(context: AssistantContext) {
+  const activityTasks: TaskDeadlineCandidate[] = context.upcomingActivities
     .filter((item) => item.type === 'task' && item.status !== 'completed' && item.status !== 'cancelled')
-    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
-  if (!tasks.length) return 'สัปดาห์นี้ยังไม่มีงานค้างที่บันทึกไว้ ลองเพิ่มงานหรือแตกงานจากโปรเจกต์ที่กำลังทำ แล้วฉันจะช่วยจัดลำดับให้';
-  const lines = tasks.slice(0, 3).map((item, index) => {
-    const hours = Math.max(0, Math.round((item.startAt.toDate().getTime() - now.getTime()) / 3_600_000));
-    const urgency = hours <= 24 ? 'ด่วน' : hours <= 72 ? 'สำคัญ' : 'วางแผนไว้';
-    return `${index + 1}. ${item.title} - ${urgency} (${textDate(item.startAt.toDate())})`;
-  });
+    .map((item) => ({
+      dueAt: item.startAt.toDate(),
+      hasTime: true,
+      source: 'activity',
+      title: item.title,
+    }));
+  const noteTasks = context.notes
+    .map(noteDeadlineCandidate)
+    .filter((item): item is TaskDeadlineCandidate => Boolean(item));
+  const seen = new Set<string>();
+  return [...activityTasks, ...noteTasks]
+    .filter((item) => {
+      const key = `${item.title.trim().toLowerCase()}|${item.dueAt?.toISOString().slice(0, 10) ?? 'no-date'}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => {
+      if (!left.dueAt) return 1;
+      if (!right.dueAt) return -1;
+      return left.dueAt.getTime() - right.dueAt.getTime();
+    });
+}
+
+function taskDueText(task: TaskDeadlineCandidate) {
+  if (!task.dueAt) return 'ยังไม่ได้ระบุวันกำหนดส่ง';
+  if (task.hasTime) return textDate(task.dueAt);
+  return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeZone: THAI_TIME_ZONE}).format(task.dueAt);
+}
+
+function isTaskLookupIntent(message: string) {
+  return /(งานไหน|งานค้าง|งานที่ยังไม่เสร็จ|งานอะไรต้องส่ง|ควรทำอะไรก่อน|งานไหนก่อน|จัดลำดับงาน|วางแผนงาน|สรุปงาน|ดูงาน|เช็กงาน|กำหนดส่ง|เดดไลน์|pending task|upcoming task|priority)/i
+    .test(message);
+}
+
+function buildUpcomingTasksAnswer(context: AssistantContext) {
+  const tasks = upcomingTaskCandidates(context);
+  if (!tasks.length) return 'ยังไม่พบงานค้างหรือกำหนดส่งที่บันทึกไว้ครับ';
+
+  const datedTasks = tasks.filter((task) => task.dueAt);
+  const undatedTasks = tasks.filter((task) => !task.dueAt);
+  const nearest = datedTasks[0];
+  const now = new Date();
+  const weekEnd = rangeFor('week').end;
+  let opening = 'ยังไม่พบงานที่มีวันกำหนดส่งครับ';
+
+  if (nearest?.dueAt) {
+    if (nearest.dueAt.getTime() < now.getTime()) {
+      opening = `งานที่เร่งด่วนที่สุดคือ ${nearest.title} ซึ่งถึงกำหนดแล้วครับ`;
+    } else if (nearest.dueAt.getTime() < weekEnd.getTime()) {
+      opening = `งานที่ใกล้ถึงกำหนดส่งที่สุดคือ ${nearest.title} กำหนด ${taskDueText(nearest)} และเป็นงานเร่งด่วนที่สุดของสัปดาห์นี้ครับ`;
+    } else {
+      opening = `งานที่ใกล้ถึงกำหนดส่งที่สุดคือ ${nearest.title} กำหนด ${taskDueText(nearest)} ครับ ยังมีเวลาอีกสักพัก และสัปดาห์นี้ยังไม่พบกำหนดส่งเร่งด่วน`;
+    }
+  }
+
+  const lines = datedTasks.slice(0, 5).map((task, index) =>
+    `${index + 1}. ${task.title} - ${taskDueText(task)}`,
+  );
+  if (undatedTasks.length) {
+    lines.push(`งานที่ยังไม่ระบุวันส่ง: ${undatedTasks.slice(0, 3).map((task) => task.title).join(', ')}`);
+  }
+  return `${opening}\n${lines.join('\n')}`;
+}
+
+function buildPriorityPlan(context: AssistantContext, preferences: AssistantPreferences) {
+  const taskAnswer = buildUpcomingTasksAnswer(context);
+  if (/ยังไม่พบงานค้าง/.test(taskAnswer)) return taskAnswer;
   const focus = preferences.studyMinutes ?? 45;
-  return `งานที่ควรโฟกัสก่อน\n${lines.join('\n')}\nเริ่มรอบแรกแค่ ${focus} นาที แล้วค่อยพักก็พอ`;
+  return `${taskAnswer}\nเริ่มจากงานรายการแรกก่อนสัก ${focus} นาทีครับ`;
 }
 
 function normalizedStudyText(value: string) {
@@ -1440,11 +1713,54 @@ function contextualStudyReschedule(
 
 function isStudyPriorityIntent(message: string) {
   if (isStudyTimeIntent(message)) return false;
-  return /(อ่าน.*(วิชา|อะไร|ก่อน)|วิชา.*อ่าน.*ก่อน|เตรียมสอบ.*ก่อน|สอบ.*(อะไร|วิชา).*ก่อน|ควร.*อ่าน|จัดลำดับ.*อ่าน)/i.test(message);
+  return /((?:อ่าน|ทบทวน).*(?:วิชา|อะไร|เรื่อง|ก่อน)|วิชา.*(?:อ่าน|ทบทวน).*ก่อน|เตรียมสอบ.*ก่อน|สอบ.*(?:อะไร|วิชา).*ก่อน|ควร.*(?:อ่าน|ทบทวน)|จัดลำดับ.*(?:อ่าน|ทบทวน)|จากโน้ต.*(?:อ่าน|ทบทวน|เรื่อง))/i.test(message);
+}
+
+function noteCategoryForLookup(message: string): Note['category'] | null {
+  if (/(ไอเดีย|idea)/i.test(message)) return 'idea';
+  if (/(งาน|โปรเจกต์|โปรเจค|การบ้าน|task)/i.test(message)) return 'work';
+  if (/(ส่วนตัว|personal)/i.test(message)) return 'personal';
+  if (/(การเรียน|วิชา|บทเรียน|สอบ|study|class)/i.test(message)) return 'study';
+  return null;
+}
+
+function buildNoteLookupAnswer(message: string, context: AssistantContext) {
+  let matchingNotes = context.notes;
+  const category = noteCategoryForLookup(message);
+  const terms = noteLookupTerms(message);
+
+  if (category) matchingNotes = matchingNotes.filter((note) => note.category === category);
+  if (/เมื่อวาน/i.test(message)) {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    matchingNotes = matchingNotes.filter((note) => sameThailandDay(note.updatedAt.toDate(), yesterday));
+  } else if (/วันนี้/i.test(message)) {
+    const today = new Date();
+    matchingNotes = matchingNotes.filter((note) => sameThailandDay(note.updatedAt.toDate(), today));
+  }
+  if (terms.length) {
+    matchingNotes = matchingNotes.filter((note) => {
+      const searchable = `${note.title} ${note.content}`.normalize('NFC').toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  }
+
+  if (!matchingNotes.length) {
+    const subject = terms.length ? `ที่ตรงกับคำว่า “${terms.join(' ')}”` : category ? 'ในหมวดที่ถาม' : '';
+    return `ไม่พบโน้ต${subject}จากข้อมูลที่บันทึกไว้ครับ`;
+  }
+
+  const wantsContent = /(คืออะไร|ว่าอะไร|เขียนว่า|เนื้อหา|ทวน|อ่าน|สรุป)/i.test(message);
+  const lines = matchingNotes.slice(0, 5).map((note, index) => {
+    const content = note.content.trim();
+    if (!wantsContent || !content) return `${index + 1}. ${note.title}`;
+    return `${index + 1}. ${note.title}: ${content.slice(0, 220)}`;
+  });
+  return `พบโน้ต ${matchingNotes.length} รายการครับ\n${lines.join('\n')}`;
 }
 
 function contextAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
-  if (/^(หวัดดี|สวัสดี|ดีจ้า|hello|hi)\b/i.test(message.trim())) {
+  if (/^(?:หวัดดี|สวัสดี|ดีจ้า|hello|hi)(?:ครับ|ค่ะ|คับ|จ้า)?$/i.test(message.trim())) {
     return 'หวัดดีครับ! ฉันช่วยเช็กตาราง งานค้าง เงินคงเหลือ หรือช่วยจดรายการให้ได้เลย วันนี้อยากจัดการเรื่องไหนก่อนครับ?';
   }
   if (/(สรุปวันนี้|briefing|วันนี้ต้องทำอะไร)/i.test(message)) return buildDailyBriefing(context, preferences);
@@ -1454,20 +1770,8 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
   if (isActivityLookupIntent(message)) return buildActivityAnswer(message, context);
   if (isStudyTimeIntent(message)) return buildFreeTime(message, context, preferences);
   if (isStudyPriorityIntent(message)) return buildStudyPriorityAdvice(context, preferences);
-  if (/(จัดลำดับงาน|งานสำคัญ|งานไหนก่อน|ควรทำอะไรก่อน|priority)/i.test(message)) return buildPriorityPlan(context, preferences);
-  if (/(งานค้าง|งานที่ยังไม่เสร็จ|pending task|pending tasks)/i.test(message)) {
-    const pending = context.weekActivities
-      .filter((item) => item.status !== 'completed' && item.status !== 'cancelled')
-      .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
-    if (!pending.length) return 'ตอนนี้ไม่พบงานค้างที่บันทึกไว้ครับ โล่งขึ้นอีกหนึ่งเรื่องแล้วนะ!';
-    const lines = pending.slice(0, 5).map((item) => `${item.title} เวลา ${formatTime(item.startAt.toDate())}`);
-    return `มีงานค้าง ${pending.length} รายการครับ: ${lines.join(', ')} ลองเริ่มจากรายการแรกก่อนนะ`;
-  }
-  if (/(โน้ต|บันทึกที่มี|จดอะไรไว้|note|notes)/i.test(message) && !/(เพิ่ม|สร้าง|จดให้|บันทึกให้)/i.test(message)) {
-    if (!context.notes.length) return 'ตอนนี้ยังไม่พบโน้ตที่บันทึกไว้ครับ ถ้าอยากจดอะไรใหม่ บอกฉันได้เลยนะ';
-    const titles = context.notes.slice(0, 5).map((item) => item.title).join(', ');
-    return `พบโน้ต ${context.notes.length} รายการครับ โน้ตล่าสุดคือ ${titles}`;
-  }
+  if (isTaskLookupIntent(message)) return buildUpcomingTasksAnswer(context);
+  if (isNoteLookupIntent(message)) return buildNoteLookupAnswer(message, context);
   if (/(ว่างเมื่อไร|เวลาว่าง|มีเวลาว่าง|free time)/i.test(message)) return buildFreeTime(message, context, preferences);
   if (/(เรียนหนักไหม|งานเยอะไหม|ภาระงาน|เหนื่อยเกินไปไหม|workload)/i.test(message)) return buildWorkloadSummary(context);
   if (isFinanceLookupIntent(message)) return buildFinanceAnswer(message, context, preferences);
@@ -1499,6 +1803,40 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
   return '';
 }
 
+function contextualOfflineAnswer(
+  intent: AssistantIntent,
+  message: string,
+  conversation: AssistantConversationTurn[],
+  context: AssistantContext,
+  preferences: AssistantPreferences,
+) {
+  const recentConversation = conversation
+    .slice(-6)
+    .map((turn) => turn.content)
+    .join(' ');
+  const asksForMoreAdvice = /^(?:ช่วย)?\s*(?:แนะนำ|แนะนํา|บอก|วางแผน)(?:ให้)?(?:หน่อย)?(?:ครับ|ค่ะ|คับ)?$/i
+    .test(message.trim());
+
+  if (
+    intent === 'task_note' &&
+    asksForMoreAdvice &&
+    /(อ่าน|หนังสือ|ทบทวน|สอบ|วิชา)/i.test(recentConversation)
+  ) {
+    return buildStudyPriorityAdvice(context, preferences);
+  }
+  if (intent === 'finance') return buildFinanceAnswer(message, context, preferences);
+  if (intent === 'schedule') {
+    const previousUserMessage = [...conversation]
+      .reverse()
+      .find((turn) => turn.role === 'user')?.content ?? '';
+    return /ว่าง|อ่าน|หนังสือ|ทบทวน/i.test(`${message} ${recentConversation}`)
+      ? buildFreeTime(`${previousUserMessage} ${message}`.trim(), context, preferences)
+      : buildDailyBriefing(context, preferences);
+  }
+  if (intent === 'task_note') return buildPriorityPlan(context, preferences);
+  return '';
+}
+
 export async function buildAssistantReply(
   uid: string,
   message: string,
@@ -1525,8 +1863,24 @@ export async function buildAssistantReply(
     proposedAction: options.proposedAction,
     source,
   });
+  const creationClarification = scheduleCreationClarification(message);
+  if (creationClarification) return reply(creationClarification, 'deterministic');
   const proposedAction = proposeActionFromMessage(message);
   if (proposedAction) {
+    const lookupClauses = readOnlyClausesFromMixedMessage(message);
+    if (lookupClauses.length) {
+      const [context, preferences] = await Promise.all([loadAssistantContext(uid), loadAssistantPreferences(uid)]);
+      const lookupAnswers = lookupClauses
+        .map((clause) => contextAnswer(normalizeNaturalLanguageInput(clause), context, preferences))
+        .filter(Boolean);
+      if (lookupAnswers.length) {
+        return reply(
+          `${lookupAnswers.join('\n\n')}\n\nฉันเตรียมรายการอีกส่วนไว้แล้ว กรุณาตรวจสอบการ์ดก่อนกดยืนยันบันทึกครับ`,
+          'deterministic',
+          {proposedAction},
+        );
+      }
+    }
     return reply(
       'ได้เลย ฉันแปลงจากข้อความเป็นรายการให้แล้ว ตรวจดูอีกทีนะ ถ้าถูกก็กดยืนยันได้เลย',
       'deterministic',
@@ -1543,17 +1897,10 @@ export async function buildAssistantReply(
     return reply(`เข้าใจครับ งั้นปรับเวลาใหม่ตามที่บอกนะ\n${rescheduled}${retainedSubject}`, 'deterministic');
   }
   const answer = contextAnswer(understoodMessage, context, preferences);
-  // Factual exam-date questions must use the user's saved records directly.
-  // Do not let a generic model response replace a verified local answer.
-  if (answer && (
-    isExamScheduleLookupIntent(understoodMessage) ||
-    isCalendarTimeLookupIntent(understoodMessage) ||
-    isUpcomingClassLookupIntent(understoodMessage) ||
-    isActivityLookupIntent(understoodMessage) ||
-    isFinanceLookupIntent(understoodMessage) ||
-    isStudyTimeIntent(understoodMessage) ||
-    isStudyPriorityIntent(understoodMessage)
-  )) return reply(answer, 'deterministic');
+  // All locally understood requests use verified user data or deterministic
+  // calculations. Gemini is reserved for genuinely open-ended questions so it
+  // cannot overwrite exact balances, notes, schedules, or requested amounts.
+  if (answer) return reply(answer, 'deterministic');
   if (!isDemoMode) {
     try {
       await ensureAppCheckReady();
@@ -1569,6 +1916,14 @@ export async function buildAssistantReply(
     } catch (error) {
       const errorKind = classifyAssistantError(error);
       if (answer) return reply(answer, 'fallback', {errorKind});
+      const offlineAnswer = contextualOfflineAnswer(
+        intent,
+        understoodMessage,
+        conversation,
+        context,
+        preferences,
+      );
+      if (offlineAnswer) return reply(offlineAnswer, 'fallback', {errorKind});
       return reply(assistantErrorMessage(errorKind), 'fallback', {errorKind});
     }
   }
