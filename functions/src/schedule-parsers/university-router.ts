@@ -1,5 +1,5 @@
 import {parseListSchedule} from "./list-parser";
-import {extractScheduleWithOpenAI} from "./openai-fallback";
+import {extractScheduleWithGemini} from "./gemini-fallback";
 import type {ScheduleParserInput, ScheduleParserResult, ScheduleParserStrategy, StandardScheduleEntry} from "./types";
 
 type UniversityProfile = {id: string; institution: string; keywords: RegExp[]; matchAny?: boolean};
@@ -39,7 +39,7 @@ function usable(entries: StandardScheduleEntry[]) {
 export class UniversityRouter {
   private readonly strategies: ScheduleParserStrategy[];
 
-  constructor(private readonly apiKey?: string, extraStrategies: ScheduleParserStrategy[] = []) {
+  constructor(private readonly geminiApiKey?: string, extraStrategies: ScheduleParserStrategy[] = []) {
     this.strategies = [...profileStrategies(), ...extraStrategies];
   }
 
@@ -73,18 +73,18 @@ export class UniversityRouter {
       usedLlm: false,
     };
 
-    if (this.apiKey) {
+    if (this.geminiApiKey) {
       try {
-        const entries = usable(await extractScheduleWithOpenAI(input.rawText, this.apiKey));
+        const entries = usable(await extractScheduleWithGemini(input.rawText, this.geminiApiKey, input.imageDataUrl));
         if (entries.length) return {
           confidence: 0.5,
           entries,
           institution: "Unknown institution",
-          strategyId: "openai-structured-fallback",
+          strategyId: "gemini-structured-fallback",
           usedLlm: true,
         };
       } catch (error) {
-        console.error("[ScheduleRouter] OpenAI fallback failed.", error);
+        console.error("[ScheduleRouter] Gemini fallback failed.", error);
       }
     }
 

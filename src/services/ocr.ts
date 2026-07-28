@@ -18,6 +18,7 @@ export type OcrResult = {
   parsed: Record<string, unknown>;
   rawText: string;
   scanType: 'receipt' | 'schedule';
+  storagePath?: string;
 };
 
 export type UploadedOcrResult = OcrResult & {

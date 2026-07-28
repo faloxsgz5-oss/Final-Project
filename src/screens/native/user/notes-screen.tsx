@@ -1,7 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {LinearGradient} from 'expo-linear-gradient';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 
 import {loadLegacyPageData} from '@/services/legacy-data';

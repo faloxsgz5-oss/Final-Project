@@ -45,9 +45,9 @@ function plain(value: unknown): unknown {
   return value;
 }
 
-function rangeForPage(pageKey: string) {
+function rangeForPage(pageKey: string, referenceDate = new Date()) {
   const period = pageKey.includes('_month') ? 'month' : pageKey.includes('_week') ? 'week' : 'day';
-  return thailandRange(period);
+  return thailandRange(period, referenceDate);
 }
 
 async function userProfile(uid: string) {
@@ -61,7 +61,7 @@ async function userCounts(uid: string) {
   return Object.fromEntries(names.map((name, index) => [name, values[index].data().count]));
 }
 
-export async function loadLegacyPageData(uid: string, pageKey: string) {
+export async function loadLegacyPageData(uid: string, pageKey: string, referenceDate = new Date()) {
   if (isDemoMode) return plain(demoPageData(pageKey));
   if (pageKey.startsWith('admin/')) {
     if (pageKey.includes('dashboard')) {
@@ -92,7 +92,7 @@ export async function loadLegacyPageData(uid: string, pageKey: string) {
   }
 
   if (pageKey === 'user/index') {
-    const {from, to} = rangeForPage(pageKey);
+    const {from, to} = rangeForPage(pageKey, referenceDate);
     const [profile, counts, scheduleItems, activityItems, noteItems, transactionItems, notificationItems] = await Promise.all([
       userProfile(uid), userCounts(uid), schedules.between(uid, from, to), activities.between(uid, from, to),
       notes.list(uid), transactions.between(uid, from, to), notifications.list(uid),
@@ -101,20 +101,20 @@ export async function loadLegacyPageData(uid: string, pageKey: string) {
       transactions: transactionItems, notifications: notificationItems});
   }
   if (pageKey.includes('calendar')) {
-    const {from, to} = rangeForPage(pageKey);
+    const {from, to} = rangeForPage(pageKey, referenceDate);
     const [scheduleItems, activityItems, noteItems] = await Promise.all([
       schedules.between(uid, from, to), activities.between(uid, from, to), notes.list(uid, 'study'),
     ]);
     return plain({from, to, schedules: scheduleItems, activities: activityItems, notes: noteItems});
   }
   if (pageKey.includes('finance')) {
-    const {from, to} = rangeForPage(pageKey);
+    const {from, to} = rangeForPage(pageKey, referenceDate);
     const type: TransactionType | undefined = pageKey.includes('_income') ? 'income' :
       pageKey.includes('_expense') ? 'expense' : undefined;
     return plain({from, to, transactions: await transactions.between(uid, from, to, type)});
   }
   if (pageKey.includes('schedule_finance_sync')) {
-    const {from, to} = rangeForPage(pageKey);
+    const {from, to} = rangeForPage(pageKey, referenceDate);
     const [scheduleItems, activityItems, transactionItems] = await Promise.all([
       schedules.between(uid, from, to), activities.between(uid, from, to), transactions.between(uid, from, to),
     ]);

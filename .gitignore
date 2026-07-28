@@ -16,10 +16,13 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+keystore.properties
+local.properties
 
 # Metro
 .metro-health-check*
@@ -39,13 +42,26 @@ gradle-build.log
 artifacts/
 .tmp-*
 firestore-rules-audit.json
+.firebase/
+.runtimeconfig.json
 
 # macOS
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# Local environment files. Keep only the safe template in Git.
+.env
+.env.*
+!.env.example
+
+# Firebase and Google native credentials
+google-services.json
+**/google-services.json
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+service-account*.json
+serviceAccount*.json
+firebase-adminsdk*.json
 
 # typescript
 *.tsbuildinfo
@@ -55,3 +71,7 @@ example
 # generated native folders
 /ios
 /android
+
+# IDE and operating-system files
+.idea/
+Thumbs.db

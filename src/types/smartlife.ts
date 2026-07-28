@@ -54,10 +54,21 @@ export type Note = OwnedDocument & {
 export type Transaction = OwnedDocument & {
   amount: number;
   category: string;
+  confidence?: number;
+  items?: Array<{
+    discountAmount: number;
+    finalPrice: number;
+    name: string;
+    quantity: number;
+    unitPrice: number | null;
+  }>;
   merchant: string;
   note: string;
   occurredAt: Timestamp;
   receiptPath: string;
+  reviewedByUser?: boolean;
+  scanId?: string;
+  status?: 'verified' | 'needs_review';
   type: TransactionType;
 };
 
@@ -68,12 +79,25 @@ export type ScanLog = OwnedDocument & {
     scores?: {receipt?: number; schedule?: number};
     type?: ScanKind;
   };
+  confidence?: number;
+  correctedByUser?: boolean;
   errorMessage: string;
   extractedText: string;
   imagePath: string;
   kind: ScanKind;
+  needsReview?: boolean;
+  ocrConfidence?: number;
   parsed?: Record<string, unknown>;
+  processed?: Record<string, unknown>;
+  provider?: 'iapp' | 'google-vision' | 'google-vision-fallback';
+  providerConfidence?: Record<string, unknown>;
+  providerError?: string;
+  rawAiResult?: Record<string, unknown>;
+  rawOcr?: string;
+  rawProviderResult?: Record<string, unknown>;
+  reviewReasons?: string[];
   status: ScanStatus;
+  verificationStatus?: 'verified' | 'needs_review';
 };
 
 export type Notification = OwnedDocument & {

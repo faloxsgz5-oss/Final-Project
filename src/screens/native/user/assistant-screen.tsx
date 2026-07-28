@@ -4,9 +4,9 @@ import {ActivityIndicator, KeyboardAvoidingView, NativeModules, PermissionsAndro
 import * as FileSystem from 'expo-file-system/legacy';
 import {LinearGradient} from 'expo-linear-gradient';
 
-import {buildAssistantReply, confirmAssistantAction} from '@/services/assistant-tools';
+import {buildAssistantReply, confirmAssistantAction, recordAssistantTelemetry, type AssistantReply} from '@/services/assistant-tools';
 import {loadLegacyPageData} from '@/services/legacy-data';
-import type {AssistantChatMessage, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import type {AssistantChatMessage, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
 import {Card, MaterialIcon, PrimaryButton, UserShell, type UserNavigate, userStyles} from './user-ui';
 
 function nowIso() {
@@ -193,12 +193,14 @@ function actionDetails(action: AssistantProposedAction) {
 function MessageBubble({
   message,
   onConfirm,
+  onFeedback,
   onReject,
   busy,
 }: {
   busy: boolean;
   message: AssistantChatMessage;
   onConfirm: (messageIdValue: string, action: AssistantProposedAction) => void;
+  onFeedback: (message: AssistantChatMessage, rating: AssistantFeedbackRating) => void;
   onReject: (messageIdValue: string, action: AssistantProposedAction) => void;
 }) {
   const isUser = message.role === 'user';
@@ -214,6 +216,23 @@ function MessageBubble({
             onConfirm={() => onConfirm(message.id, message.proposedAction as AssistantProposedAction)}
             onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
           />
+        ) : null}
+        {!isUser && message.id !== 'assistant-intro' ? (
+          <View style={local.feedbackRow}>
+            <Text style={local.feedbackPrompt}>คำตอบนี้ช่วยได้ไหม</Text>
+            <Pressable
+              accessibilityLabel="คำตอบมีประโยชน์"
+              onPress={() => onFeedback(message, 'helpful')}
+              style={[local.feedbackButton, message.feedback === 'helpful' && local.feedbackButtonActive]}>
+              <MaterialIcon color={message.feedback === 'helpful' ? '#ffffff' : '#668166'} name="thumb_up" size={15} />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="คำตอบยังไม่ตรง"
+              onPress={() => onFeedback(message, 'not_helpful')}
+              style={[local.feedbackButton, message.feedback === 'not_helpful' && local.feedbackButtonNegative]}>
+              <MaterialIcon color={message.feedback === 'not_helpful' ? '#ffffff' : '#9a6666'} name="thumb_down" size={15} />
+            </Pressable>
+          </View>
         ) : null}
       </View>
     </View>
@@ -297,14 +316,6 @@ function insightDate(item: Record<string, unknown>) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function timeOfDay(date: Date | null) {
-  if (!date) return 'ช่วงที่คุณสะดวก';
-  const hour = date.getHours();
-  if (hour < 12) return 'ช่วงเช้า';
-  if (hour < 17) return 'ช่วงบ่าย';
-  return 'ช่วงเย็น';
-}
-
 // Added for AI Assistant insights: present seven-day workload, behavior, and focus using existing calendar data only.
 function AssistantInsights({data, onAsk}: {data: WeeklyInsightData | null; onAsk: (prompt: string) => void}) {
   const insight = useMemo(() => {
@@ -361,12 +372,73 @@ const shortcuts = [
   ['schedule', 'เวลาว่าง', 'หา AI ช่วยจัดช่วง', 'smartlife_notifications_ai'],
 ];
 
-const quickAddOptions = [
-  {detail: 'นัดหมาย คลาส หรือช่วงเวลา', icon: 'event', prompt: 'เพิ่มนัดหมาย ', title: 'เวลา'},
-  {detail: 'สิ่งที่ต้องทำหรือ deadline', icon: 'checklist', prompt: 'เพิ่มงาน ', title: 'งาน'},
-  {detail: 'รายรับ รายจ่าย หรือหมวดเงิน', icon: 'payments', prompt: 'จ่าย ', title: 'การเงิน'},
-  {detail: 'ข้อความ บทเรียน หรือไอเดีย', icon: 'note_add', prompt: 'จดโน้ต ', title: 'โน้ต'},
-  {action: 'file' as const, detail: 'PDF, TXT, CSV ตารางเรียนหรืองาน', icon: 'upload_file', title: 'อัปโหลดไฟล์'},
+type QuickAddCategoryId = 'finance' | 'note' | 'task' | 'time';
+
+const quickAddCategories: {
+  createLabel: string;
+  createPrompt: string;
+  detail: string;
+  icon: string;
+  id: QuickAddCategoryId;
+  suggestions: {detail: string; icon: string; prompt: string; title: string}[];
+  title: string;
+}[] = [
+  {
+    createLabel: 'เพิ่มกิจกรรมหรือนัดหมายใหม่',
+    createPrompt: 'เพิ่มนัดหมาย ',
+    detail: 'ตารางเรียน สอบ นัดหมาย และเวลาว่าง',
+    icon: 'event',
+    id: 'time',
+    suggestions: [
+      {detail: 'ตรวจจากตารางของวันนี้', icon: 'school', prompt: 'วันนี้มีเรียนกี่โมงบ้าง', title: 'วันนี้เรียนกี่โมง'},
+      {detail: 'ดูวันสอบทั้งหมดที่บันทึกไว้', icon: 'quiz', prompt: 'ฉันมีสอบวันไหนบ้าง', title: 'สอบวันไหน'},
+      {detail: 'ค้นหาช่วงว่างจากตารางจริง', icon: 'schedule', prompt: 'วันนี้ฉันว่างช่วงไหนบ้าง', title: 'วันนี้ว่างตอนไหน'},
+      {detail: 'แนะนำวันและเวลาที่เหมาะสม', icon: 'menu_book', prompt: 'ควรอ่านหนังสือวันไหนและกี่โมง', title: 'ควรอ่านหนังสือเมื่อไหร่'},
+    ],
+    title: 'เวลา',
+  },
+  {
+    createLabel: 'เพิ่มงานใหม่',
+    createPrompt: 'เพิ่มงาน ',
+    detail: 'งานค้าง กำหนดส่ง และการจัดลำดับ',
+    icon: 'checklist',
+    id: 'task',
+    suggestions: [
+      {detail: 'แสดงงานที่ยังไม่เสร็จ', icon: 'pending_actions', prompt: 'ตอนนี้มีงานค้างอะไรบ้าง', title: 'งานค้างมีอะไรบ้าง'},
+      {detail: 'เรียงจากความสำคัญและกำหนดส่ง', icon: 'low_priority', prompt: 'ควรทำงานอะไรก่อน', title: 'ควรทำอะไรก่อน'},
+      {detail: 'ตรวจงานที่ใกล้ถึงกำหนด', icon: 'event_upcoming', prompt: 'งานไหนใกล้ถึงกำหนดส่งที่สุด', title: 'งานไหนใกล้ส่ง'},
+      {detail: 'ช่วยแบ่งงานเป็นช่วงที่ทำได้จริง', icon: 'view_timeline', prompt: 'ช่วยวางแผนงานของสัปดาห์นี้', title: 'วางแผนงานสัปดาห์นี้'},
+    ],
+    title: 'งาน',
+  },
+  {
+    createLabel: 'เพิ่มรายรับหรือรายจ่าย',
+    createPrompt: 'จ่าย ',
+    detail: 'ยอดคงเหลือ งบประมาณ และรายการเงิน',
+    icon: 'payments',
+    id: 'finance',
+    suggestions: [
+      {detail: 'ดูจากรายการของเดือนนี้', icon: 'account_balance_wallet', prompt: 'เดือนนี้ฉันเหลือเงินเท่าไหร่', title: 'เงินเหลือเท่าไหร่'},
+      {detail: 'สรุปรายรับและรายจ่ายวันนี้', icon: 'today', prompt: 'สรุปงบวันนี้ให้หน่อย', title: 'งบวันนี้เป็นอย่างไร'},
+      {detail: 'คำนวณวงเงินที่เหมาะสมต่อวัน', icon: 'savings', prompt: 'ควรแบ่งใช้เงินที่เหลือยังไง', title: 'ควรแบ่งเงินยังไง'},
+      {detail: 'แนะนำจากงบและจำนวนวันที่เหลือ', icon: 'restaurant', prompt: 'วันนี้ควรตั้งงบค่าอาหารเท่าไหร่', title: 'ค่าอาหารควรเท่าไหร่'},
+    ],
+    title: 'การเงิน',
+  },
+  {
+    createLabel: 'จดโน้ตใหม่',
+    createPrompt: 'จดโน้ต ',
+    detail: 'โน้ตการเรียน งาน ไอเดีย และบันทึก',
+    icon: 'note_add',
+    id: 'note',
+    suggestions: [
+      {detail: 'แสดงโน้ตที่บันทึกล่าสุด', icon: 'notes', prompt: 'ฉันมีโน้ตอะไรบ้าง', title: 'มีโน้ตอะไรบ้าง'},
+      {detail: 'ค้นหาเฉพาะหมวดการเรียน', icon: 'school', prompt: 'มีโน้ตการเรียนอะไรบ้าง', title: 'ดูโน้ตการเรียน'},
+      {detail: 'ค้นหาเฉพาะหมวดงาน', icon: 'task', prompt: 'มีโน้ตงานอะไรบ้าง', title: 'ดูโน้ตงาน'},
+      {detail: 'ให้ AI ช่วยเลือกสิ่งที่ควรทบทวน', icon: 'auto_awesome', prompt: 'จากโน้ตควรทบทวนเรื่องอะไรก่อน', title: 'ควรทบทวนอะไร'},
+    ],
+    title: 'โน้ต',
+  },
 ];
 
 // Refactored UI: these use the existing message pipeline instead of adding a second data flow.
@@ -381,21 +453,21 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const chatScrollRef = useRef<ScrollView>(null);
   const speechBaseInputRef = useRef('');
   const [busy, setBusy] = useState(false);
-  const [historyReady, setHistoryReady] = useState(false);
+  const [historyOwnerUid, setHistoryOwnerUid] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [listening, setListening] = useState(false);
+  const [quickAddCategory, setQuickAddCategory] = useState<QuickAddCategoryId | null>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [weeklyInsights, setWeeklyInsights] = useState<WeeklyInsightData | null>(null);
   const [messages, setMessages] = useState<AssistantChatMessage[]>(() => [assistantIntroMessage()]);
   // Refactored UI: the clean state remains visible until the user starts a conversation.
   const hasConversation = messages.some((message) => message.role === 'user');
   const visibleMessages = hasConversation ? messages.filter((message) => message.id !== 'assistant-intro') : [];
+  const selectedQuickAddCategory = quickAddCategories.find((category) => category.id === quickAddCategory) ?? null;
 
   useEffect(() => {
     let active = true;
     const today = thailandDateKey();
-    setHistoryReady(false);
-    setMessages([assistantIntroMessage()]);
 
     async function loadHistoryAndBriefing() {
       const [storedMessages, lastBriefingDate] = await Promise.all([
@@ -406,7 +478,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
       const history = parseStoredMessages(storedMessages);
       setMessages(history.length ? history : [assistantIntroMessage()]);
-      setHistoryReady(true);
+      setHistoryOwnerUid(uid);
 
       if (lastBriefingDate === today) return;
       try {
@@ -431,7 +503,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     loadHistoryAndBriefing().catch(() => {
       if (!active) return;
       setMessages([assistantIntroMessage()]);
-      setHistoryReady(true);
+      setHistoryOwnerUid(uid);
     });
     return () => { active = false; };
   }, [uid]);
@@ -445,9 +517,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   }, [uid]);
 
   useEffect(() => {
-    if (!historyReady) return;
+    if (historyOwnerUid !== uid) return;
     AsyncStorage.setItem(assistantHistoryKey(uid), JSON.stringify(trimChatHistory(messages))).catch(() => undefined);
-  }, [historyReady, messages, uid]);
+  }, [historyOwnerUid, messages, uid]);
 
   useEffect(() => {
     return () => {
@@ -459,8 +531,20 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     };
   }, []);
 
-  const appendAssistant = (content: string, proposedAction?: AssistantProposedAction) => {
-    setMessages((current) => trimChatHistory([...current, {content, id: messageId('assistant'), proposedAction, role: 'assistant', timestamp: nowIso()}]));
+  const appendAssistant = (
+    content: string,
+    proposedAction?: AssistantProposedAction,
+    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'source'>> = {},
+    id = messageId('assistant'),
+  ) => {
+    setMessages((current) => trimChatHistory([...current, {
+      content,
+      id,
+      proposedAction,
+      role: 'assistant',
+      timestamp: nowIso(),
+      ...metadata,
+    }]));
   };
 
   const appendUser = (content: string) => {
@@ -474,16 +558,40 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     }));
   };
 
+  const rateAssistant = (target: AssistantChatMessage, rating: AssistantFeedbackRating) => {
+    setMessages((current) => current.map((message) =>
+      message.id === target.id ? {...message, feedback: rating} : message,
+    ));
+    recordAssistantTelemetry({
+      errorKind: target.errorKind,
+      helpful: rating,
+      intent: target.intent ?? 'unknown',
+      interactionId: target.id,
+      latencyMs: target.latencyMs ?? 0,
+      source: target.source ?? 'fallback',
+    }).catch(() => undefined);
+  };
+
   const sendMessage = async (message?: string) => {
     const text = (message ?? input).trim();
     if (!text || busy) return;
+    const conversation = messages.slice(-12);
     setQuickAddOpen(false);
+    setQuickAddCategory(null);
     setInput('');
     setBusy(true);
     setMessages((current) => trimChatHistory([...current, {content: text, id: messageId('user'), role: 'user', timestamp: nowIso()}]));
     try {
-      const reply = await buildAssistantReply(uid, text);
-      appendAssistant(reply.content, reply.proposedAction);
+      const reply = await buildAssistantReply(uid, text, conversation);
+      const interactionId = messageId('assistant');
+      appendAssistant(reply.content, reply.proposedAction, reply, interactionId);
+      recordAssistantTelemetry({
+        errorKind: reply.errorKind,
+        intent: reply.intent,
+        interactionId,
+        latencyMs: reply.latencyMs,
+        source: reply.source,
+      }).catch(() => undefined);
     } catch {
       appendAssistant('ตอนนี้อ่านข้อมูลไม่ได้ ลองใหม่อีกครั้งนะ ถ้า Firebase หลุดเดี๋ยวเราค่อยไล่ดูต่อด้วยกัน');
     } finally {
@@ -515,6 +623,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const chooseQuickAdd = (prompt: string) => {
     setInput(prompt);
     setQuickAddOpen(false);
+    setQuickAddCategory(null);
   };
 
   const stopVoiceInput = async () => {
@@ -535,6 +644,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const startVoiceInput = async () => {
     if (busy) return;
     setQuickAddOpen(false);
+    setQuickAddCategory(null);
     if (!NativeModules.Voice) {
       appendAssistant('ปุ่มไมค์พร้อมในหน้าแชทแล้ว แต่ต้อง rebuild Development Build ใหม่ก่อน เพราะแอปใน MuMu ยังไม่มี native module สำหรับแปลงเสียงเป็นข้อความ\n\nหลัง rebuild แล้ว กดไมค์ พูด แล้วข้อความจะถูกเติมในช่องพิมพ์ให้ตรวจแก้ก่อนส่ง');
       return;
@@ -586,6 +696,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const pickImportFile = async () => {
     if (busy) return;
     setQuickAddOpen(false);
+    setQuickAddCategory(null);
     setBusy(true);
     try {
       if (!NativeModules.ExpoDocumentPicker) {
@@ -672,7 +783,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} key={message.id} message={message} onConfirm={confirmAction} onReject={rejectAction} />
+              <MessageBubble busy={busy} key={message.id} message={message} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} />
             ))}
             {busy ? (
               <View style={local.thinking}>
@@ -688,21 +799,69 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         <View style={local.composerWrap}>
           {quickAddOpen ? <LinearGradient colors={['rgba(255,255,255,.99)', '#f5f8f1']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={local.quickAddMenu}>
             <View style={local.quickAddHeader}>
-              <Text style={local.quickAddTitle}>เพิ่มข้อมูลผ่าน AI</Text>
-              <Text style={local.quickAddHint}>เลือกประเภท แล้วเติมรายละเอียดก่อนส่ง</Text>
+              {selectedQuickAddCategory ? (
+                <View style={local.quickAddCategoryHeader}>
+                  <Pressable accessibilityLabel="กลับไปเลือกหมวด" onPress={() => setQuickAddCategory(null)} style={local.quickAddBack}>
+                    <MaterialIcon color="#5d8059" name="arrow_back" size={18} />
+                  </Pressable>
+                  <View style={{flex: 1}}>
+                    <Text style={local.quickAddTitle}>คำถามลัด: {selectedQuickAddCategory.title}</Text>
+                    <Text style={local.quickAddHint}>แตะคำถามเพื่อถาม AI ได้ทันที</Text>
+                  </View>
+                </View>
+              ) : (
+                <>
+                  <Text style={local.quickAddTitle}>คำถามลัดและเพิ่มข้อมูล</Text>
+                  <Text style={local.quickAddHint}>เลือกหมวดเพื่อดูคำถามที่ใช้บ่อย</Text>
+                </>
+              )}
             </View>
             <View style={local.quickAddGrid}>
-              {quickAddOptions.map((item) => <Pressable disabled={busy} key={item.title} onPress={() => item.action === 'file' ? pickImportFile() : chooseQuickAdd(item.prompt)} style={({pressed}) => [local.quickAddOption, pressed && local.pressed, busy && local.disabled]}>
-                <View style={local.quickAddIcon}><MaterialIcon color="#5d8059" name={item.icon} size={19} /></View>
-                <View style={local.quickAddCopy}>
-                  <Text style={local.quickAddOptionTitle}>{item.title}</Text>
-                  <Text numberOfLines={1} style={local.quickAddDetail}>{item.detail}</Text>
-                </View>
-              </Pressable>)}
+              {selectedQuickAddCategory ? (
+                <>
+                  {selectedQuickAddCategory.suggestions.map((item) => (
+                    <Pressable disabled={busy} key={item.title} onPress={() => sendMessage(item.prompt)} style={({pressed}) => [local.quickAddOption, pressed && local.pressed, busy && local.disabled]}>
+                      <View style={local.quickAddIcon}><MaterialIcon color="#5d8059" name={item.icon} size={19} /></View>
+                      <View style={local.quickAddCopy}>
+                        <Text style={local.quickAddOptionTitle}>{item.title}</Text>
+                        <Text numberOfLines={1} style={local.quickAddDetail}>{item.detail}</Text>
+                      </View>
+                      <MaterialIcon color="#9aa595" name="arrow_forward_ios" size={14} />
+                    </Pressable>
+                  ))}
+                  <Pressable disabled={busy} onPress={() => chooseQuickAdd(selectedQuickAddCategory.createPrompt)} style={({pressed}) => [local.quickAddCreate, pressed && local.pressed, busy && local.disabled]}>
+                    <MaterialIcon color="#ffffff" name="add" size={19} />
+                    <Text style={local.quickAddCreateText}>{selectedQuickAddCategory.createLabel}</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  {quickAddCategories.map((item) => (
+                    <Pressable disabled={busy} key={item.id} onPress={() => setQuickAddCategory(item.id)} style={({pressed}) => [local.quickAddOption, pressed && local.pressed, busy && local.disabled]}>
+                      <View style={local.quickAddIcon}><MaterialIcon color="#5d8059" name={item.icon} size={19} /></View>
+                      <View style={local.quickAddCopy}>
+                        <Text style={local.quickAddOptionTitle}>{item.title}</Text>
+                        <Text numberOfLines={1} style={local.quickAddDetail}>{item.detail}</Text>
+                      </View>
+                      <MaterialIcon color="#9aa595" name="chevron_right" size={18} />
+                    </Pressable>
+                  ))}
+                  <Pressable disabled={busy} onPress={pickImportFile} style={({pressed}) => [local.quickAddOption, pressed && local.pressed, busy && local.disabled]}>
+                    <View style={local.quickAddIcon}><MaterialIcon color="#5d8059" name="upload_file" size={19} /></View>
+                    <View style={local.quickAddCopy}>
+                      <Text style={local.quickAddOptionTitle}>อัปโหลดไฟล์</Text>
+                      <Text numberOfLines={1} style={local.quickAddDetail}>PDF, TXT, CSV ตารางเรียนหรืองาน</Text>
+                    </View>
+                  </Pressable>
+                </>
+              )}
             </View>
           </LinearGradient> : null}
           <View style={local.composer}>
-            <Pressable accessibilityLabel="เลือกประเภทข้อมูลที่จะเพิ่ม" disabled={busy} onPress={() => setQuickAddOpen((value) => !value)} style={[local.attachButton, quickAddOpen && local.attachButtonActive, busy && local.disabled]}>
+            <Pressable accessibilityLabel="เปิดคำถามลัดและเมนูเพิ่มข้อมูล" disabled={busy} onPress={() => {
+              if (quickAddOpen) setQuickAddCategory(null);
+              setQuickAddOpen((value) => !value);
+            }} style={[local.attachButton, quickAddOpen && local.attachButtonActive, busy && local.disabled]}>
               <MaterialIcon color={quickAddOpen ? '#ffffff' : '#5d8059'} name={quickAddOpen ? 'close' : 'add'} size={24} />
             </Pressable>
             <TextInput
@@ -771,6 +930,11 @@ const local = StyleSheet.create({
   focusList: {gap: 8},
   focusSection: {marginTop: 10},
   focusText: {color: '#4b584e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
+  feedbackButton: {alignItems: 'center', backgroundColor: '#eef3eb', borderRadius: 14, height: 28, justifyContent: 'center', width: 30},
+  feedbackButtonActive: {backgroundColor: '#668166'},
+  feedbackButtonNegative: {backgroundColor: '#a66e6e'},
+  feedbackPrompt: {color: '#849080', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 9},
+  feedbackRow: {alignItems: 'center', borderTopColor: '#edf0ea', borderTopWidth: 1, flexDirection: 'row', gap: 6, marginTop: 10, paddingTop: 8},
   heroCard: {alignItems: 'center', borderRadius: 24, flexDirection: 'row', gap: 12, minHeight: 122, overflow: 'hidden', padding: 17},
   heroCopy: {flex: 1, gap: 7},
   heroText: {color: 'rgba(255,255,255,.82)', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 17},
@@ -788,6 +952,10 @@ const local = StyleSheet.create({
   miniBrand: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 8, lineHeight: 10},
   pressed: {opacity: .7, transform: [{translateY: -1}]},
   quickAddCopy: {flex: 1, minWidth: 0},
+  quickAddBack: {alignItems: 'center', backgroundColor: '#edf4ea', borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
+  quickAddCategoryHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},
+  quickAddCreate: {alignItems: 'center', backgroundColor: '#5d8059', borderRadius: 14, flexDirection: 'row', gap: 8, justifyContent: 'center', minHeight: 46, paddingHorizontal: 12},
+  quickAddCreateText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 12},
   quickAddDetail: {color: '#7d8878', fontFamily: 'Prompt_400Regular', fontSize: 10, marginTop: 2},
   quickAddGrid: {gap: 8, marginTop: 10},
   quickAddHeader: {gap: 1},

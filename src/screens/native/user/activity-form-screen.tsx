@@ -33,8 +33,15 @@ function config(page: FormPage) {
   return {action: 'create-activity', title: 'เพิ่มกิจกรรม', type: 'activity' as ActivityKind, target: 'smartlife_calendar_day'};
 }
 
-function dateValue() { return new Date().toISOString().slice(0, 10); }
-function timeValue() { return new Date().toISOString().slice(11, 16); }
+function padTimePart(value: number) { return String(value).padStart(2, '0'); }
+function dateValue() {
+  const now = new Date();
+  return `${now.getFullYear()}-${padTimePart(now.getMonth() + 1)}-${padTimePart(now.getDate())}`;
+}
+function timeValue() {
+  const now = new Date();
+  return `${padTimePart(now.getHours())}:${padTimePart(now.getMinutes())}`;
+}
 
 export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormPage; uid: string; onNavigate: UserNavigate}) {
   const form = useMemo(() => config(page), [page]);
@@ -42,7 +49,7 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState(form.type === 'income' ? '\u0e40\u0e07\u0e34\u0e19\u0e42\u0e2d\u0e19' : '');
   const [transactionType, setTransactionType] = useState<TransactionKind>(form.type === 'income' ? 'income' : 'expense');
-  const [activityType, setActivityType] = useState<ActivityKind>(form.type as ActivityKind);
+  const [activityType, setActivityType] = useState<ActivityKind>(form.type === 'income' ? 'activity' : form.type as ActivityKind);
   const [formMode, setFormMode] = useState<FormMode>('manual');
   const [location, setLocation] = useState('');
   const [date, setDate] = useState(dateValue);
@@ -54,23 +61,35 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   const [color, setColor] = useState(colors[0]);
   const [saving, setSaving] = useState(false);
   const isTransaction = form.action === 'create-transaction';
-  const copy = activityCopy[activityType];
+  const copy = activityCopy[isTransaction ? 'activity' : activityType];
 
   const save = async () => {
     if (!title.trim()) return Alert.alert('กรอกชื่อรายการก่อนบันทึก');
-    const startDate = new Date(`${date}T${time}`);
+    const parsedAmount = Number(amount.replace(/,/g, '').trim());
+    if (isTransaction && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
+      return Alert.alert('กรอกจำนวนเงินให้ถูกต้อง');
+    }
+    const startDate = new Date(`${date}T${time}:00`);
     if (Number.isNaN(startDate.getTime())) return Alert.alert('ตรวจสอบวันที่และเวลาอีกครั้ง');
     setSaving(true);
     try {
       const payload = isTransaction
-        ? {type: transactionType, amount, merchant: title, category, note, occurredAt: startDate.toISOString()}
+        ? {type: transactionType, amount: parsedAmount, merchant: title.trim(), category, note, occurredAt: startDate.toISOString()}
         : {title, type: activityType, location, color, note, reminder, category, priority, attendees, startAt: startDate.toISOString(), endAt: new Date(startDate.getTime() + 60 * 60 * 1000).toISOString()};
       await runLegacyDataAction(uid, `user/${page}`, {action: form.action, payload});
-      Alert.alert('บันทึกสำเร็จ', `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`);
-      onNavigate(form.target);
     } catch (error) {
       Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
-    } finally { setSaving(false); }
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    Alert.alert(
+      'บันทึกสำเร็จ',
+      isTransaction
+        ? `เพิ่มรายรับ ${parsedAmount.toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
+        : `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`,
+    );
+    onNavigate(form.target);
   };
 
   const useSuggestion = (suggestion: typeof suggestions[number]) => {

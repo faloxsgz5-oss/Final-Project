@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -34,13 +34,13 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
   const remaining = Math.max(0, selectedAmount - expense);
   const monthLabel = new Intl.DateTimeFormat('th-TH', {month: 'long', year: 'numeric'}).format(new Date());
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [pageData, saved] = await Promise.all([
-        loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>,
-        loadMonthlyBudget(uid, monthKey),
-      ]);
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>,
+      loadMonthlyBudget(uid, monthKey),
+    ]).then(([pageData, saved]) => {
+      if (!active) return;
       const monthTransactions = items(pageData.transactions);
       setIncome(monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0));
       setExpense(monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount ?? 0), 0));
@@ -48,14 +48,13 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
         setMode(saved.source);
         setAmountText(String(saved.amount));
       }
-    } catch (error) {
+    }).catch((error) => {
       console.error('[MonthlyBudget] Load failed', error);
-    } finally {
-      setLoading(false);
-    }
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
   }, [monthKey, uid]);
-
-  useEffect(() => { load(); }, [load]);
 
   const applyRecommendation = () => {
     setMode('ai');
