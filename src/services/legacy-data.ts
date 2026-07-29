@@ -45,6 +45,54 @@ function plain(value: unknown): unknown {
   return value;
 }
 
+function dateAt(dayOffset: number, hour: number, minute = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + dayOffset);
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
+async function seedAiDynamicTestData(uid: string) {
+  const now = new Date();
+  const twoDaysAgo = dateAt(-2, 10);
+  const yesterday = dateAt(-1, 10);
+
+  const scheduleEntries = [
+    {title: 'IST201506 HOLISTIC HEALTH', courseCode: 'IST201506', courseName: 'HOLISTIC HEALTH', startAt: dateAt(0, 15), endAt: dateAt(0, 17), location: 'ห้องเรียนรวม', color: '#6F8F6D', source: 'manual' as const},
+    {title: '1101911 PROJECT IN DIGITAL TECHNOLOGY I', courseCode: '1101911', courseName: 'PROJECT IN DIGITAL TECHNOLOGY I', startAt: dateAt(1, 9), endAt: dateAt(1, 12), location: 'ห้อง 1101911', color: '#9297BB', source: 'manual' as const},
+    {title: 'DATABASE QUIZ', courseCode: 'DB101', courseName: 'Database Quiz', startAt: dateAt(0, 13), endAt: dateAt(0, 14), location: 'Lab 3', color: '#BB9293', source: 'manual' as const},
+  ];
+
+  const activityEntries = [
+    {title: 'อ่านหนังสือเตรียม Quiz', type: 'task' as const, startAt: dateAt(0, 12), endAt: dateAt(0, 12, 30), location: 'ห้องสมุด', color: '#BB9293', status: 'planned' as const, source: 'manual' as const},
+    {title: 'ส่งรายงานบทที่ 2', type: 'task' as const, startAt: dateAt(0, 23), endAt: dateAt(0, 23, 59), location: 'LMS', color: '#C96761', status: 'planned' as const, source: 'manual' as const},
+    {title: 'ทำสไลด์นำเสนอ', type: 'task' as const, startAt: dateAt(1, 8), endAt: dateAt(1, 9), location: 'Google Slides', color: '#D3A957', status: 'planned' as const, source: 'manual' as const},
+    {title: 'ประชุมกลุ่มโปรเจค', type: 'appointment' as const, startAt: dateAt(0, 19), endAt: dateAt(0, 20), location: 'Discord', color: '#6F8F6D', status: 'planned' as const, source: 'manual' as const},
+  ];
+
+  const noteEntries = [
+    {title: 'ทำรายงานบทที่ 4', content: 'งานจากหน้าเพิ่มโน้ต: สรุป recursion, stack และตัวอย่างโจทย์ ส่งวันนี้ก่อน 23:59', category: 'work' as const, relatedScheduleId: '', color: '#BB9293'},
+    {title: 'อ่านก่อนควิซ DS', content: 'ทบทวน linked list, tree, stack และโจทย์ที่ผิดบ่อย ใช้เวลาอ่าน 35 นาที', category: 'study' as const, relatedScheduleId: '', color: '#6F8F6D'},
+    {title: 'ไอเดียปรับ Dashboard', content: 'ให้ AI ดันงานใกล้ deadline และเตือนงบอาหารขึ้นมาก่อนรายการทั่วไป', category: 'idea' as const, relatedScheduleId: '', color: '#D3A957'},
+  ];
+
+  const transactionEntries = [
+    {type: 'income' as const, amount: 1500, category: 'รายรับ', merchant: 'เงินค่าขนมรายสัปดาห์', note: 'ข้อมูลจำลองสำหรับทดสอบ AI Dynamic', occurredAt: Timestamp.fromDate(twoDaysAgo), receiptPath: ''},
+    {type: 'expense' as const, amount: 189, category: 'Food', merchant: "McDonald's", note: 'ข้อมูลจำลองจากใบเสร็จอาหาร', occurredAt: Timestamp.fromDate(dateAt(0, 11, 40)), receiptPath: ''},
+    {type: 'expense' as const, amount: 40, category: 'Transport', merchant: 'BTS', note: 'เดินทางไปมหาวิทยาลัย', occurredAt: Timestamp.fromDate(dateAt(0, 8, 20)), receiptPath: ''},
+    {type: 'expense' as const, amount: 65, category: 'Drink', merchant: 'Cafe Amazon', note: 'กาแฟก่อนเข้าเรียน', occurredAt: Timestamp.fromDate(yesterday), receiptPath: ''},
+    {type: 'expense' as const, amount: 120, category: 'Education', merchant: 'ร้านถ่ายเอกสาร', note: 'ค่าเอกสารเรียน', occurredAt: Timestamp.fromDate(now), receiptPath: ''},
+  ];
+
+  await Promise.all([
+    schedules.createMany(uid, scheduleEntries.map((item) => ({...item, startAt: Timestamp.fromDate(item.startAt), endAt: Timestamp.fromDate(item.endAt)}))),
+    ...activityEntries.map((item) => activities.create(uid, {...item, startAt: Timestamp.fromDate(item.startAt), endAt: Timestamp.fromDate(item.endAt)})),
+    ...noteEntries.map((item) => notes.create(uid, item)),
+    ...transactionEntries.map((item) => transactions.create(uid, item)),
+  ]);
+  return {activities: activityEntries.length, notes: noteEntries.length, schedules: scheduleEntries.length, transactions: transactionEntries.length};
+}
+
 function rangeForPage(pageKey: string, referenceDate = new Date()) {
   const period = pageKey.includes('_month') ? 'month' : pageKey.includes('_week') ? 'week' : 'day';
   return thailandRange(period, referenceDate);
@@ -145,6 +193,7 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
       color: asString(data.color, '#6F8F6D'), relatedScheduleId: asString(data.relatedScheduleId),
     });
   }
+  if (request.action === 'seed-ai-dynamic-test-data') return seedAiDynamicTestData(uid);
   if (request.action === 'create-transaction') {
     return transactions.create(uid, {
       type: asString(data.type, 'expense') as TransactionType,

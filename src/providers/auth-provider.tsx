@@ -1,9 +1,9 @@
 import { onIdTokenChanged, User } from 'firebase/auth';
 import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
 
-import {demoUid, isDemoMode} from '@/lib/demo-mode';
+import {demoUid, hasFirebaseConfig, isDemoMode} from '@/lib/demo-mode';
 import { auth } from '@/lib/firebase';
-import { AppRole, getUserRole, signOutCurrentUser } from '@/services/auth';
+import { AppRole, ensureUserProfile, getUserRole, signOutCurrentUser } from '@/services/auth';
 
 type AuthContextValue = {
   initializing: boolean;
@@ -22,14 +22,23 @@ const demoUser = {
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(isDemoMode ? demoUser : null);
   const [role, setRole] = useState<AppRole | null>(isDemoMode ? 'user' : null);
-  const [initializing, setInitializing] = useState(!isDemoMode);
+  const [initializing, setInitializing] = useState(!isDemoMode && hasFirebaseConfig);
 
   useEffect(() => {
     if (isDemoMode) return undefined;
+    if (!hasFirebaseConfig) {
+      setInitializing(false);
+      return undefined;
+    }
     return onIdTokenChanged(auth, async (nextUser) => {
       setUser(nextUser);
       try {
-        setRole(nextUser ? await getUserRole(nextUser) : null);
+        if (nextUser) {
+          await ensureUserProfile(nextUser);
+          setRole(await getUserRole(nextUser));
+        } else {
+          setRole(null);
+        }
       } catch (error) {
         console.warn('[Auth] Unable to resolve the current user role', error);
         setRole(nextUser ? 'user' : null);

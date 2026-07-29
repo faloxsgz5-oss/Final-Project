@@ -59,6 +59,8 @@
     "deploy:firestore-rules": "npx -y firebase-tools@latest deploy --only firestore:rules --project smartlife-budget",
     "doctor": "node ./scripts/check-runtime-config.cjs",
     "doctor:release": "node ./scripts/check-release-readiness.cjs",
+    "test": "node --experimental-strip-types ./src/dashboard/__tests__/run-dashboard-tests.mjs",
+    "test:dashboard-prioritization": "node --experimental-strip-types ./src/dashboard/__tests__/run-dashboard-tests.mjs",
     "migrate:html": "node ./scripts/migrate-html-to-tsx.mjs",
     "postinstall": "patch-package",
     "typecheck": "tsc --noEmit",

@@ -5,6 +5,7 @@ export type AssistantReplySource = 'deterministic' | 'fallback' | 'gemini';
 export type AssistantErrorKind =
   | 'app_check'
   | 'authentication'
+  | 'config'
   | 'firebase'
   | 'gemini'
   | 'network'

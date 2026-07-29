@@ -1,7 +1,7 @@
 import {Timestamp} from 'firebase/firestore';
 import {getFunctions, httpsCallable} from 'firebase/functions';
 
-import {isDemoMode} from '@/lib/demo-mode';
+import {hasFirebaseConfig, isDemoMode} from '@/lib/demo-mode';
 import {ensureAppCheckReady} from '@/lib/app-check';
 import {firebaseApp} from '@/lib/firebase';
 import {thailandRange} from '@/lib/thailand-time';
@@ -79,6 +79,7 @@ export type AssistantReply = {
 function classifyAssistantError(error: unknown): AssistantErrorKind {
   const code = String((error as {code?: unknown})?.code ?? '').toLowerCase();
   const message = String((error as {message?: unknown})?.message ?? '').toLowerCase();
+  if (/firebase configuration|env\.local|api[_-]?key|project[_-]?id|app[_-]?id|placeholder|your_/.test(`${code} ${message}`)) return 'config';
   if (/app.?check|play integrity|native-module-missing|rnfbappmodule/.test(`${code} ${message}`)) return 'app_check';
   if (/unauthenticated|permission-denied|auth/.test(`${code} ${message}`)) return 'authentication';
   if (/resource-exhausted|quota|429|rate.?limit/.test(`${code} ${message}`)) return 'quota';
@@ -89,7 +90,8 @@ function classifyAssistantError(error: unknown): AssistantErrorKind {
 }
 
 function assistantErrorMessage(kind: AssistantErrorKind) {
-  if (kind === 'app_check') return 'App Check ยังไม่พร้อมในแอปที่ติดตั้งอยู่ครับ กรุณาสร้างและติดตั้ง Android build ใหม่ แล้วลองอีกครั้ง';
+  if (kind === 'config') return 'ยังไม่ได้ตั้งค่า Firebase ของโปรเจกต์จริงครับ กรุณาใส่ค่า Firebase config ของ smartlife-budget ในไฟล์ .env.local แล้ว restart แอป';
+  if (kind === 'app_check') return 'ตอนนี้ Cloud AI ยังถูก App Check กันไว้ใน build นี้ครับ แต่ฉันยังช่วยตอบจากข้อมูลตาราง งานค้าง การเงิน และโน้ตในแอปได้ ลองถามแบบเจาะจง เช่น “ช่วยวางแผนอ่าน IST201506” หรือ “วันนี้มีเรียนอะไรบ้าง” ได้เลย';
   if (kind === 'authentication') return 'เซสชันเข้าสู่ระบบหมดอายุครับ กรุณาออกแล้วเข้าสู่ระบบใหม่';
   if (kind === 'quota') return 'วันนี้มีการเรียก AI ถึงขีดจำกัดชั่วคราวแล้วครับ รอสักครู่แล้วลองใหม่ โดยข้อมูลตารางและการเงินที่อ่านจากระบบตรง ๆ ยังใช้งานได้';
   if (kind === 'network') return 'ตอนนี้เชื่อมต่อบริการ AI ไม่สำเร็จครับ ตรวจอินเทอร์เน็ตแล้วลองอีกครั้ง';
@@ -473,7 +475,7 @@ function buildDailyBriefing(context: AssistantContext, preferences: AssistantPre
     ...context.todayActivities.filter((item) => item.type !== 'task' || item.status !== 'completed'),
   ].sort((a, b) => a.startAt.toMillis() - b.startAt.toMillis());
   const next = all.find((item) => item.endAt.toDate() >= now) ?? all[0];
-  const pendingTasks = context.weekActivities.filter((item) => item.type === 'task' && item.status !== 'completed');
+  const pendingTasks = upcomingTaskCandidates(context);
   const lines = [`สรุป ${dayLabel(now)} นะ`];
   if (next) lines.push(`รายการถัดไปคือ ${next.title} เวลา ${textDate(next.startAt.toDate())}`);
   else lines.push('วันนี้ยังไม่มีนัดหรือคลาสที่บันทึกไว้');
@@ -819,9 +821,11 @@ type TaskDeadlineCandidate = {
 
 function noteDeadlineCandidate(note: WithId<Note>): TaskDeadlineCandidate | null {
   const text = `${note.title} ${note.content}`;
-  if (!/(ส่ง|กำหนดส่ง|เดดไลน์|deadline|due|สอบ)/i.test(text)) return null;
+  const isWorkNote = note.category === 'work';
+  const hasTaskSignal = /(งาน|การบ้าน|โปรเจกต์|โปรเจค|ต้องทำ|ส่ง|กำหนดส่ง|เดดไลน์|deadline|due|สอบ|task)/i.test(text);
+  if (!isWorkNote && !hasTaskSignal) return null;
   if (!hasExplicitDate(text)) {
-    return /(งาน|การบ้าน|โปรเจกต์|โปรเจค|ต้องทำ)/i.test(text)
+    return isWorkNote || hasTaskSignal
       ? {dueAt: null, hasTime: false, source: 'note', title: note.title}
       : null;
   }
@@ -865,7 +869,7 @@ function taskDueText(task: TaskDeadlineCandidate) {
 }
 
 function isTaskLookupIntent(message: string) {
-  return /(งานไหน|งานค้าง|งานที่ยังไม่เสร็จ|งานอะไรต้องส่ง|ควรทำอะไรก่อน|งานไหนก่อน|จัดลำดับงาน|วางแผนงาน|สรุปงาน|ดูงาน|เช็กงาน|กำหนดส่ง|เดดไลน์|pending task|upcoming task|priority)/i
+  return /(วันนี้.*มีงาน|มีงาน.*วันนี้|มีงาน(?:ไหม|มั้ย|หรือเปล่า|รึเปล่า)?|งานไหน|งานค้าง|งานที่ยังไม่เสร็จ|งานอะไรต้องส่ง|ควรทำอะไรก่อน|งานไหนก่อน|จัดลำดับงาน|วางแผนงาน|สรุปงาน|ดูงาน|เช็กงาน|กำหนดส่ง|เดดไลน์|pending task|upcoming task|priority)/i
     .test(message);
 }
 
@@ -888,6 +892,8 @@ function buildUpcomingTasksAnswer(context: AssistantContext) {
     } else {
       opening = `งานที่ใกล้ถึงกำหนดส่งที่สุดคือ ${nearest.title} กำหนด ${taskDueText(nearest)} ครับ ยังมีเวลาอีกสักพัก และสัปดาห์นี้ยังไม่พบกำหนดส่งเร่งด่วน`;
     }
+  } else if (undatedTasks.length) {
+    opening = `พบงานที่บันทึกไว้ ${undatedTasks.length} งานครับ แต่ยังไม่ได้ระบุวันกำหนดส่ง`;
   }
 
   const lines = datedTasks.slice(0, 5).map((task, index) =>
@@ -1642,6 +1648,52 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
   ].filter(Boolean).join('\n');
 }
 
+function requestedCourseTerms(message: string) {
+  const codes = message
+    .match(/\b[A-Z]{2,}[A-Z0-9-]*\d{3,}[A-Z0-9-]*\b/gi)
+    ?.map((value) => value.replace(/\s+/g, '').toUpperCase()) ?? [];
+  return [...new Set(codes)];
+}
+
+function buildCourseStudyPlan(message: string, context: AssistantContext, preferences: AssistantPreferences) {
+  if (!/(วางแผน|แนะนำ|แนะนํา|อ่าน|ทบทวน|โฟกัส|เตรียม|study|review|plan)/i.test(message)) return '';
+
+  const courseTerms = requestedCourseTerms(message);
+  if (!courseTerms.length) return '';
+
+  const searchable = [...context.upcomingSchedules, ...context.weekSchedules, ...context.todaySchedules]
+    .filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index);
+  const courseItems = searchable
+    .filter((item) => {
+      const code = item.courseCode.replace(/\s+/g, '').toUpperCase();
+      const title = `${item.title} ${item.courseName ?? ''}`.toUpperCase();
+      return courseTerms.some((term) => code.includes(term) || title.includes(term));
+    })
+    .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
+
+  if (!courseItems.length) return '';
+
+  const course = courseItems[0];
+  const courseLabel = [
+    course.courseCode || courseTerms[0],
+    course.courseName || (course.title !== course.courseCode ? course.title : ''),
+  ].filter(Boolean).join(' ');
+  const focusMinutes = preferences.studyMinutes ?? 45;
+  const nextClass = courseItems.find((item) => item.startAt.toMillis() > Date.now()) ?? course;
+  const nextClassText = `${formatTime(nextClass.startAt.toDate())}-${formatTime(nextClass.endAt.toDate())}`;
+  const freeTimePlan = buildFreeTime(`อ่านหนังสือ ${focusMinutes} นาที`, context, preferences);
+
+  return [
+    `ได้ครับ ผมวางแผนอ่าน ${courseLabel} ให้จากตารางที่มีในแอปก่อนนะ`,
+    `คลาสถัดไปของวิชานี้อยู่ช่วง ${nextClassText}${nextClass.location ? ` ที่ ${nextClass.location}` : ''}`,
+    `แผนแนะนำ:`,
+    `1. โฟกัสรอบแรก ${focusMinutes} นาที: อ่านหัวข้อที่จะเจอในคาบถัดไป`,
+    `2. พัก 5-10 นาที แล้วทำสรุปสั้น ๆ เป็น bullet 3-5 ข้อ`,
+    `3. ก่อนเริ่มคาบ/ก่อนนอน ใช้ 10 นาทีทวนเฉพาะจุดที่ยังไม่มั่นใจ`,
+    freeTimePlan ? `\nช่วงเวลาที่เหมาะจากตารางตอนนี้:\n${freeTimePlan}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 function isStudyTimeIntent(message: string) {
   const hasStudyAction = /(อ่าน(?:หนังสือ)?|ทบทวน|ทำโจทย์|ทำการบ้าน|study|review)/i.test(message);
   const asksForTime = /(เมื่อไหร่|กี่โมง|ตอนไหน|เวลาไหน|ช่วงไหนดี|ช่วงไหน|วันไหน|ควร.*(?:เวลา|ช่วง|วัน)|(?:เช้า|บ่าย|เย็น|ค่ำ|คืนนี้)|\d+\s*(?:ชั่วโมง|ชม\.?|นาที))/i.test(message);
@@ -1764,6 +1816,8 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
     return 'หวัดดีครับ! ฉันช่วยเช็กตาราง งานค้าง เงินคงเหลือ หรือช่วยจดรายการให้ได้เลย วันนี้อยากจัดการเรื่องไหนก่อนครับ?';
   }
   if (/(สรุปวันนี้|briefing|วันนี้ต้องทำอะไร)/i.test(message)) return buildDailyBriefing(context, preferences);
+  const courseStudyPlan = buildCourseStudyPlan(message, context, preferences);
+  if (courseStudyPlan) return courseStudyPlan;
   if (isCalendarTimeLookupIntent(message)) return buildCalendarTimeAnswer(message, context);
   if (isExamScheduleLookupIntent(message)) return buildExamScheduleAnswer(message, context);
   if (isUpcomingClassLookupIntent(message)) return buildUpcomingClassAnswer(message, context);
@@ -1901,6 +1955,9 @@ export async function buildAssistantReply(
   // calculations. Gemini is reserved for genuinely open-ended questions so it
   // cannot overwrite exact balances, notes, schedules, or requested amounts.
   if (answer) return reply(answer, 'deterministic');
+  if (!hasFirebaseConfig && !isDemoMode) {
+    return reply(assistantErrorMessage('config'), 'fallback', {errorKind: 'config'});
+  }
   if (!isDemoMode) {
     try {
       await ensureAppCheckReady();

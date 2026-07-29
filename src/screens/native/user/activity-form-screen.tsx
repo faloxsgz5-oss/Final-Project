@@ -1,6 +1,7 @@
 import {useMemo, useState} from 'react';
 import {Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
+import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
 
 import {runLegacyDataAction} from '@/services/legacy-data';
 import {Card, MaterialIcon, PrimaryButton, UserHeader, UserShell, type UserNavigate, userStyles} from './user-ui';
@@ -41,6 +42,30 @@ function dateValue() {
 function timeValue() {
   const now = new Date();
   return `${padTimePart(now.getHours())}:${padTimePart(now.getMinutes())}`;
+}
+
+function parseDateText(value: string) {
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function parseTimeText(value: string) {
+  const [hourText, minuteText] = value.split(':');
+  const date = new Date();
+  date.setHours(Number(hourText) || 0, Number(minuteText) || 0, 0, 0);
+  return date;
+}
+
+function formatDateText(value: Date) {
+  return `${value.getFullYear()}-${padTimePart(value.getMonth() + 1)}-${padTimePart(value.getDate())}`;
+}
+
+function formatTimeText(value: Date) {
+  return `${padTimePart(value.getHours())}:${padTimePart(value.getMinutes())}`;
+}
+
+function thaiDateText(value: string) {
+  return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeZone: 'Asia/Bangkok'}).format(parseDateText(value));
 }
 
 export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormPage; uid: string; onNavigate: UserNavigate}) {
@@ -135,6 +160,13 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
 function IncomeForm({amount, category, date, note, onBack, onNavigate, onSave, saving, setAmount, setCategory, setDate, setNote, setTime, setTitle, time, title}: {amount: string; category: string; date: string; note: string; onBack: () => void; onNavigate: UserNavigate; onSave: () => void; saving: boolean; setAmount: (value: string) => void; setCategory: (value: string) => void; setDate: (value: string) => void; setNote: (value: string) => void; setTime: (value: string) => void; setTitle: (value: string) => void; time: string; title: string}) {
   const sources = [{icon: 'home', label: 'จากบ้าน', value: 'เงินโอน'}, {icon: 'work', label: 'งานพิเศษ', value: 'รายได้'}, {icon: 'account_balance', label: 'ทุน', value: 'ทุนการศึกษา'}, {icon: 'receipt_long', label: 'เงินคืน', value: 'คืนเงิน'}];
   const selected = sources.find((source) => source.value === category)?.value ?? sources[0].value;
+  const [pickerTarget, setPickerTarget] = useState<'date' | 'time' | null>(null);
+  const selectDateTime = (selectedDate?: Date | null) => {
+    if (!selectedDate || !pickerTarget) return;
+    if (pickerTarget === 'date') setDate(formatDateText(selectedDate));
+    else setTime(formatTimeText(selectedDate));
+    setPickerTarget(null);
+  };
   return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
     <View style={incomeStyles.page}>
       {/* Refactored UI: dedicated income form preserves the existing transaction save flow. */}
@@ -142,7 +174,8 @@ function IncomeForm({amount, category, date, note, onBack, onNavigate, onSave, s
       <LinearGradient colors={['#6270aa', '#9199c2']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={incomeStyles.amountCard}><Text style={incomeStyles.amountLabel}>จำนวนเงิน</Text><View style={incomeStyles.amountRow}><Text style={incomeStyles.currency}>฿</Text><TextInput keyboardType="numeric" onChangeText={setAmount} placeholder="0" placeholderTextColor="rgba(255,255,255,.68)" style={incomeStyles.amountInput} value={amount} /></View></LinearGradient>
       <View style={incomeStyles.formCard}><Text style={incomeStyles.label}>แหล่งที่มา</Text><View style={incomeStyles.sourceGrid}>{sources.map((source) => <Pressable key={source.value} onPress={() => setCategory(source.value)} style={[incomeStyles.source, selected === source.value && incomeStyles.sourceActive]}><View style={[incomeStyles.sourceIcon, selected === source.value && incomeStyles.sourceIconActive]}><MaterialIcon color={selected === source.value ? '#fff' : '#6b8a68'} name={source.icon} size={18} /></View><View><Text style={incomeStyles.sourceTitle}>{source.label}</Text><Text style={incomeStyles.sourceSub}>{source.value}</Text></View></Pressable>)}</View>
         <Text style={incomeStyles.label}>ชื่อรายการ</Text><TextInput onChangeText={setTitle} placeholder="เงินโอนจากบ้าน" placeholderTextColor="#879087" style={incomeStyles.input} value={title} />
-        <Text style={incomeStyles.label}>วันที่</Text><View style={incomeStyles.dateRow}><TextInput onChangeText={setDate} placeholder="YYYY-MM-DD" placeholderTextColor="#879087" style={[incomeStyles.input, {flex: 1}]} value={date} /><TextInput onChangeText={setTime} placeholder="HH:MM" placeholderTextColor="#879087" style={[incomeStyles.input, {flex: .7}]} value={time} /></View>
+        <Text style={incomeStyles.label}>วันที่</Text><View style={incomeStyles.dateRow}><Pressable accessibilityLabel="เลือกรายรับวันที่" onPress={() => setPickerTarget('date')} style={({pressed}) => [incomeStyles.pickerButton, {flex: 1}, pressed && incomeStyles.pressed]}><MaterialIcon color="#6b8a68" name="event" size={18} /><View style={{flex: 1}}><Text style={incomeStyles.pickerLabel}>วันที่</Text><Text style={incomeStyles.pickerValue}>{thaiDateText(date)}</Text></View></Pressable><Pressable accessibilityLabel="เลือกรายรับเวลา" onPress={() => setPickerTarget('time')} style={({pressed}) => [incomeStyles.pickerButton, {flex: .7}, pressed && incomeStyles.pressed]}><MaterialIcon color="#6b8a68" name="schedule" size={18} /><View style={{flex: 1}}><Text style={incomeStyles.pickerLabel}>เวลา</Text><Text style={incomeStyles.pickerValue}>{time}</Text></View></Pressable></View>
+        {pickerTarget ? <NativeDateTimePicker accentColor="#6b8a68" is24Hour mode={pickerTarget} onDismiss={() => setPickerTarget(null)} onValueChange={(_, selectedDate) => selectDateTime(selectedDate)} presentation="dialog" value={pickerTarget === 'date' ? parseDateText(date) : parseTimeText(time)} /> : null}
         <Text style={incomeStyles.label}>หมายเหตุ</Text><TextInput multiline onChangeText={setNote} placeholder="เงินสำหรับค่าอาหารและเดินทางสัปดาห์นี้" placeholderTextColor="#879087" style={incomeStyles.note} textAlignVertical="top" value={note} />
       </View><View style={incomeStyles.statRow}><IncomeStat label="หลังบันทึก" value={`รายรับ +฿${Number(amount || 0).toLocaleString('th-TH')}`} /><IncomeStat label="ยอดวันนี้" value={`฿${Number(amount || 0).toLocaleString('th-TH')}`} /></View><Pressable disabled={saving} onPress={onSave} style={[incomeStyles.saveShell, saving && incomeStyles.disabled]}><LinearGradient colors={['#2b3916', '#1e2b0f']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={incomeStyles.save}><MaterialIcon color="#fff" name="check" size={18} /><Text style={incomeStyles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกรายรับ'}</Text></LinearGradient></Pressable>
     </View>
@@ -155,7 +188,7 @@ function FieldLabel({label}: {label: string}) { return <Text style={styles.label
 function Input({icon, ...props}: {icon?: string} & React.ComponentProps<typeof TextInput>) { return <View style={styles.inputShell}>{icon ? <MaterialIcon color="#638363" name={icon} size={18} /> : null}<TextInput placeholderTextColor="#879186" style={styles.input} {...props} /></View>; }
 
 const incomeStyles = StyleSheet.create({
-  amountCard: {borderRadius: 20, marginTop: 14, padding: 16}, amountInput: {color: '#fff', flex: 1, fontFamily: 'Prompt_800ExtraBold', fontSize: 34, padding: 0}, amountLabel: {color: 'rgba(255,255,255,.88)', fontFamily: 'Prompt_600SemiBold', fontSize: 11}, amountRow: {alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 10}, back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 43, justifyContent: 'center', width: 43}, currency: {color: '#fff', fontFamily: 'Prompt_800ExtraBold', fontSize: 31}, dateRow: {flexDirection: 'row', gap: 8}, disabled: {opacity: .55}, done: {alignItems: 'center', backgroundColor: '#6270aa', borderRadius: 17, height: 43, justifyContent: 'center', width: 43}, eyebrow: {color: '#698668', fontFamily: 'Prompt_700Bold', fontSize: 9}, formCard: {backgroundColor: '#fff', borderRadius: 21, boxShadow: '0 8px 19px rgba(43,57,41,.08)', marginTop: 14, padding: 14}, header: {alignItems: 'center', flexDirection: 'row', gap: 10}, input: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, minHeight: 44, paddingHorizontal: 12}, label: {color: '#788178', fontFamily: 'Prompt_700Bold', fontSize: 10, marginBottom: 6, marginTop: 13}, note: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_500Medium', fontSize: 11, minHeight: 78, padding: 12}, page: {paddingBottom: 5}, save: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, saveShell: {borderRadius: 16, marginTop: 14, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 14}, source: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, padding: 9, width: '48.5%'}, sourceActive: {backgroundColor: '#eff1fb', borderColor: '#aeb8df'}, sourceGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, sourceIcon: {alignItems: 'center', backgroundColor: '#e7f0e4', borderRadius: 12, height: 32, justifyContent: 'center', width: 32}, sourceIconActive: {backgroundColor: '#8792c2'}, sourceSub: {color: '#8c948b', fontFamily: 'Prompt_400Regular', fontSize: 7, marginTop: 1}, sourceTitle: {color: '#374136', fontFamily: 'Prompt_700Bold', fontSize: 10}, stat: {backgroundColor: '#fff', borderRadius: 17, flex: 1, padding: 12}, statLabel: {color: '#8a9389', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, statRow: {flexDirection: 'row', gap: 10, marginTop: 14}, statValue: {color: '#31402e', fontFamily: 'Prompt_800ExtraBold', fontSize: 13, marginTop: 3}, title: {color: '#344035', fontFamily: 'Prompt_800ExtraBold', fontSize: 20},
+  amountCard: {borderRadius: 20, marginTop: 14, padding: 16}, amountInput: {color: '#fff', flex: 1, fontFamily: 'Prompt_800ExtraBold', fontSize: 34, padding: 0}, amountLabel: {color: 'rgba(255,255,255,.88)', fontFamily: 'Prompt_600SemiBold', fontSize: 11}, amountRow: {alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 10}, back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 43, justifyContent: 'center', width: 43}, currency: {color: '#fff', fontFamily: 'Prompt_800ExtraBold', fontSize: 31}, dateRow: {flexDirection: 'row', gap: 8}, disabled: {opacity: .55}, done: {alignItems: 'center', backgroundColor: '#6270aa', borderRadius: 17, height: 43, justifyContent: 'center', width: 43}, eyebrow: {color: '#698668', fontFamily: 'Prompt_700Bold', fontSize: 9}, formCard: {backgroundColor: '#fff', borderRadius: 21, boxShadow: '0 8px 19px rgba(43,57,41,.08)', marginTop: 14, padding: 14}, header: {alignItems: 'center', flexDirection: 'row', gap: 10}, input: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, minHeight: 44, paddingHorizontal: 12}, label: {color: '#788178', fontFamily: 'Prompt_700Bold', fontSize: 10, marginBottom: 6, marginTop: 13}, note: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_500Medium', fontSize: 11, minHeight: 78, padding: 12}, page: {paddingBottom: 5}, pickerButton: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 58, paddingHorizontal: 12}, pickerLabel: {color: '#879087', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, pickerValue: {color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 1}, pressed: {opacity: .78, transform: [{scale: .987}]}, save: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, saveShell: {borderRadius: 16, marginTop: 14, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 14}, source: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, padding: 9, width: '48.5%'}, sourceActive: {backgroundColor: '#eff1fb', borderColor: '#aeb8df'}, sourceGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, sourceIcon: {alignItems: 'center', backgroundColor: '#e7f0e4', borderRadius: 12, height: 32, justifyContent: 'center', width: 32}, sourceIconActive: {backgroundColor: '#8792c2'}, sourceSub: {color: '#8c948b', fontFamily: 'Prompt_400Regular', fontSize: 7, marginTop: 1}, sourceTitle: {color: '#374136', fontFamily: 'Prompt_700Bold', fontSize: 10}, stat: {backgroundColor: '#fff', borderRadius: 17, flex: 1, padding: 12}, statLabel: {color: '#8a9389', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, statRow: {flexDirection: 'row', gap: 10, marginTop: 14}, statValue: {color: '#31402e', fontFamily: 'Prompt_800ExtraBold', fontSize: 13, marginTop: 3}, title: {color: '#344035', fontFamily: 'Prompt_800ExtraBold', fontSize: 20},
 });
 
 const styles = StyleSheet.create({
