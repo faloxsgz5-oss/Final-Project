@@ -9,7 +9,8 @@ export type ReceiptItem = {
 const NON_PRODUCT_ITEM = /(?:\b(?:TOTAL|SUBTOTAL|VAT|VATABLE|PAYMENT|APPROVAL|REFERENCE|CHANGE|DISCOUNT|QUESTIONNAIRE|SURVEY|DOWNLOAD|EXCHANGE|REFUND|CASHIER|OPERATOR)\b|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14|\u0e41\u0e1a\u0e1a\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21|\u0e23\u0e48\u0e27\u0e21\u0e15\u0e2d\u0e1a|\u0e14\u0e32\u0e27\u0e19\u0e4c\u0e42\u0e2b\u0e25\u0e14|\u0e22\u0e2d\u0e14\u0e23\u0e27\u0e21|\u0e22\u0e2d\u0e2a\u0e38\u0e17\u0e18\u0e34|\u0e22\u0e2d\u0e14\u0e0a\u0e33\u0e23\u0e30|\u0e40\u0e07\u0e34\u0e19\u0e17\u0e2d\u0e19|\u0e40\u0e1b\u0e25\u0e35\u0e48\u0e22\u0e19\s*\/\s*\u0e04\u0e37\u0e19)/i;
 
 function isProductName(name: string) {
-  return /[A-Za-z\u0e00-\u0e7f]{2,}/u.test(name) &&
+  const isDiscount = /^(?:(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14)|(?:disc(?:ount)?|promo(?:tion)?)\b)/i.test(name);
+  return isDiscount || /[A-Za-z\u0e00-\u0e7f]{2,}/u.test(name) &&
     !NON_PRODUCT_ITEM.test(name) &&
     !/^(?:(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14)\s*|(?:disc(?:ount)?|promo(?:tion)?)\b)/i.test(name);
 }
@@ -22,13 +23,21 @@ function optionalNumber(value: unknown) {
   return Number.isFinite(number) && number >= 0 ? Number(number.toFixed(2)) : null;
 }
 
+function optionalSignedNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = typeof value === "number"
+    ? value
+    : Number(String(value).replace(/,/g, "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : null;
+}
+
 export function normalizeReceiptItems(value: unknown): ReceiptItem[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const item = entry as Record<string, unknown>;
     const name = String(item.name ?? item.description ?? "").replace(/\s+/g, " ").trim();
-    const totalPrice = optionalNumber(item.totalPrice ?? item.amount ?? item.price);
+    const totalPrice = optionalSignedNumber(item.totalPrice ?? item.amount ?? item.price);
     const quantity = optionalNumber(item.quantity ?? item.qty) ?? 1;
     const discount = optionalNumber(item.discount ?? item.discountAmount);
     const unitPrice = optionalNumber(item.unitPrice) ??
@@ -54,7 +63,7 @@ function escapeHtml(value: unknown) {
 }
 
 function money(value: unknown) {
-  const number = optionalNumber(value);
+  const number = optionalSignedNumber(value);
   return number === null
     ? "-"
     : new Intl.NumberFormat("th-TH", {minimumFractionDigits: 2, maximumFractionDigits: 2}).format(number);

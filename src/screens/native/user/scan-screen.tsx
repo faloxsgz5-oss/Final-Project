@@ -390,6 +390,12 @@ function ReceiptScanDashboard({
       .filter(Boolean)
       .join(" · ") || "ไม่พบวันที่และเวลา";
   const items = normalizeReceiptItems(draft.items);
+  const needsReview = Boolean(draft.needsReview);
+  const reviewReasons = Array.isArray(draft.reviewReasons)
+    ? draft.reviewReasons.filter((reason): reason is string =>
+        typeof reason === "string" && Boolean(reason.trim()),
+      )
+    : [];
   const receiptHtml = buildReceiptHtml({
     category,
     date: draft.date,
@@ -541,6 +547,20 @@ function ReceiptScanDashboard({
                 <Text style={receiptStyles.edit}>แก้ไข</Text>
               </View>
             </View>
+            {needsReview ? (
+              <View style={receiptStyles.reviewWarning}>
+                <MaterialIcon color="#a36b28" name="warning" size={21} />
+                <View style={{ flex: 1 }}>
+                  <Text style={receiptStyles.reviewWarningTitle}>
+                    กรุณาตรวจสอบก่อนบันทึก
+                  </Text>
+                  <Text style={receiptStyles.reviewWarningText}>
+                    {reviewReasons.join(" · ") ||
+                      "ระบบพบข้อมูลบางจุดที่ยังไม่แน่นอน"}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
             <View style={receiptStyles.analysis}>
               <Text style={receiptStyles.analysisTitle}>
                 Smart Expense Categorization
@@ -841,6 +861,25 @@ const receiptStyles = StyleSheet.create({
     marginTop: 14,
     padding: 14,
   },
+  reviewWarning: {
+    alignItems: "flex-start",
+    backgroundColor: "#fff5e7",
+    borderColor: "#efd7b2",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 9,
+    marginTop: 12,
+    padding: 12,
+  },
+  reviewWarningText: {
+    color: "#79572f",
+    fontFamily: F.r,
+    fontSize: 9,
+    lineHeight: 14,
+    marginTop: 2,
+  },
+  reviewWarningTitle: { color: "#7f541f", fontFamily: F.b, fontSize: 11 },
   save: {
     alignItems: "center",
     flexDirection: "row",
@@ -1003,13 +1042,17 @@ export default function ScanScreen({
       setSaveComplete(false);
       showFeedback({
         phase: "loading",
-        subtitle: "Cloud Vision กำลังแยกข้อความและตรวจชนิดเอกสาร",
+        subtitle:
+          page === "smartlife_scan_finance"
+            ? "iApp กำลังอ่านร้านค้า รายการสินค้า และยอดชำระ"
+            : "กำลังตรวจชนิดเอกสารและแยกข้อความ",
         title: "กำลังอ่านเอกสาร",
       });
 
       const response = await uploadAndAnalyzeScan({
         uid,
-        scanType: "auto",
+        // Finance is a dedicated receipt flow. Planner scans remain automatic.
+        scanType: page === "smartlife_scan_finance" ? "receipt" : "auto",
         uri: asset.uri,
         contentType,
       });
@@ -1179,7 +1222,7 @@ export default function ScanScreen({
   // Keep the pinned image at the same readable size as the original preview.
   const pinnedPreviewHeight = previewHeight;
 
-  const confirmAndSave = async () => {
+  const persistOcrResult = async () => {
     if (!result || saving) return;
     setSaving(true);
     showFeedback({
@@ -1221,6 +1264,34 @@ export default function ScanScreen({
           "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07",
       );
     }
+  };
+
+  const confirmAndSave = () => {
+    if (!result || saving) return;
+    const needsReview =
+      result.scanType === "receipt" && Boolean(result.parsed.needsReview);
+    if (!needsReview) {
+      void persistOcrResult();
+      return;
+    }
+    const reasons = Array.isArray(result.parsed.reviewReasons)
+      ? result.parsed.reviewReasons
+          .filter((reason) => typeof reason === "string")
+          .join("\n• ")
+      : "";
+    Alert.alert(
+      "ตรวจสอบข้อมูลก่อนบันทึก",
+      `ระบบจะไม่บันทึกข้อมูลที่ไม่แน่นอนโดยอัตโนมัติ${
+        reasons ? `\n\n• ${reasons}` : ""
+      }\n\nหากตรวจสอบและแก้ไขข้อมูลแล้ว จึงยืนยันบันทึกได้`,
+      [
+        { style: "cancel", text: "กลับไปตรวจสอบ" },
+        {
+          onPress: () => void persistOcrResult(),
+          text: "ตรวจสอบแล้ว บันทึก",
+        },
+      ],
+    );
   };
 
   if (page === "smartlife_scan_finance") {
@@ -1433,6 +1504,18 @@ export default function ScanScreen({
                   แตะช่องข้อมูลเพื่อแก้ไขผล OCR ก่อนบันทึก
                 </Text>
               </View>
+              {receipt?.needsReview ? (
+                <View style={localStyles.reviewWarning}>
+                  <MaterialIcon color="#a36b28" name="warning" size={18} />
+                  <Text style={localStyles.reviewWarningText}>
+                    {Array.isArray(receipt.reviewReasons)
+                      ? receipt.reviewReasons
+                          .filter((reason) => typeof reason === "string")
+                          .join(" · ")
+                      : "ข้อมูลบางจุดยังไม่แน่นอน กรุณาตรวจสอบก่อนบันทึก"}
+                  </Text>
+                </View>
+              ) : null}
               {receipt ? (
                 <View style={localStyles.dataGroup}>
                   <EditableRow
@@ -2564,6 +2647,25 @@ const localStyles = StyleSheet.create({
     paddingVertical: 9,
   },
   editNoticeText: { color: "#587156", flex: 1, fontFamily: F.s, fontSize: 9 },
+  reviewWarning: {
+    alignItems: "flex-start",
+    backgroundColor: "#fff5e7",
+    borderColor: "#efd7b2",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 7,
+    marginBottom: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  reviewWarningText: {
+    color: "#79572f",
+    flex: 1,
+    fontFamily: F.s,
+    fontSize: 9,
+    lineHeight: 14,
+  },
   extractedRange: {
     alignItems: "center",
     backgroundColor: "#edf3ea",

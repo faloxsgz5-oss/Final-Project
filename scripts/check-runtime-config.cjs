@@ -92,14 +92,18 @@ else fail('Storage rules are not configured');
 if (firebaseJson?.functions?.source && exists(path.join(firebaseJson.functions.source, 'package.json'))) ok('Cloud Functions source is present');
 else warn('Cloud Functions source is missing');
 
-const googleVars = [
-  'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID',
-  'EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID',
-  'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID',
-];
-for (const name of googleVars) {
+const googleServices = readJson('google-services.json');
+const bundledGoogleWebClient = googleServices?.client
+  ?.flatMap((client) => client.oauth_client ?? [])
+  ?.find((client) => client.client_type === 3)?.client_id;
+if (env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || bundledGoogleWebClient) {
+  ok('Google web OAuth client ID is available');
+} else {
+  warn('Google web OAuth client ID is missing; Google login/calendar will not be fully usable');
+}
+for (const name of ['EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID', 'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID']) {
   if (env[name]) ok(`${name} is set`);
-  else warn(`${name} is missing; Google login/calendar will not be fully usable`);
+  else warn(`${name} is missing; add it when enabling that platform-specific OAuth flow`);
 }
 
 if (env.EXPO_PUBLIC_FACEBOOK_APP_ID) ok('EXPO_PUBLIC_FACEBOOK_APP_ID is set');

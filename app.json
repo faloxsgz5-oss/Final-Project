@@ -13,6 +13,7 @@
     },
     "android": {
       "package": "com.smartlife.student",
+      "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -31,6 +32,9 @@
     },
     "plugins": [
       "expo-router",
+      "./plugins/with-gradle-locale",
+      "@react-native-firebase/app",
+      "@react-native-firebase/app-check",
       [
         "@react-native-voice/voice",
         {
@@ -42,7 +46,7 @@
         "expo-image-picker",
         {
           "cameraPermission": "อนุญาตให้ SmartLife ใช้กล้องเพื่อสแกนตารางเรียนและใบเสร็จ",
-          "photosPermission": "อนุญาตให้ SmartLife เข้าถึงรูปเพื่อสแกนตารางเรียนและใบเสร็จ"
+          "photosPermission": "อนุญาตให้ SmartLife เข้าถึงรูปภาพเพื่อสแกนตารางเรียนและใบเสร็จ"
         }
       ],
       [

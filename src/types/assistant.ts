@@ -1,6 +1,16 @@
 export type AssistantEntity = 'checklist' | 'finance' | 'memory' | 'note' | 'schedule';
 export type AssistantMutation = 'create' | 'delete' | 'update';
 export type ProposedActionStatus = 'confirmed' | 'pending' | 'rejected';
+export type AssistantReplySource = 'deterministic' | 'fallback' | 'gemini';
+export type AssistantErrorKind =
+  | 'app_check'
+  | 'authentication'
+  | 'firebase'
+  | 'gemini'
+  | 'network'
+  | 'quota'
+  | 'unknown';
+export type AssistantFeedbackRating = 'helpful' | 'not_helpful';
 
 export type SchedulePayload = {
   endAt?: string;
@@ -81,21 +91,26 @@ export type AssistantProposedAction =
 
 export type AssistantChatMessage = {
   content: string;
+  errorKind?: AssistantErrorKind;
+  feedback?: AssistantFeedbackRating;
   id: string;
+  intent?: 'finance' | 'schedule' | 'task_note' | 'unknown';
+  latencyMs?: number;
   proposedAction?: AssistantProposedAction;
   role: 'assistant' | 'system' | 'user';
+  source?: AssistantReplySource;
   timestamp: string;
 };
 
 export type AssistantToolName =
-  | 'create_note'
-  | 'create_schedule_item'
+  | 'add_event'
+  | 'add_note'
+  | 'add_transaction'
   | 'delete_schedule_item'
-  | 'get_finance_summary'
-  | 'get_notes'
-  | 'get_schedule'
-  | 'log_expense'
-  | 'log_income'
+  | 'get_financial_summary'
+  | 'get_pending_tasks'
+  | 'get_user_notes'
+  | 'get_user_schedule'
   | 'save_preference'
   | 'update_note'
   | 'update_schedule_item';

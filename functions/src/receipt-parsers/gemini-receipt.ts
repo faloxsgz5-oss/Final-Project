@@ -1,32 +1,33 @@
-export const RECEIPT_EXTRACTION_SYSTEM_PROMPT = `Act as an expert financial NLP engine and OCR receipt parser.
+export const RECEIPT_EXTRACTION_SYSTEM_PROMPT = `Act as an expert Data Extraction AI specialized in Thai retail receipts, e-receipts, bank transfer slips, and e-wallets.
 
-Analyze the supplied high-resolution receipt or bank-slip image together with the OCR text. Extract only details supported by the document.
+Your ONLY task is to extract data from the supplied high-resolution document image and OCR text into the strict JSON response schema. Extract only details supported by the document.
 
-CATEGORIZATION RULES
-Choose exactly one category:
-- Food: restaurants, fast food, cafes, bakeries, and local food stalls.
-- Groceries: supermarkets, convenience stores, and fresh-food stores.
-- Utilities: electricity, water, internet, telephone, and other monthly services.
-- Transport: fuel, public transport, ride hailing, parking, and tollways.
-- Entertainment: games, cinemas, streaming subscriptions, and leisure.
-- Shopping: clothes, electronics, general merchandise, and online shopping.
-- Others: anything that does not fit the categories above.
+DOCUMENT TYPE
+- Return exactly one document_type: "receipt" when purchased items and prices are present, "bank_slip" for a bank transfer without purchased items, or "e_wallet" for an app/wallet payment showing a net paid amount.
+
+GRAND TOTAL (CRITICAL)
+- Consider a number as grand_total only when it is directly associated with or immediately follows one of these exact anchors: "ยอดสุทธิ", "ยอดรวม", "Total", "Total Incl. VAT", "จำนวนเงินที่ชำระ", "QR Payment", or "Net".
+- If several anchors exist, the final paid/payment anchor is authoritative.
+- Ignore piece counts such as "2 ชิ้น" and "รวมชิ้น 1".
+- Ignore numbers associated with "ลุ้นช้อปฟรี", "ลุ้นชิงโชค", "500 บาท", "คะแนน", "Points", "Survey", "Change", "เงินทอน", prizes, promotions, references, balances, tax IDs, and account numbers.
+- Never choose a number merely because it is the largest or the last number on the document.
+- Copy grand_total from the permitted anchor. Never calculate, add, multiply, estimate, or adjust grand_total from item rows.
+- If no permitted anchor has a reliable associated amount, return grand_total as null. Never guess.
 
 PROCESSING RULES
 1. Extract the merchant or payee name exactly as visibly printed. On payment-success screenshots, the merchant/payee is the destination shown after the transfer arrow, not the sender, status text, phone status bar, or wallet ID. Never return garbled punctuation or status-bar characters as the merchant name.
-2. Extract the final amount actually paid. Ignore balances, account numbers, change, discounts, subtotals, and reference numbers.
-   On payment-success slips, labels such as \"amount paid\", \"paid amount\", or \"\u0e08\u0e33\u0e19\u0e27\u0e19\u0e40\u0e07\u0e34\u0e19\u0e17\u0e35\u0e48\u0e0a\u0e33\u0e23\u0e30\" are authoritative. Accept whole-Baht amounts such as \"16 \u0e1a\u0e32\u0e17\" as well as decimal amounts.
-3. Return the transaction date as YYYY-MM-DD. Thai Buddhist Era years must be converted to Gregorian years. If no date is visible, use the supplied current Bangkok date.
-4. Use item details and merchant context together when selecting a category.
-5. Extract every visibly purchased product in reading order. Inspect the entire receipt from the first product row through the row immediately before Item(s), Total, or payment. Do not stop after the first product. Product name, barcode, quantity, unit price, line total, and later discount rows may be split across several OCR lines; bind them by visual proximity and matching product names.
-6. Return ONLY purchased products in items. Never create items from Total, VAT, payment, QR payment, discount/promotion, reference, change, questionnaire/survey, download, exchange/refund, footer, or loyalty-message rows.
-7. A discount row belongs to the matching purchased product, not to a new item. Return discount as a positive Baht amount. Set totalPrice to the FINAL NET line price after all discounts. When quantity is known, set unitPrice to the final net price per unit. If there is no discount, return discount as null.
-8. If quantity is not visibly printed for a genuine product, use quantity 1. Never invent a product.
+2. Extract the final amount actually paid using only the Grand Total anchors above. Ignore balances, account numbers, change, discounts, subtotals, reference numbers, and prize or promotional amounts printed in a footer (for example, "win 1,500 Baht").
+   On payment-success slips and receipts, labels such as \"QR Payment\", \"amount paid\", \"paid amount\", or \"\u0e08\u0e33\u0e19\u0e27\u0e19\u0e40\u0e07\u0e34\u0e19\u0e17\u0e35\u0e48\u0e0a\u0e33\u0e23\u0e30\" are authoritative. Accept whole-Baht amounts such as \"16 \u0e1a\u0e32\u0e17\" as well as decimal amounts.
+3. Extract every visibly purchased product in reading order. Inspect the entire receipt from the first product row through the row immediately before Item(s), Total, or payment. Do not stop after the first product. Product name, quantity, and line total may be split across several OCR lines; bind them by visual proximity.
+   Clean each item name by removing barcode-only lines and pack-size, weight, volume, or quantity metadata such as "600MEB", "600ML", "13ก.", "500G", "x12", and "8851952350789".
+4. Return ONLY purchased products and explicit discount rows in items. Never create items from Total, VAT, payment, QR payment, references, change, questionnaire/survey, download, exchange/refund, footer, loyalty-message rows, payment methods such as "TrueMoney", "ทรูมันนี่", cash, credit card, or debit card, or section headers such as "#ยกเว้น", "EXEMPT", "Description", "Qty", "Price", and "Amount". A positive-priced product name must identify an actual thing or product.
+5. Return a discount row such as "ลด -5.00" as a separate item with a descriptive name and a negative total_price. Keep the related product's total_price before that discount so the discount is not subtracted twice.
+6. If quantity is not visibly printed for a genuine product, use quantity 1. Never invent a product.
    Lines containing only quantity and per-unit metadata, such as \"2.0000 1.00/PCS\", are not products and must never appear as item names.
    Payment slips are a single financial transaction, not an itemized receipt; return an empty items array unless actual purchased-product rows are visibly present.
-9. Verify totalAmount against the net item list when possible, but always prefer the clearly labelled final paid total printed on the receipt.
-10. confidenceScore must reflect confidence in the complete extraction and be between 0 and 1.
-11. Return only the JSON object required by the response schema.`;
+7. For a receipt, calculate the sum of every item total_price, including negative discount rows. It must closely agree with grand_total, allowing only a reasonable VAT or rounding difference. If the difference is massive, the selected total is wrong: re-read only the permitted Grand Total anchors and never substitute a footer or promotional number.
+8. Return exactly four top-level fields: document_type, merchant_name, grand_total, and items. Each item must contain exactly name, quantity, and total_price.
+9. Return only raw valid JSON required by the response schema. Do not return Markdown, backticks, explanations, or additional properties.`;
 
 const CATEGORY_VALUES = [
   "Food",
@@ -37,13 +38,16 @@ const CATEGORY_VALUES = [
   "Shopping",
   "Others",
 ] as const;
+const DOCUMENT_TYPE_VALUES = ["receipt", "bank_slip", "e_wallet"] as const;
 
 export type ReceiptCategory = typeof CATEGORY_VALUES[number];
+export type ReceiptDocumentType = typeof DOCUMENT_TYPE_VALUES[number];
 
 export type GeminiReceiptResult = {
   category: ReceiptCategory;
   confidenceScore: number;
   date: string;
+  documentType: ReceiptDocumentType;
   items: {
     discount: number | null;
     name: string;
@@ -67,11 +71,9 @@ const RECEIPT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    merchantName: {type: ["string", "null"]},
-    totalAmount: {type: ["number", "null"], minimum: 0},
-    date: {type: "string"},
-    category: {type: "string", enum: CATEGORY_VALUES},
-    confidenceScore: {type: "number", minimum: 0, maximum: 1},
+    document_type: {type: "string", enum: DOCUMENT_TYPE_VALUES},
+    merchant_name: {type: ["string", "null"]},
+    grand_total: {type: ["number", "null"], minimum: 0},
     items: {
       type: "array",
       maxItems: 200,
@@ -79,17 +81,15 @@ const RECEIPT_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
-          discount: {type: ["number", "null"], minimum: 0},
           name: {type: "string"},
-          quantity: {type: ["number", "null"], minimum: 0},
-          unitPrice: {type: ["number", "null"], minimum: 0},
-          totalPrice: {type: "number", minimum: 0},
+          quantity: {type: "number", minimum: 0},
+          total_price: {type: "number"},
         },
-        required: ["discount", "name", "quantity", "unitPrice", "totalPrice"],
+        required: ["name", "quantity", "total_price"],
       },
     },
   },
-  required: ["merchantName", "totalAmount", "date", "category", "confidenceScore", "items"],
+  required: ["document_type", "merchant_name", "grand_total", "items"],
 } as const;
 
 function parseImageDataUrl(imageDataUrl: string) {
@@ -119,64 +119,71 @@ function bangkokDateKey(value = new Date()) {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
-function normalizeDate(value: unknown, fallback: string) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return fallback;
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day
-    ? value
-    : fallback;
-}
-
 function normalizeResult(value: unknown, fallbackDate: string): GeminiReceiptResult {
   if (!value || typeof value !== "object") throw new Error("Gemini returned an invalid receipt payload.");
   const payload = value as Record<string, unknown>;
-  const rawMerchantName = typeof payload.merchantName === "string"
-    ? payload.merchantName.replace(/\s+/g, " ").trim().slice(0, 160)
+  const rawMerchantName = typeof payload.merchant_name === "string"
+    ? payload.merchant_name.replace(/\s+/g, " ").trim().slice(0, 160)
     : "";
   const merchantName = rawMerchantName &&
     /[A-Za-z\u0e00-\u0e7f]{2,}/u.test(rawMerchantName) &&
     !/[!@#$%^&*()_+={}\[\]<>?]{3,}/.test(rawMerchantName)
     ? rawMerchantName
     : null;
-  const amount = typeof payload.totalAmount === "number" ? payload.totalAmount : Number(payload.totalAmount);
-  const category = CATEGORY_VALUES.includes(payload.category as ReceiptCategory)
-    ? payload.category as ReceiptCategory
-    : "Others";
-  const confidence = Number(payload.confidenceScore);
-  const nonProductText = /(?:\b(?:TOTAL|SUBTOTAL|VAT|VATABLE|PAYMENT|APPROVAL|REFERENCE|CHANGE|DISCOUNT|QUESTIONNAIRE|SURVEY|DOWNLOAD|EXCHANGE|REFUND)\b|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14|\u0e41\u0e1a\u0e1a\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21|\u0e23\u0e48\u0e27\u0e21\u0e15\u0e2d\u0e1a|\u0e14\u0e32\u0e27\u0e19\u0e4c\u0e42\u0e2b\u0e25\u0e14)/i;
+  const amount = payload.grand_total === null || payload.grand_total === undefined
+    ? Number.NaN
+    : typeof payload.grand_total === "number" ? payload.grand_total : Number(payload.grand_total);
+  const nonProductText = /(?:\b(?:TOTAL|SUBTOTAL|VAT|VATABLE|PAYMENT|APPROVAL|REFERENCE|CHANGE|QUESTIONNAIRE|SURVEY|DOWNLOAD|EXCHANGE|REFUND|CASHIER|OPERATOR)\b|\u0e20\.?\u0e1e\.?|\u0e20\u0e32\u0e29\u0e35|\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e21\u0e35\u0e20\u0e1e|\u0e41\u0e1a\u0e1a\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21|\u0e23\u0e48\u0e27\u0e21\u0e15\u0e2d\u0e1a|\u0e14\u0e32\u0e27\u0e19\u0e4c\u0e42\u0e2b\u0e25\u0e14)/i;
+  const discountName = /^(?:(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14)|(?:disc(?:ount)?|promo(?:tion)?)\b)/i;
   const quantityMetadataOnly = /^\s*\d+(?:\.\d+)?\s*(?:@|x)?\s*\d+(?:\.\d+)?\s*\/?\s*(?:pcs?|ea|ชิ้น)?\s*$/i;
   const items = Array.isArray(payload.items) ? payload.items.flatMap((value) => {
     if (!value || typeof value !== "object") return [];
     const item = value as Record<string, unknown>;
-    const name = typeof item.name === "string" ? item.name.replace(/\s+/g, " ").trim().slice(0, 180) : "";
-    const quantity = item.quantity === null ? 1 : Number(item.quantity);
-    const rawUnitPrice = item.unitPrice === null ? null : Number(item.unitPrice);
-    const totalPrice = Number(item.totalPrice);
-    const discount = item.discount === null ? null : Number(item.discount);
+    const rawName = typeof item.name === "string" ? item.name : "";
+    const name = rawName
+      .replace(/\b\d{8,14}\b/g, " ")
+      .replace(/\b\d+(?:\.\d+)?\s*(?:ML|MEB|L|G|KG|PCS?)\b/gi, " ")
+      .replace(/\d+(?:\.\d+)?\s*(?:มล\.?|ก\.?|กก\.?|ชิ้น)\b/gi, " ")
+      .replace(/\s*[xX]\s*\d+(?:\.\d+)?\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    const quantity = Number(item.quantity);
+    const totalPrice = Number(item.total_price);
+    const isDiscount = discountName.test(name);
     if (
-      !name || nonProductText.test(name) || quantityMetadataOnly.test(name) ||
-      /^(?:(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14)\s*|(?:disc(?:ount)?|promo(?:tion)?)\b)/i.test(name) ||
-      !Number.isFinite(totalPrice) || totalPrice < 0
+      !name || quantityMetadataOnly.test(name) ||
+      (!isDiscount && nonProductText.test(name)) ||
+      !Number.isFinite(totalPrice) ||
+      (totalPrice < 0 && !isDiscount) ||
+      (totalPrice >= 0 && isDiscount)
     ) return [];
-    const normalizedQuantity = typeof quantity === "number" && Number.isFinite(quantity) && quantity > 0
+    const normalizedQuantity = Number.isFinite(quantity) && quantity > 0
       ? quantity
       : 1;
-    const unitPrice = typeof rawUnitPrice === "number" && Number.isFinite(rawUnitPrice) && rawUnitPrice >= 0
-      ? Number(rawUnitPrice.toFixed(2))
-      : Number((totalPrice / normalizedQuantity).toFixed(2));
     return [{
-      discount: typeof discount === "number" && Number.isFinite(discount) && discount > 0 ? Number(discount.toFixed(2)) : null,
+      discount: null,
       name,
       quantity: normalizedQuantity,
       totalPrice: Number(totalPrice.toFixed(2)),
-      unitPrice,
+      unitPrice: Number((totalPrice / normalizedQuantity).toFixed(2)),
     }];
   }).slice(0, 200) : [];
+  const documentType = DOCUMENT_TYPE_VALUES.includes(payload.document_type as ReceiptDocumentType)
+    ? payload.document_type as ReceiptDocumentType
+    : items.length ? "receipt" : "bank_slip";
+  const categoryText = `${merchantName ?? ""} ${items.map((item) => item.name).join(" ")}`;
+  const category: ReceiptCategory =
+    /(?:7[\s-]?ELEVEN|BIG\s*C|LOTUS|MAKRO|TOPS|FOODLAND|CJ\s*EXPRESS|SUPERMARKET|ซูเปอร์|ตลาด)/i.test(categoryText) ? "Groceries" :
+      /(?:RESTAURANT|CAFE|COFFEE|MCDONALD|KFC|STARBUCKS|ร้านอาหาร|กาแฟ|ข้าว|อาหาร)/i.test(categoryText) ? "Food" :
+        /(?:FUEL|PTT|BANGCHAK|SHELL|TAXI|GRAB|BTS|MRT|น้ำมัน|เดินทาง|รถ)/i.test(categoryText) ? "Transport" :
+          "Others";
+  const confidenceScore = amount >= 0 && merchantName ? 0.9 : amount >= 0 || merchantName ? 0.7 : 0.4;
   return {
     category,
-    confidenceScore: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0,
-    date: normalizeDate(payload.date, fallbackDate),
+    confidenceScore,
+    date: fallbackDate,
+    documentType,
     items,
     merchantName,
     totalAmount: Number.isFinite(amount) && amount >= 0 ? Number(amount.toFixed(2)) : null,

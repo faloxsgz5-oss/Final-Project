@@ -105,7 +105,7 @@ service cloud.firestore {
 
     function validTransaction(data, userId) {
       return data.keys().hasAll(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'confidence', 'items', 'reviewedByUser', 'scanId', 'status', 'createdAt', 'updatedAt'])
         && data.ownerId == userId
         && data.type in ['income', 'expense']
         && data.amount is number && data.amount > 0 && data.amount <= 1000000000
@@ -115,6 +115,11 @@ service cloud.firestore {
         && data.occurredAt is timestamp
         && data.receiptPath is string && data.receiptPath.size() <= 512
         && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/receipts/.*'))
+        && (!('confidence' in data) || (data.confidence is number && data.confidence >= 0 && data.confidence <= 1))
+        && (!('items' in data) || (data.items is list && data.items.size() <= 100))
+        && (!('reviewedByUser' in data) || data.reviewedByUser is bool)
+        && (!('scanId' in data) || (data.scanId is string && data.scanId.size() <= 128))
+        && (!('status' in data) || data.status in ['verified', 'needs_review'])
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
@@ -251,6 +256,13 @@ service cloud.firestore {
       }
 
       match /aiRecommendations/{recommendationId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      // Privacy-preserving AI quality records. The app can read its own
+      // diagnostics, while only trusted Cloud Functions may create or update.
+      match /assistantInteractions/{interactionId} {
         allow read: if isOwner(userId) || isAdmin();
         allow write: if false;
       }
