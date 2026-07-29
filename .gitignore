@@ -35,6 +35,7 @@ expo-*.log
 .expo-web*.log
 metro-*.log
 gradle-build.log
+gradle-build-*.log
 .static-preview.log
 .npm-cache/
 

@@ -142,6 +142,9 @@ export async function signInWithGoogle() {
       if (/native module|null|TurboModule|RNGoogleSignin/i.test(message)) {
         throw new Error('Google Login ต้องเปิดด้วย SmartLife development build ไม่รองรับ Expo Go');
       }
+      if (/DEVELOPER_ERROR|code.?10/i.test(message)) {
+        throw new Error('ลายเซ็น APK ยังไม่ตรงกับ Firebase กรุณาติดตั้ง SmartLife APK รุ่นล่าสุด');
+      }
       throw error;
     }
   }
