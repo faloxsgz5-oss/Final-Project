@@ -1,0 +1,31 @@
+sequenceDiagram
+    autonumber
+    actor U as ผู้ใช้
+    participant A as Expo App
+    participant ST as Firebase Storage
+    participant CF as Cloud Function analyzeScan
+    participant V as Google Cloud Vision OCR
+    participant G as Gemini API
+    participant FS as Cloud Firestore
+
+    U->>A: กดปุ่ม + และเลือกกล้อง/คลังรูป
+    A->>A: ขอสิทธิ์ Camera / Media Library
+    A->>ST: อัปโหลดรูปที่ scans/{uid}/...
+    ST-->>A: storagePath + download URL
+    A->>CF: analyzeScan(storagePath, scanType)
+    CF->>V: DOCUMENT_TEXT_DETECTION (Thai + English)
+    V-->>CF: raw OCR text + layout data
+    CF->>G: จัดประเภท + สกัดข้อมูลแบบ JSON
+    G-->>CF: receipt/slip หรือ schedule + confidence
+    CF->>FS: บันทึก scanLogs/{scanId}
+    CF-->>A: ผล OCR แบบแก้ไขได้
+    A-->>U: Preview พร้อมแก้ข้อมูลก่อนบันทึก
+    alt ตารางเรียน
+        U->>A: ยืนยันบันทึกตาราง
+        A->>FS: เขียน schedules พร้อม seriesId/semester
+        A-->>U: ไปหน้า Calendar
+    else ใบเสร็จ/สลิป
+        U->>A: ยืนยันบันทึกรายจ่าย
+        A->>FS: เขียน transactions พร้อม items/category
+        A-->>U: ไปหน้า Finance
+    end

@@ -1,5 +1,10 @@
 import {NativeModules, Platform} from 'react-native';
-import {CustomProvider, initializeAppCheck as initializeWebAppCheck} from 'firebase/app-check';
+import {
+  type AppCheck,
+  CustomProvider,
+  getToken as getWebAppCheckToken,
+  initializeAppCheck as initializeWebAppCheck,
+} from 'firebase/app-check';
 
 import {isDemoMode} from '@/lib/demo-mode';
 import {firebaseApp} from '@/lib/firebase';
@@ -7,6 +12,7 @@ import {firebaseApp} from '@/lib/firebase';
 const APP_CHECK_TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
 let appCheckReadyPromise: Promise<void> | null = null;
+let webAppCheckInstance: AppCheck | null = null;
 
 export class AppCheckUnavailableError extends Error {
   readonly code = 'app-check/native-module-missing';
@@ -18,48 +24,57 @@ export class AppCheckUnavailableError extends Error {
 }
 
 async function initializeAndroidAppCheck() {
-  const [
-    {getApp: getNativeApp},
-    {
-      ReactNativeFirebaseAppCheckProvider,
-      getToken: getNativeToken,
-      initializeAppCheck: initializeNativeAppCheck,
-    },
-  ] = await Promise.all([
-    import('@react-native-firebase/app'),
-    import('@react-native-firebase/app-check'),
-  ]);
+  if (!webAppCheckInstance) {
+    const [
+      {getApp: getNativeApp},
+      {
+        ReactNativeFirebaseAppCheckProvider,
+        getToken: getNativeToken,
+        initializeAppCheck: initializeNativeAppCheck,
+      },
+    ] = await Promise.all([
+      import('@react-native-firebase/app'),
+      import('@react-native-firebase/app-check'),
+    ]);
 
-  const debugToken = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN?.trim();
-  const nativeProvider = new ReactNativeFirebaseAppCheckProvider();
-  nativeProvider.configure({
-    android: debugToken
-      ? {debugToken, provider: 'debug'}
-      : {provider: 'playIntegrity'},
-  });
+    const debugToken = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN?.trim();
+    // Android emulators and locally installed development clients cannot pass
+    // Play Integrity. Use Firebase's debug provider only in development; a
+    // release build always keeps Play Integrity enabled.
+    const useDebugProvider = __DEV__ || Boolean(debugToken);
+    const nativeProvider = new ReactNativeFirebaseAppCheckProvider();
+    nativeProvider.configure({
+      android: useDebugProvider
+        ? {debugToken, provider: 'debug'}
+        : {provider: 'playIntegrity'},
+    });
 
-  const nativeAppCheck = await initializeNativeAppCheck(getNativeApp(), {
-    isTokenAutoRefreshEnabled: true,
-    provider: nativeProvider,
-  });
+    const nativeAppCheck = await initializeNativeAppCheck(getNativeApp(), {
+      isTokenAutoRefreshEnabled: true,
+      provider: nativeProvider,
+    });
 
-  const webProvider = new CustomProvider({
-    getToken: async () => {
-      const {token} = await getNativeToken(nativeAppCheck, false);
-      if (!token) {
-        throw new Error('Firebase App Check did not return a token.');
-      }
-      return {
-        expireTimeMillis: Date.now() + APP_CHECK_TOKEN_LIFETIME_MS,
-        token,
-      };
-    },
-  });
+    const webProvider = new CustomProvider({
+      getToken: async () => {
+        const {token} = await getNativeToken(nativeAppCheck, false);
+        if (!token) throw new Error('Firebase App Check did not return a token.');
+        return {
+          expireTimeMillis: Date.now() + APP_CHECK_TOKEN_LIFETIME_MS,
+          token,
+        };
+      },
+    });
 
-  initializeWebAppCheck(firebaseApp, {
-    isTokenAutoRefreshEnabled: true,
-    provider: webProvider,
-  });
+    webAppCheckInstance = initializeWebAppCheck(firebaseApp, {
+      isTokenAutoRefreshEnabled: true,
+      provider: webProvider,
+    });
+  }
+
+  // initializeAppCheck() only registers the provider. Fetch once before the
+  // callable request so the Functions SDK cannot race ahead without the token.
+  const {token} = await getWebAppCheckToken(webAppCheckInstance, false);
+  if (!token) throw new Error('Firebase App Check did not return a bridged token.');
 }
 
 export function ensureAppCheckReady() {
@@ -75,7 +90,12 @@ export function ensureAppCheckReady() {
   }
 
   if (!appCheckReadyPromise) {
-    appCheckReadyPromise = initializeAndroidAppCheck();
+    appCheckReadyPromise = initializeAndroidAppCheck().catch((error) => {
+      // A throttled or transient Play Integrity failure must be retryable on
+      // the next user request instead of poisoning the app for the session.
+      appCheckReadyPromise = null;
+      throw error;
+    });
   }
   return appCheckReadyPromise;
 }

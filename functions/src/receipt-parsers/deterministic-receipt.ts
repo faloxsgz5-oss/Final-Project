@@ -483,6 +483,77 @@ function receiptTime(text: string) {
     : null;
 }
 
+export type ReceiptTimestampEvidence = {
+  calendarEra: "AD" | "BE" | "UNKNOWN";
+  confidence: number;
+  date: string | null;
+  evidence: string | null;
+  printedYear: number | null;
+  time: string | null;
+};
+
+export function extractReceiptTimestampEvidence(
+  rawText: string,
+): ReceiptTimestampEvidence {
+  const text = cleanText(rawText);
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const contextPattern = /(?:ทำรายการสำเร็จ|รหัสอ้างอิง|เลขที่รายการ|ชำระ|ธุรกรรม|วันที่|เวลา|TRANSACTION|REFERENCE|PAYMENT|DATE|TIME)/iu;
+  const candidates = lines.flatMap((line, index) => {
+    const date = receiptDate(line);
+    let time = receiptTime(line);
+    let evidence = line;
+    if (date && !time) {
+      const adjacent = [lines[index - 1], lines[index + 1]].filter(Boolean);
+      const timeLine = adjacent.find((value) => receiptTime(value));
+      if (timeLine) {
+        time = receiptTime(timeLine);
+        evidence = `${line} ${timeLine}`;
+      }
+    }
+    const context = lines.slice(Math.max(0, index - 2), index + 2).join(" ");
+    const anchored = contextPattern.test(context);
+    if (!date && (!time || !anchored)) return [];
+    const score = Number(Boolean(date)) * 6 +
+      Number(Boolean(time)) * 3 +
+      Number(Boolean(date && time)) * 5 +
+      Number(anchored) * 4;
+    return [{anchored, date, evidence, index, score, time}];
+  }).sort((first, second) => second.score - first.score || second.index - first.index);
+
+  const best = candidates[0];
+  if (!best) {
+    return {
+      calendarEra: "UNKNOWN",
+      confidence: 0,
+      date: null,
+      evidence: null,
+      printedYear: null,
+      time: null,
+    };
+  }
+
+  const fourDigitYear = best.evidence.match(/\b((?:19|20|24|25|26)\d{2})\b/)?.[1];
+  const shortYear = best.evidence.match(
+    /\b\d{1,2}\s*[\/-]\s*\d{1,2}\s*[\/-]\s*(\d{2})\b/,
+  )?.[1];
+  const printedYear = fourDigitYear ? Number(fourDigitYear) :
+    shortYear ? Number(shortYear) : null;
+  const explicitBe = /(?:พ\.?\s*ศ\.?|B\.?E\.?)/iu.test(best.evidence);
+  const explicitAd = /(?:ค\.?\s*ศ\.?|A\.?D\.?|C\.?E\.?)/iu.test(best.evidence);
+  const calendarEra = explicitBe || (printedYear !== null && printedYear >= 2400) ?
+    "BE" :
+    explicitAd || (printedYear !== null && printedYear >= 1900) ? "AD" : "UNKNOWN";
+
+  return {
+    calendarEra,
+    confidence: best.date && best.time ? (best.anchored ? 0.99 : 0.96) : 0.9,
+    date: best.date,
+    evidence: best.evidence.replace(/\s+/g, " ").trim().slice(0, 240),
+    printedYear,
+    time: best.time,
+  };
+}
+
 function receiptReference(text: string) {
   return text.match(/\bR\d{8,}[A-Z0-9]*\b/i)?.[0] ??
     text.match(/(?:TRC\s*NUM|REFERENCE|TRANSACTION\s*ID|รหัสอ้างอิง)\s*[:#-]?\s*([A-Z0-9-]{5,})/i)?.[1] ??
@@ -499,8 +570,9 @@ export function parseReceiptDeterministic(rawText: string) {
   // Copy only an explicitly anchored amount. Never manufacture a grand total
   // by summing or multiplying product rows.
   const total = detectedTotal;
-  const date = receiptDate(text);
-  const time = receiptTime(text);
+  const timestamp = extractReceiptTimestampEvidence(text);
+  const date = timestamp.date;
+  const time = timestamp.time;
   const reference = receiptReference(text);
   const category = receiptCategory(`${merchant ?? ""}\n${text}`);
   const populated = [merchant, total, date, time].filter((value) => value !== null).length;
@@ -514,6 +586,11 @@ export function parseReceiptDeterministic(rawText: string) {
     merchantName: merchant,
     parserSource: "deterministic-receipt-v5",
     reference,
+    timestampCalendarEra: timestamp.calendarEra,
+    timestampConfidence: timestamp.confidence,
+    timestampEvidence: timestamp.evidence,
+    timestampPrintedYear: timestamp.printedYear,
+    timestampSource: "deterministic-ocr",
     time,
     total,
     totalAmount: total,

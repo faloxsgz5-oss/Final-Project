@@ -4,6 +4,13 @@ import { storage } from '@/lib/firebase';
 
 export type UploadKind = 'avatars' | 'receipts' | 'scans' | 'schedules';
 
+const ASSISTANT_FILE_TYPES: Record<string, string> = {
+  csv: 'text/csv',
+  ics: 'text/calendar',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+};
+
 function extensionFromContentType(contentType: string) {
   if (contentType === 'image/png') return 'png';
   if (contentType === 'image/webp') return 'webp';
@@ -92,4 +99,30 @@ export async function uploadUserImage({
   }
 
   return { downloadUrl: await getDownloadURL(storageRef), path };
+}
+
+export async function uploadAssistantFile({
+  contentType,
+  name,
+  uid,
+  uri,
+}: {
+  contentType?: string;
+  name: string;
+  uid: string;
+  uri: string;
+}) {
+  const extension = name.split('.').pop()?.toLowerCase() ?? '';
+  const resolvedContentType = ASSISTANT_FILE_TYPES[extension];
+  if (!resolvedContentType) throw new Error('รองรับเฉพาะไฟล์ PDF, TXT, CSV และ ICS');
+  if (contentType && ![resolvedContentType, 'application/octet-stream', 'text/comma-separated-values'].includes(contentType)) {
+    throw new Error('ชนิดไฟล์ไม่ตรงกับนามสกุล กรุณาเลือกไฟล์ใหม่');
+  }
+  const blob = await localImageUriToBlob(uri);
+  if (blob.size > 8 * 1024 * 1024) throw new Error('ไฟล์ต้องมีขนาดไม่เกิน 8 MB');
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
+  const path = `users/${uid}/assistant-files/${fileName}`;
+  const storageRef = ref(storage, path);
+  await uploadBytes(storageRef, blob, {contentType: resolvedContentType});
+  return {contentType: resolvedContentType, path, size: blob.size};
 }

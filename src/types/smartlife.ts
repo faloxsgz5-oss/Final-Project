@@ -80,7 +80,10 @@ export type ScanLog = OwnedDocument & {
     type?: ScanKind;
   };
   confidence?: number;
+  correctedAt?: Timestamp;
   correctedByUser?: boolean;
+  correctedParsed?: Record<string, unknown>;
+  correctedTransactionId?: string;
   errorMessage: string;
   extractedText: string;
   imagePath: string;
@@ -89,7 +92,7 @@ export type ScanLog = OwnedDocument & {
   ocrConfidence?: number;
   parsed?: Record<string, unknown>;
   processed?: Record<string, unknown>;
-  provider?: 'iapp' | 'google-vision' | 'google-vision-fallback';
+  provider?: 'iapp' | 'iapp-document' | 'google-vision' | 'google-vision-fallback';
   providerConfidence?: Record<string, unknown>;
   providerError?: string;
   rawAiResult?: Record<string, unknown>;

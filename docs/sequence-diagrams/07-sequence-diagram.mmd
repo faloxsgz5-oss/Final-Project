@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    actor AD as Admin
+    participant AA as Admin Expo App
+    participant AU as Firebase Authentication
+    participant CF as Admin Cloud Functions
+    participant FS as Cloud Firestore
+    participant ST as Firebase Storage
+
+    AD->>AA: เข้าสู่ระบบผู้ดูแล
+    AA->>AU: ยืนยันตัวตนและ role admin
+    AU-->>AA: Admin session
+    AA->>CF: ขอ Admin dashboard summary
+    CF->>FS: aggregate users/schedules/notes/transactions/AI logs
+    FS-->>CF: ข้อมูลรวมของระบบ
+    CF-->>AA: สถิติจริงและ System Health
+    AA-->>AD: Dashboard ภาพรวมระบบ
+
+    AD->>AA: ตรวจ OCR / Import Log
+    AA->>FS: อ่าน scanLogs ตามสิทธิ์ admin
+    FS-->>AA: ประวัติการสแกนและผลลัพธ์
+    AD->>AA: ส่งประกาศหรือจัดการ category
+    AA->>FS: เขียน announcements / categories
+    AD->>AA: ดู Feedback Center
+    AA->>FS: อ่าน feedback ของผู้ใช้
+    FS-->>AA: รายการ feedback เพื่อปรับปรุงระบบ
+    AA->>ST: ตรวจสถานะไฟล์รูปที่อัปโหลด

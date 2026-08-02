@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "302211453614",
+    "project_id": "smartlife-budget",
+    "storage_bucket": "smartlife-budget.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:302211453614:android:985bc020cd94b78e2d133f",
+        "android_client_info": {
+          "package_name": "com.smartlife.student"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "302211453614-ufnm95kqegj6h9gdpbv882e22v0otkjm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.smartlife.student",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "302211453614-ui2mf0hqknu0itr8r4g76g1odrfhc6fe.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyASJSV7gJTKYgCstbym5QNpPMybxRuKsSc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "302211453614-ui2mf0hqknu0itr8r4g76g1odrfhc6fe.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UniversityRouter = void 0;
 const list_parser_1 = require("./list-parser");
-const gemini_fallback_1 = require("./gemini-fallback");
 const UNIVERSITY_PROFILES = [
     { id: "chula-list", institution: "Chulalongkorn University", matchAny: true, keywords: [/จุฬาลงกรณ์มหาวิทยาลัย/i, /CHULALONGKORN UNIVERSITY/i] },
     { id: "mahidol-list", institution: "Mahidol University", matchAny: true, keywords: [/มหาวิทยาลัยมหิดล/i, /MAHIDOL UNIVERSITY/i] },
@@ -31,10 +30,8 @@ function usable(entries) {
     return entries.filter((entry) => Boolean(entry.courseCode || entry.courseName) && Boolean(entry.day || entry.startTime));
 }
 class UniversityRouter {
-    geminiApiKey;
     strategies;
-    constructor(geminiApiKey, extraStrategies = []) {
-        this.geminiApiKey = geminiApiKey;
+    constructor(extraStrategies = []) {
         this.strategies = [...profileStrategies(), ...extraStrategies];
     }
     async parse(input) {
@@ -67,22 +64,6 @@ class UniversityRouter {
                 strategyId: "universal-list",
                 usedLlm: false,
             };
-        if (this.geminiApiKey) {
-            try {
-                const entries = usable(await (0, gemini_fallback_1.extractScheduleWithGemini)(input.rawText, this.geminiApiKey, input.imageDataUrl));
-                if (entries.length)
-                    return {
-                        confidence: 0.5,
-                        entries,
-                        institution: "Unknown institution",
-                        strategyId: "gemini-structured-fallback",
-                        usedLlm: true,
-                    };
-            }
-            catch (error) {
-                console.error("[ScheduleRouter] Gemini fallback failed.", error);
-            }
-        }
         return { confidence: 0, entries: [], institution: "Unknown institution", strategyId: "none", usedLlm: false };
     }
 }

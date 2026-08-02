@@ -72,6 +72,7 @@ export async function registerWithEmail({ displayName, email, password }: Regist
 export async function signInWithEmail(email: string, password: string) {
   if (isDemoMode) return {...demoUser, email} as User;
   const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+  await ensureUserProfile(credential.user);
   return credential.user;
 }
 
@@ -87,7 +88,8 @@ function logGoogleLoginConfiguration() {
   });
 }
 
-async function createSocialUserProfile(user: User) {
+export async function ensureUserProfile(user: User) {
+  if (isDemoMode) return;
   const reference = doc(db, 'users', user.uid);
   if ((await getDoc(reference)).exists()) return;
 
@@ -149,7 +151,7 @@ export async function signInWithGoogle() {
     }
   }
 
-  await createSocialUserProfile(user);
+  await ensureUserProfile(user);
   return user;
 }
 
@@ -186,7 +188,7 @@ export async function signInWithFacebook() {
     user = (await signInWithCredential(auth, credential)).user;
   }
 
-  await createSocialUserProfile(user);
+  await ensureUserProfile(user);
   return user;
 }
 

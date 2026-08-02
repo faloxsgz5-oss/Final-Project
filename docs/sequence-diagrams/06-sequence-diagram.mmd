@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    actor U as ผู้ใช้
+    participant C as Calendar
+    participant N as Notes
+    participant FS as Cloud Firestore
+    participant AI as SmartLife AI
+
+    U->>C: เปิดวันที่มี Quiz / Class
+    C->>FS: อ่าน schedules ของวันนั้น
+    FS-->>C: courseCode และหัวข้อเรียน
+    C->>FS: ค้น notes ตาม courseCode/category
+    FS-->>C: โน้ตที่เกี่ยวข้อง
+    C-->>U: แนะนำ "อ่าน Linked List ก่อนควิซ"
+    U->>N: เปิดหรือแก้โน้ต
+    N->>FS: บันทึก note พร้อม tag/subject
+    U->>AI: ขอให้สรุปโน้ตหรือสร้าง checklist
+    AI-->>U: เนื้อหาสรุปและรายการเตรียมตัว

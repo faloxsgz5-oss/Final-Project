@@ -211,9 +211,36 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
     const endAt = new Date(startAt);
     endAt.setMonth(endAt.getMonth() + 1);
     return adminAnnouncements.create(uid, {
-      title: asString(data.title), message: asString(data.message), kind: 'update', active: true,
+      title: asString(data.title), message: asString(data.message),
+      kind: (['update', 'maintenance', 'feature', 'urgent'].includes(asString(data.kind)) ? asString(data.kind) : 'update') as 'update' | 'maintenance' | 'feature' | 'urgent',
+      active: true,
       startAt: Timestamp.fromDate(startAt), endAt: Timestamp.fromDate(endAt),
     });
+  }
+  if (pageKey.startsWith('admin/') && request.action === 'update-category') {
+    const updateData: Record<string, unknown> = {};
+    if (data.domain) updateData.domain = asString(data.domain);
+    if (data.labelTh) updateData.labelTh = asString(data.labelTh);
+    if (data.labelEn) updateData.labelEn = asString(data.labelEn);
+    if (data.icon) updateData.icon = asString(data.icon);
+    if (data.color) updateData.color = asString(data.color);
+    if (data.sortOrder !== undefined) updateData.sortOrder = Number(data.sortOrder ?? 100);
+    if (data.active !== undefined) updateData.active = data.active !== false;
+    return adminCategories.update(asString(data.id), updateData);
+  }
+  if (pageKey.startsWith('admin/') && request.action === 'delete-category') {
+    return adminCategories.remove(asString(data.id));
+  }
+  if (pageKey.startsWith('admin/') && request.action === 'update-announcement') {
+    const updateData: Record<string, unknown> = {};
+    if (data.title) updateData.title = asString(data.title);
+    if (data.message) updateData.message = asString(data.message);
+    if (data.kind) updateData.kind = asString(data.kind);
+    if (data.active !== undefined) updateData.active = data.active !== false;
+    return adminAnnouncements.update(asString(data.id), updateData);
+  }
+  if (pageKey.startsWith('admin/') && request.action === 'delete-announcement') {
+    return adminAnnouncements.remove(asString(data.id));
   }
   if (pageKey.startsWith('admin/') && request.action === 'toggle-user') {
     return adminCloud.setUserDisabled(asString(data.uid), data.disabled === true);

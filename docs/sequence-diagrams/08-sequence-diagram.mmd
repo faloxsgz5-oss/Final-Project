@@ -1,0 +1,20 @@
+flowchart TB
+    U[users / uid] --> S[schedules]
+    U --> N[notes]
+    U --> T[transactions]
+    U --> L[scanLogs]
+    U --> I[integrations/googleCalendar]
+    U --> R[aiRecommendations]
+    U --> F[feedback]
+    S -. courseCode / subject .-> N
+    S -. daily context .-> T
+    L -. schedule result .-> S
+    L -. receipt/slip result .-> T
+    T -. day/week/month aggregate .-> D[Finance Dashboard]
+    S -. priority / workload .-> A[AI Assistant]
+    N -. study context .-> A
+    T -. budget context .-> A
+    F --> AD[Admin Console]
+    L --> AD
+    T --> AD
+    S --> AD

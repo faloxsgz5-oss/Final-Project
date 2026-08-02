@@ -183,7 +183,6 @@ async function extractReceiptWithGemini(rawText, apiKey, imageDataUrl) {
                     type: "image",
                     data: image.data,
                     mime_type: image.mimeType,
-                    resolution: "high",
                 },
             ],
             response_format: {
@@ -191,7 +190,6 @@ async function extractReceiptWithGemini(rawText, apiKey, imageDataUrl) {
                 mime_type: "application/json",
                 schema: RECEIPT_SCHEMA,
             },
-            generation_config: { temperature: 0 },
         }),
     });
     const payload = await response.json();

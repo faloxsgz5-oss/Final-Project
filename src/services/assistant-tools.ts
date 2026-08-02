@@ -3,7 +3,7 @@ import {getFunctions, httpsCallable} from 'firebase/functions';
 
 import {isDemoMode} from '@/lib/demo-mode';
 import {ensureAppCheckReady} from '@/lib/app-check';
-import {firebaseApp} from '@/lib/firebase';
+import {auth, firebaseApp} from '@/lib/firebase';
 import {thailandRange} from '@/lib/thailand-time';
 import {
   explicitMutationClause,
@@ -12,12 +12,21 @@ import {
   isReadOnlyOrAdviceRequest,
   readOnlyClausesFromMixedMessage,
 } from '@/services/assistant-action-intent';
+import {withAssistantAuthRetry} from '@/services/assistant-auth-retry';
+import {assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
+import {
+  deterministicFinancialScenarioAnswer,
+  shouldUseDeterministicFinancialScenario,
+} from '@/services/assistant-financial-scenario';
 import {classifyAssistantIntent, latestConversationIntent, type AssistantIntent} from '@/services/assistant-intent';
 import {loadAssistantPreferences, saveAssistantPreference, type AssistantPreferences} from '@/services/assistant-memory';
 import {isNoteLookupIntent, noteLookupTerms} from '@/services/assistant-note-intent';
-import {activities, notes, schedules, transactions} from '@/services/firestore';
-import type {AssistantChatMessage, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
-import type {Activity, Note, Schedule, Transaction, WithId} from '@/types/smartlife';
+import {chooseAssistantExecutionRoute, chooseAssistantResponseMode, isSavingsPlanningRequest} from '@/services/assistant-response-strategy';
+import {isReceiptImageLookupRequest, selfContainedAssistantFallback} from '@/services/assistant-safe-fallback';
+import {rankAssistantTasks} from '@/services/assistant-task-ranking';
+import {activities, notes, scanLogs, schedules, transactions} from '@/services/firestore';
+import type {AssistantChatMessage, AssistantConversationState, AssistantConversationStatePatch, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantResponseMode, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
+import type {Activity, Note, ScanLog, Schedule, Transaction, WithId} from '@/types/smartlife';
 
 export const assistantToolSchemas: AssistantToolSchema[] = [
   {description: 'อ่านตารางเรียน กิจกรรม วันสอบ งานส่ง และสถานที่จากข้อมูลจริงของผู้ใช้', mutates: false, name: 'get_user_schedule', parameters: {date: 'ISO date', range: ['day', 'week', 'month']}},
@@ -34,11 +43,14 @@ export const assistantToolSchemas: AssistantToolSchema[] = [
 ];
 
 export type AssistantContext = {
+  availability: Record<'finance' | 'notes' | 'ocr' | 'schedules' | 'tasks', 'available' | 'failed' | 'partial'>;
   balance: number;
   monthExpense: number;
   monthIncome: number;
   monthTransactions: WithId<Transaction>[];
   notes: WithId<Note>[];
+  pendingTasks: WithId<Activity>[];
+  recentScanLogs: WithId<ScanLog>[];
   todayActivities: WithId<Activity>[];
   todaySchedules: WithId<Schedule>[];
   upcomingActivities: WithId<Activity>[];
@@ -52,8 +64,8 @@ const THAI_TIME_ZONE = 'Asia/Bangkok';
 const EXAM_PATTERN = /(สอบ|กลางภาค|ปลายภาค|midterm|final|quiz|ควิซ|test|exam)/i;
 const assistantFunctions = getFunctions(firebaseApp, 'asia-southeast1');
 const smartLifeAssistantReply = httpsCallable<
-  {history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string},
-  {content: string}
+  {conversationId: string; conversationState: AssistantConversationState; history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string; responseMode: AssistantResponseMode},
+  {content: string; selectedTask?: {dueAt?: string; title: string}; suggestions?: string[]}
 >(assistantFunctions, 'smartLifeAssistantReply');
 const assistantTelemetry = httpsCallable<
   {
@@ -74,29 +86,9 @@ export type AssistantReply = {
   latencyMs: number;
   proposedAction?: AssistantProposedAction;
   source: AssistantReplySource;
+  statePatch?: AssistantConversationStatePatch;
+  suggestions?: string[];
 };
-
-function classifyAssistantError(error: unknown): AssistantErrorKind {
-  const code = String((error as {code?: unknown})?.code ?? '').toLowerCase();
-  const message = String((error as {message?: unknown})?.message ?? '').toLowerCase();
-  if (/app.?check|play integrity|native-module-missing|rnfbappmodule/.test(`${code} ${message}`)) return 'app_check';
-  if (/unauthenticated|permission-denied|auth/.test(`${code} ${message}`)) return 'authentication';
-  if (/resource-exhausted|quota|429|rate.?limit/.test(`${code} ${message}`)) return 'quota';
-  if (/network|unavailable|deadline-exceeded|timeout|fetch/.test(`${code} ${message}`)) return 'network';
-  if (/data-loss|internal|gemini|empty response|invalid response/.test(`${code} ${message}`)) return 'gemini';
-  if (/firestore|firebase|functions\//.test(`${code} ${message}`)) return 'firebase';
-  return 'unknown';
-}
-
-function assistantErrorMessage(kind: AssistantErrorKind) {
-  if (kind === 'app_check') return 'App Check ยังไม่พร้อมในแอปที่ติดตั้งอยู่ครับ กรุณาสร้างและติดตั้ง Android build ใหม่ แล้วลองอีกครั้ง';
-  if (kind === 'authentication') return 'เซสชันเข้าสู่ระบบหมดอายุครับ กรุณาออกแล้วเข้าสู่ระบบใหม่';
-  if (kind === 'quota') return 'วันนี้มีการเรียก AI ถึงขีดจำกัดชั่วคราวแล้วครับ รอสักครู่แล้วลองใหม่ โดยข้อมูลตารางและการเงินที่อ่านจากระบบตรง ๆ ยังใช้งานได้';
-  if (kind === 'network') return 'ตอนนี้เชื่อมต่อบริการ AI ไม่สำเร็จครับ ตรวจอินเทอร์เน็ตแล้วลองอีกครั้ง';
-  if (kind === 'gemini') return 'Gemini ตอบกลับไม่สมบูรณ์ครับ ลองส่งคำถามเดิมอีกครั้งได้เลย';
-  if (kind === 'firebase') return 'ตอนนี้อ่านข้อมูลจาก Firebase ไม่สำเร็จครับ กรุณาลองใหม่อีกครั้ง';
-  return 'ตอนนี้ AI ตอบคำถามนี้ไม่สำเร็จครับ กรุณาลองอีกครั้ง';
-}
 
 export async function recordAssistantTelemetry(data: {
   errorKind?: AssistantErrorKind;
@@ -354,7 +346,7 @@ function noteTagFromMessage(message: string): NotePayload['tag'] {
   return 'all';
 }
 
-export async function loadAssistantContext(uid: string): Promise<AssistantContext> {
+async function loadAssistantContextSources(uid: string) {
   const today = rangeFor('day');
   const week = rangeFor('week');
   const month = rangeFor('month');
@@ -363,20 +355,108 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
   // more than two months away.
   upcomingEnd.setDate(upcomingEnd.getDate() + 180);
   const monthQueryEnd = new Date(month.end.getTime() - 1);
-  const [todaySchedules, todayActivities, weekSchedules, weekActivities, upcomingSchedules, upcomingActivities, weekTransactions, monthTransactions, noteList] = await Promise.all([
+  const results = await Promise.allSettled([
     schedules.between(uid, today.start, today.end),
     activities.between(uid, today.start, today.end),
     schedules.between(uid, week.start, week.end),
     activities.between(uid, week.start, week.end),
     schedules.between(uid, today.start, upcomingEnd),
     activities.between(uid, today.start, upcomingEnd),
+    activities.listTasks(uid),
     transactions.between(uid, week.start, new Date(week.end.getTime() - 1)),
     transactions.between(uid, month.start, monthQueryEnd),
     notes.list(uid),
+    scanLogs.list(uid),
   ]);
+  return results;
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T | [] {
+  return result.status === 'fulfilled' ? result.value : [];
+}
+
+function sourceAvailability(results: PromiseSettledResult<unknown>[]) {
+  const fulfilled = results.filter((result) => result.status === 'fulfilled').length;
+  if (fulfilled === results.length) return 'available' as const;
+  if (fulfilled === 0) return 'failed' as const;
+  return 'partial' as const;
+}
+
+export async function loadAssistantContext(uid: string): Promise<AssistantContext> {
+  let results = await loadAssistantContextSources(uid);
+  const authenticationFailures = results.filter((result) =>
+    result.status === 'rejected' && classifyAssistantError(result.reason) === 'authentication',
+  );
+  if (authenticationFailures.length) {
+    if (!auth.currentUser || auth.currentUser.uid !== uid) {
+      throw Object.assign(new Error('The authenticated user does not match the requested assistant context.'), {
+        code: 'functions/unauthenticated',
+      });
+    }
+    await auth.currentUser.getIdToken(true);
+    results = await loadAssistantContextSources(uid);
+    const unrecoverableAuthentication = results.find((result) =>
+      result.status === 'rejected' && classifyAssistantError(result.reason) === 'authentication',
+    );
+    if (unrecoverableAuthentication?.status === 'rejected') throw unrecoverableAuthentication.reason;
+  }
+
+  const [
+    todaySchedulesResult,
+    todayActivitiesResult,
+    weekSchedulesResult,
+    weekActivitiesResult,
+    upcomingSchedulesResult,
+    upcomingActivitiesResult,
+    pendingTasksResult,
+    weekTransactionsResult,
+    monthTransactionsResult,
+    notesResult,
+    scanLogsResult,
+  ] = results;
+  const todaySchedules = settledValue(todaySchedulesResult) as WithId<Schedule>[];
+  const todayActivities = settledValue(todayActivitiesResult) as WithId<Activity>[];
+  const weekSchedules = settledValue(weekSchedulesResult) as WithId<Schedule>[];
+  const weekActivities = settledValue(weekActivitiesResult) as WithId<Activity>[];
+  const upcomingSchedules = settledValue(upcomingSchedulesResult) as WithId<Schedule>[];
+  const upcomingActivities = settledValue(upcomingActivitiesResult) as WithId<Activity>[];
+  const pendingTasks = settledValue(pendingTasksResult) as WithId<Activity>[];
+  const weekTransactions = settledValue(weekTransactionsResult) as WithId<Transaction>[];
+  const monthTransactions = settledValue(monthTransactionsResult) as WithId<Transaction>[];
+  const noteList = settledValue(notesResult) as WithId<Note>[];
+  const recentScanLogs = settledValue(scanLogsResult) as WithId<ScanLog>[];
   const monthIncome = monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
   const monthExpense = monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
-  return {balance: monthIncome - monthExpense, monthExpense, monthIncome, monthTransactions, notes: noteList, todayActivities, todaySchedules, upcomingActivities, upcomingSchedules, weekActivities, weekSchedules, weekTransactions};
+  return {
+    availability: {
+      finance: sourceAvailability([weekTransactionsResult, monthTransactionsResult]),
+      notes: sourceAvailability([notesResult]),
+      ocr: sourceAvailability([scanLogsResult]),
+      schedules: sourceAvailability([
+        todaySchedulesResult,
+        todayActivitiesResult,
+        weekSchedulesResult,
+        weekActivitiesResult,
+        upcomingSchedulesResult,
+        upcomingActivitiesResult,
+      ]),
+      tasks: sourceAvailability([pendingTasksResult, notesResult]),
+    },
+    balance: monthIncome - monthExpense,
+    monthExpense,
+    monthIncome,
+    monthTransactions,
+    notes: noteList,
+    pendingTasks,
+    recentScanLogs,
+    todayActivities,
+    todaySchedules,
+    upcomingActivities,
+    upcomingSchedules,
+    weekActivities,
+    weekSchedules,
+    weekTransactions,
+  };
 }
 
 function checklistItems(message: string) {
@@ -516,7 +596,7 @@ function buildBudgetGuard(context: AssistantContext, preferences: AssistantPrefe
 
 function isFinanceLookupIntent(message: string) {
   const hasFinanceWord = /(เงิน|รายรับ|รายจ่าย|ยอดคงเหลือ|งบ|ค่าใช้จ่าย|ใช้จ่าย|ซื้อข้าว|ค่าอาหาร|ข้าว|อาหาร|บาท|ออม|เก็บเงิน|เก็บตัง|เงินเก็บ|เป้าหมาย|เงินสำรอง|ลงทุน|หุ้น|กองทุน|ผลตอบแทน|ดอกเบี้ย|ความเสี่ยง|budget|finance|income|expense|saving|investment)/i.test(message);
-  const asksForFactOrAdvice = /(เท่าไหร่|เท่าไร|กี่บาท|เหลือ|พอไหม|ควร|แนะนำ|วิเคราะห์|สรุป|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|เดือนนี้|วันนี้|พรุ่งนี้|ถึงสิ้นเดือน|ถ้ามี|สมมติ|ยังไง|อย่างไร|ทำไง|เริ่ม)/i.test(message);
+  const asksForFactOrAdvice = /(เท่าไหร่|เท่าไร|กี่บาท|เหลือ|พอไหม|ควร|แนะนำ|วิเคราะห์|สรุป|แบ่ง|จัดสรร|วางแผน|ใช้|อยู่|เดือนนี้|วันนี้|พรุ่งนี้|ถึงสิ้นเดือน|ถ้ามี|สมมติ|ยังไง|อย่างไร|ทำไง|เริ่ม|ออม|เก็บ|เป้าหมาย|ให้ได้|ให้ถึง)/i.test(message);
   // A short follow-up such as "มี 200 ควรแบ่งใช้ยังไง" is still a money
   // question even when the user does not repeat the word "เงิน" or "งบ".
   // Keep it local so the response always uses the supplied amount instead of
@@ -770,11 +850,17 @@ function buildFinanceAnswer(message: string, context: AssistantContext, preferen
   if (/(ลงทุน|หุ้น|กองทุน|สินทรัพย์|ผลตอบแทน|พอร์ต|investment)/i.test(message)) {
     return investmentGuidance(message);
   }
-  if (/(ออม|เก็บเงิน|เก็บตัง|เงินเก็บ|เป้าหมายการเงิน|เงินสำรอง|ฉุกเฉิน|saving)/i.test(message)) {
+  if (isSavingsPlanningRequest(message)) {
+    if (context.availability.finance !== 'available' && numericAmounts(message).length === 0) {
+      return 'ตอนนี้อ่านยอดการเงินจริงได้ไม่ครบ จึงยังไม่ใช้ยอด 0 บาทมาวางแผนแทนครับ บอกจำนวนเงินและเป้าหมายในคำถามได้เลย แล้วฉันจะคำนวณจากตัวเลขนั้นให้';
+    }
     return savingsGoalAnswer(message, context);
   }
   const userProvidedBudget = explicitAdviceBudget(message);
   if (userProvidedBudget) return explicitBudgetRecommendation(message, userProvidedBudget);
+  if (context.availability.finance !== 'available') {
+    return 'ตอนนี้อ่านรายการการเงินได้ไม่ครบ จึงยังยืนยันยอดคงเหลือหรือรายจ่ายจริงไม่ได้ครับ กรุณาลองใหม่อีกครั้ง';
+  }
 
   const summary = financePeriodSummary(message, context, preferences);
   const asksForRecommendation = /(ควร|แบ่ง|แนะนำ|ใช้ยังไง|ใช้เท่าไหร่|ใช้เท่าไร|ซื้อ|ข้าว|อาหาร|กิน|มื้อ|จัดสรร|วางแผน)/i.test(message);
@@ -813,7 +899,10 @@ function formatTime(date: Date) {
 type TaskDeadlineCandidate = {
   dueAt: Date | null;
   hasTime: boolean;
+  id?: string;
+  priority?: string;
   source: 'activity' | 'note';
+  status?: string;
   title: string;
 };
 
@@ -832,30 +921,29 @@ function noteDeadlineCandidate(note: WithId<Note>): TaskDeadlineCandidate | null
 }
 
 function upcomingTaskCandidates(context: AssistantContext) {
-  const activityTasks: TaskDeadlineCandidate[] = context.upcomingActivities
+  const activityTasks: TaskDeadlineCandidate[] = context.pendingTasks
     .filter((item) => item.type === 'task' && item.status !== 'completed' && item.status !== 'cancelled')
     .map((item) => ({
       dueAt: item.startAt.toDate(),
       hasTime: true,
+      id: item.id,
+      priority: item.priority,
       source: 'activity',
+      status: item.status,
       title: item.title,
     }));
   const noteTasks = context.notes
     .map(noteDeadlineCandidate)
     .filter((item): item is TaskDeadlineCandidate => Boolean(item));
   const seen = new Set<string>();
-  return [...activityTasks, ...noteTasks]
+  const unique = [...activityTasks, ...noteTasks]
     .filter((item) => {
       const key = `${item.title.trim().toLowerCase()}|${item.dueAt?.toISOString().slice(0, 10) ?? 'no-date'}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    })
-    .sort((left, right) => {
-      if (!left.dueAt) return 1;
-      if (!right.dueAt) return -1;
-      return left.dueAt.getTime() - right.dueAt.getTime();
     });
+  return rankAssistantTasks(unique);
 }
 
 function taskDueText(task: TaskDeadlineCandidate) {
@@ -871,7 +959,10 @@ function isTaskLookupIntent(message: string) {
 
 function buildUpcomingTasksAnswer(context: AssistantContext) {
   const tasks = upcomingTaskCandidates(context);
-  if (!tasks.length) return 'ยังไม่พบงานค้างหรือกำหนดส่งที่บันทึกไว้ครับ';
+  if (!tasks.length && context.availability.tasks !== 'available') {
+    return 'ตอนนี้ดึงรายการงานได้ไม่ครบ จึงยังยืนยันไม่ได้ว่าไม่มีงานค้างครับ กรุณาลองใหม่อีกครั้ง';
+  }
+  if (!tasks.length) return 'ตรวจรายการงานที่เข้าถึงได้ครบแล้ว และยังไม่พบงานค้างหรือกำหนดส่งที่บันทึกไว้ครับ';
 
   const datedTasks = tasks.filter((task) => task.dueAt);
   const undatedTasks = tasks.filter((task) => !task.dueAt);
@@ -901,7 +992,7 @@ function buildUpcomingTasksAnswer(context: AssistantContext) {
 
 function buildPriorityPlan(context: AssistantContext, preferences: AssistantPreferences) {
   const taskAnswer = buildUpcomingTasksAnswer(context);
-  if (/ยังไม่พบงานค้าง/.test(taskAnswer)) return taskAnswer;
+  if (!upcomingTaskCandidates(context).length) return taskAnswer;
   const focus = preferences.studyMinutes ?? 45;
   return `${taskAnswer}\nเริ่มจากงานรายการแรกก่อนสัก ${focus} นาทีครับ`;
 }
@@ -951,7 +1042,7 @@ function buildStudyPriorityAdvice(context: AssistantContext, preferences: Assist
     });
 
   if (!exams.length) {
-    const pendingStudyTasks = context.upcomingActivities
+    const pendingStudyTasks = context.pendingTasks
       .filter((item) => item.type === 'task' && item.status !== 'completed' && item.status !== 'cancelled')
       .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
     if (pendingStudyTasks.length) {
@@ -1746,6 +1837,9 @@ function buildNoteLookupAnswer(message: string, context: AssistantContext) {
   }
 
   if (!matchingNotes.length) {
+    if (context.availability.notes !== 'available') {
+      return 'ตอนนี้ดึงโน้ตได้ไม่ครบ จึงยังยืนยันไม่ได้ว่าไม่มีโน้ตที่ตรงกับคำถามครับ กรุณาลองใหม่อีกครั้ง';
+    }
     const subject = terms.length ? `ที่ตรงกับคำว่า “${terms.join(' ')}”` : category ? 'ในหมวดที่ถาม' : '';
     return `ไม่พบโน้ต${subject}จากข้อมูลที่บันทึกไว้ครับ`;
   }
@@ -1759,9 +1853,81 @@ function buildNoteLookupAnswer(message: string, context: AssistantContext) {
   return `พบโน้ต ${matchingNotes.length} รายการครับ\n${lines.join('\n')}`;
 }
 
+function ocrYearDescription(value: string) {
+  const year = Number(value.match(/(?:^|\D)(\d{4})(?:\D|$)/)?.[1]);
+  if (!Number.isFinite(year)) return '';
+  if (year >= 2400 && year <= 2699) {
+    return ` เป็นปี พ.ศ. ${year} (ตรงกับ ค.ศ. ${year - 543})`;
+  }
+  if (year >= 1900 && year <= 2199) {
+    return ` เป็นปี ค.ศ. ${year} (ตรงกับ พ.ศ. ${year + 543})`;
+  }
+  return '';
+}
+
+function buildRecentOcrAnswer(context: AssistantContext) {
+  if (context.availability.ocr === 'failed') {
+    return 'ตอนนี้ดึงประวัติ OCR ไม่สำเร็จ จึงยังยืนยันข้อมูลบนสลิปให้ไม่ได้ครับ กรุณาลองอีกครั้งเมื่อเชื่อมต่อได้';
+  }
+  const scan = context.recentScanLogs.find((item) =>
+    item.kind === 'receipt' && item.status === 'completed',
+  );
+  if (!scan) return 'ยังไม่พบสลิปหรือใบเสร็จที่ OCR อ่านสำเร็จในประวัติล่าสุดครับ';
+
+  const parsed = {
+    ...(scan.parsed ?? {}),
+    ...(scan.correctedParsed ?? {}),
+  };
+  const field = (...values: unknown[]) => values.find((value) =>
+    typeof value === 'string' ? Boolean(value.trim()) : value !== null && value !== undefined,
+  );
+  const merchant = String(field(parsed.merchant, parsed.merchantName, parsed.store, parsed.vendor) ?? 'ไม่พบ');
+  const amountValue = field(parsed.amount, parsed.total, parsed.totalAmount);
+  const amount = typeof amountValue === 'number'
+    ? `${amountValue.toLocaleString('th-TH', {maximumFractionDigits: 2})} บาท`
+    : amountValue ? `${String(amountValue)} บาท` : 'ไม่พบ';
+  const date = String(field(parsed.date) ?? 'ไม่พบ');
+  const time = String(field(parsed.time) ?? 'ไม่พบ');
+  const scannedAt = scan.createdAt?.toDate instanceof Function
+    ? textDate(scan.createdAt.toDate())
+    : 'ไม่ทราบเวลาที่สแกน';
+  return [
+    `พบใบเสร็จล่าสุดในประวัติ OCR ซึ่งสแกนเมื่อ ${scannedAt} ครับ`,
+    `วันที่บนเอกสาร: ${date}${date === 'ไม่พบ' ? '' : ocrYearDescription(date)}`,
+    `เวลา: ${time}`,
+    `จำนวนเงิน: ${amount}`,
+    `ร้านค้า/ผู้รับเงิน: ${merchant}`,
+    scan.correctedByUser ? 'ข้อมูลชุดนี้เป็นค่าที่ผู้ใช้ตรวจและแก้ไขแล้ว' : 'ควรเทียบกับรูปต้นฉบับอีกครั้งหากช่องใดมีความมั่นใจต่ำ',
+  ].join('\n');
+}
+
 function contextAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
   if (/^(?:หวัดดี|สวัสดี|ดีจ้า|hello|hi)(?:ครับ|ค่ะ|คับ|จ้า)?$/i.test(message.trim())) {
     return 'หวัดดีครับ! ฉันช่วยเช็กตาราง งานค้าง เงินคงเหลือ หรือช่วยจดรายการให้ได้เลย วันนี้อยากจัดการเรื่องไหนก่อนครับ?';
+  }
+  const selfContainedAnswer = selfContainedAssistantFallback(message);
+  if (selfContainedAnswer) return selfContainedAnswer;
+  if (
+    /(ตารางเรียน|ตาราง|เรียน)/i.test(message) &&
+    /(งาน.*(?:ใกล้ส่ง|ค้าง|กำหนดส่ง)|(?:ใกล้ส่ง|ค้าง|กำหนดส่ง).*งาน)/i.test(message) &&
+    /(งบ|เงิน.*เหลือ|ยอดคงเหลือ)/i.test(message) &&
+    /(พรุ่งนี้|วางแผน)/i.test(message)
+  ) {
+    return [
+      'สรุปเพื่อวางแผนพรุ่งนี้จากข้อมูลที่บันทึกไว้',
+      `ตาราง: ${buildCalendarTimeAnswer('พรุ่งนี้', context)}`,
+      `งาน: ${buildUpcomingTasksAnswer(context)}`,
+      `การเงิน: ${buildFinanceAnswer('ยอดคงเหลือเดือนนี้', context, preferences)}`,
+      'ลำดับที่แนะนำคือทำรายการที่มีกำหนดส่งใกล้ที่สุดก่อน แล้วจัดช่วงเรียนตามเวลาในตาราง และใช้งบพรุ่งนี้ไม่เกินกรอบที่คำนวณจากยอดคงเหลือครับ',
+    ].join('\n\n');
+  }
+  if (isReceiptImageLookupRequest(message)) {
+    return buildRecentOcrAnswer(context);
+  }
+  const scheduleLookup = isCalendarTimeLookupIntent(message) || isExamScheduleLookupIntent(message) ||
+    isUpcomingClassLookupIntent(message) || isActivityLookupIntent(message) || isStudyTimeIntent(message);
+  if (scheduleLookup && context.availability.schedules === 'failed') {
+    return 'ตอนนี้ดึงตารางเรียนและกิจกรรมไม่สำเร็จ จึงยังยืนยันวันหรือเวลาให้ไม่ได้ครับ กรุณาลองใหม่อีกครั้ง';
   }
   if (/(สรุปวันนี้|briefing|วันนี้ต้องทำอะไร)/i.test(message)) return buildDailyBriefing(context, preferences);
   if (isCalendarTimeLookupIntent(message)) return buildCalendarTimeAnswer(message, context);
@@ -1837,16 +2003,29 @@ function contextualOfflineAnswer(
   return '';
 }
 
+async function loadAssistantState(uid: string) {
+  return Promise.all([loadAssistantContext(uid), loadAssistantPreferences(uid)]);
+}
+
 export async function buildAssistantReply(
   uid: string,
   message: string,
   conversation: AssistantConversationTurn[] = [],
+  options: {
+    conversationId?: string;
+    conversationState?: AssistantConversationState;
+  } = {},
 ): Promise<AssistantReply> {
   const startedAt = Date.now();
   const understoodMessage = normalizeNaturalLanguageInput(message);
+  const runtimeConversationState: AssistantConversationState = options.conversationState ?? {
+    conversationId: options.conversationId ?? `conversation-ephemeral-${startedAt}`,
+    updatedAt: new Date().toISOString(),
+    version: 1,
+  };
   const intent = classifyAssistantIntent(
     understoodMessage,
-    latestConversationIntent(conversation),
+    runtimeConversationState.lastIntent ?? latestConversationIntent(conversation),
   );
   const reply = (
     content: string,
@@ -1854,6 +2033,8 @@ export async function buildAssistantReply(
     options: {
       errorKind?: AssistantErrorKind;
       proposedAction?: AssistantProposedAction;
+      statePatch?: AssistantConversationStatePatch;
+      suggestions?: string[];
     } = {},
   ): AssistantReply => ({
     content,
@@ -1862,14 +2043,28 @@ export async function buildAssistantReply(
     latencyMs: Date.now() - startedAt,
     proposedAction: options.proposedAction,
     source,
+    statePatch: options.statePatch ?? {lastIntent: intent},
+    suggestions: options.suggestions,
   });
+  const financialScenarioIsRelevant = shouldUseDeterministicFinancialScenario(
+    understoodMessage,
+    runtimeConversationState.financialScenario,
+  );
+  const financialScenarioAnswer = financialScenarioIsRelevant
+    ? deterministicFinancialScenarioAnswer(runtimeConversationState.financialScenario, understoodMessage)
+    : '';
+  if (financialScenarioAnswer) {
+    return reply(financialScenarioAnswer, 'deterministic', {
+      statePatch: {financialScenario: runtimeConversationState.financialScenario, lastIntent: 'finance'},
+    });
+  }
   const creationClarification = scheduleCreationClarification(message);
   if (creationClarification) return reply(creationClarification, 'deterministic');
   const proposedAction = proposeActionFromMessage(message);
   if (proposedAction) {
     const lookupClauses = readOnlyClausesFromMixedMessage(message);
     if (lookupClauses.length) {
-      const [context, preferences] = await Promise.all([loadAssistantContext(uid), loadAssistantPreferences(uid)]);
+      const [context, preferences] = await loadAssistantState(uid);
       const lookupAnswers = lookupClauses
         .map((clause) => contextAnswer(normalizeNaturalLanguageInput(clause), context, preferences))
         .filter(Boolean);
@@ -1887,21 +2082,27 @@ export async function buildAssistantReply(
       {proposedAction},
     );
   }
-  const [context, preferences] = await Promise.all([loadAssistantContext(uid), loadAssistantPreferences(uid)]);
-  const studyReschedule = contextualStudyReschedule(understoodMessage, conversation);
-  if (studyReschedule) {
-    const rescheduled = buildFreeTime(studyReschedule.contextualMessage, context, preferences);
-    const retainedSubject = studyReschedule.subject && !rescheduled.includes(studyReschedule.subject)
-      ? `\nใช้ช่วงใหม่นี้อ่าน ${studyReschedule.subject} ตามที่คุยไว้ได้เลยครับ`
-      : '';
-    return reply(`เข้าใจครับ งั้นปรับเวลาใหม่ตามที่บอกนะ\n${rescheduled}${retainedSubject}`, 'deterministic');
-  }
-  const answer = contextAnswer(understoodMessage, context, preferences);
-  // All locally understood requests use verified user data or deterministic
-  // calculations. Gemini is reserved for genuinely open-ended questions so it
-  // cannot overwrite exact balances, notes, schedules, or requested amounts.
-  if (answer) return reply(answer, 'deterministic');
-  if (!isDemoMode) {
+  const responseMode = chooseAssistantResponseMode(understoodMessage);
+  const executionRoute = chooseAssistantExecutionRoute({hasMutation: false, isDemoMode});
+  const loadFallback = async () => {
+    const [context, preferences] = await loadAssistantState(uid);
+    const studyReschedule = contextualStudyReschedule(understoodMessage, conversation);
+    let answer = '';
+    if (studyReschedule) {
+      const rescheduled = buildFreeTime(studyReschedule.contextualMessage, context, preferences);
+      const retainedSubject = studyReschedule.subject && !rescheduled.includes(studyReschedule.subject)
+        ? `\nใช้ช่วงใหม่นี้อ่าน ${studyReschedule.subject} ตามที่คุยไว้ได้เลยครับ`
+        : '';
+      answer = `เข้าใจครับ งั้นปรับเวลาใหม่ตามที่บอกนะ\n${rescheduled}${retainedSubject}`;
+    } else {
+      answer = contextAnswer(understoodMessage, context, preferences);
+    }
+    return {answer, context, preferences};
+  };
+  // Read-only questions and advice are Gemini-first so follow-ups can revise,
+  // compare, plan, and answer every part naturally. The client only reads
+  // Firestore if a deterministic fallback is actually needed.
+  if (executionRoute === 'gemini') {
     try {
       await ensureAppCheckReady();
       const history = conversation
@@ -1910,24 +2111,77 @@ export async function buildAssistantReply(
         )
         .slice(-12)
         .map((turn) => ({content: turn.content.slice(0, 600), role: turn.role}));
-      const result = await smartLifeAssistantReply({history, intent, message: understoodMessage});
+      const assistantRequest = {
+        conversationId: runtimeConversationState.conversationId,
+        // Do not send an old finance scenario into an unrelated turn. History
+        // remains available, but the latest message must explicitly continue
+        // the scenario before its structured numbers can influence Gemini.
+        conversationState: financialScenarioIsRelevant
+          ? runtimeConversationState
+          : {...runtimeConversationState, financialScenario: undefined},
+        history,
+        intent,
+        message: understoodMessage,
+        responseMode,
+      };
+      const result = await withAssistantAuthRetry(
+        () => smartLifeAssistantReply(assistantRequest),
+        {
+          expectedUid: uid,
+          getCurrentUid: () => auth.currentUser?.uid,
+          refreshToken: () => auth.currentUser?.getIdToken(true) ?? Promise.reject(new Error('No authenticated user.')),
+        },
+      );
       const content = result.data.content.trim();
-      if (content) return reply(content, 'gemini');
+      const suggestions = Array.isArray(result.data.suggestions)
+        ? result.data.suggestions
+          .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+          .map((item) => item.trim().slice(0, 120))
+          .slice(0, 3)
+        : [];
+      if (content) {
+        const selectedTask = result.data.selectedTask?.title ? result.data.selectedTask : undefined;
+        return reply(content, 'gemini', {
+          statePatch: selectedTask ? {
+            lastIntent: intent,
+            selectedTask: {
+              dueAt: selectedTask.dueAt,
+              title: selectedTask.title,
+            },
+          } : {lastIntent: intent},
+          suggestions,
+        });
+      }
+      throw Object.assign(new Error('SmartLife AI returned an empty response.'), {code: 'functions/data-loss'});
     } catch (error) {
       const errorKind = classifyAssistantError(error);
-      if (answer) return reply(answer, 'fallback', {errorKind});
-      const offlineAnswer = contextualOfflineAnswer(
-        intent,
-        understoodMessage,
-        conversation,
-        context,
-        preferences,
-      );
-      if (offlineAnswer) return reply(offlineAnswer, 'fallback', {errorKind});
+      try {
+        const {answer, context, preferences} = await loadFallback();
+        if (answer) return reply(answer, 'fallback', {errorKind});
+        const offlineAnswer = contextualOfflineAnswer(
+          intent,
+          understoodMessage,
+          conversation,
+          context,
+          preferences,
+        );
+        if (offlineAnswer) return reply(offlineAnswer, 'fallback', {errorKind});
+      } catch (fallbackError) {
+        const fallbackErrorKind = classifyAssistantError(fallbackError);
+        if (fallbackErrorKind === 'authentication' || fallbackErrorKind === 'permission') {
+          return reply(assistantErrorMessage(fallbackErrorKind), 'fallback', {errorKind: fallbackErrorKind});
+        }
+      }
       return reply(assistantErrorMessage(errorKind), 'fallback', {errorKind});
     }
   }
-  if (answer) return reply(answer, 'deterministic');
+  try {
+    const {answer} = await loadFallback();
+    if (answer) return reply(answer, 'deterministic');
+  } catch (error) {
+    const errorKind = classifyAssistantError(error);
+    return reply(assistantErrorMessage(errorKind), 'fallback', {errorKind});
+  }
   return reply(
     'ฉันช่วยเช็กตาราง งานค้าง การเงิน และโน้ต หรือช่วยเพิ่มรายการให้ได้ครับ ลองบอกสิ่งที่อยากจัดการมาได้เลย',
     'fallback',

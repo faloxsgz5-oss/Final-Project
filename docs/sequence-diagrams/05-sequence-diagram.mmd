@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    actor U as ผู้ใช้
+    participant A as Finance Screen
+    participant FS as Cloud Firestore
+    participant AI as OCR / NLP Result
+
+    U->>A: สแกนใบเสร็จหรือเพิ่มรายจ่ายเอง
+    A->>AI: ส่งผล OCR ที่แก้ไขแล้ว
+    AI-->>A: merchant, items, total, date/time, category
+    A->>A: ตรวจยอดรวมจากรายการสินค้า
+    U->>A: เลือกวัน/เวลาและยืนยัน
+    A->>FS: บันทึก transactions/{id} พร้อม occurredAt timestamp
+    FS-->>A: บันทึกสำเร็จ
+    A->>FS: query ตามช่วงเวลา Day / Week / Month
+    FS-->>A: รายการและยอดรวมจริง
+    A-->>U: อัปเดตภาพรวม รายรับ รายจ่าย และหมวดหมู่
+
+    Note over A,FS: ตารางเรียนสามารถส่งบริบทเพื่อแนะนำงบอาหาร/เดินทางรายวัน

@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    actor U as ผู้ใช้
+    participant A as SmartLife Calendar
+    participant GO as Google OAuth
+    participant GC as Google Calendar API
+    participant FS as Cloud Firestore
+
+    U->>A: กดเชื่อม Google Calendar
+    A->>GO: เริ่ม OAuth พร้อม calendar.events scope
+    GO-->>A: authorization code / access token
+    A->>FS: บันทึกสถานะ integration ของ uid
+    A-->>U: แสดงว่าเชื่อมต่อแล้ว
+
+    U->>A: กด Sync ลงจาก Google
+    A->>GC: events.list(timeMin, timeMax)
+    GC-->>A: รายการกิจกรรม Google
+    A->>FS: อัปเดต synced events ของผู้ใช้
+    A-->>U: แสดงกิจกรรมใน Day / Week / Month / Year
+
+    U->>A: บันทึกตารางจาก OCR
+    A->>A: สร้าง recurrence รายสัปดาห์ตาม semester
+    A->>FS: บันทึก schedules + seriesId
+    A->>GC: events.insert(RRULE:FREQ=WEEKLY)
+    GC-->>A: googleEventId
+    A->>FS: ผูก googleEventId กับ schedule
+
+    U->>A: ยกเลิกการเชื่อมต่อ
+    A->>FS: ล้าง calendar integration status
+    A-->>U: หยุด Sync โดยไม่ลบบัญชี Firebase

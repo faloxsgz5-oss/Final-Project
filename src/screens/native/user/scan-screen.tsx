@@ -356,20 +356,32 @@ function ReceiptScanDashboard({
   confirmAndSave,
   draft,
   imageUri,
+  onDraftChange,
   onNavigate,
   pick,
   result,
   saving,
+  updateReceiptItem,
 }: {
   confirmAndSave: () => void;
   draft: Record<string, unknown>;
   imageUri: string;
+  onDraftChange: (key: string, value: string) => void;
   onNavigate: UserNavigate;
   pick: (source: "camera" | "library") => Promise<void>;
   result: OcrResult | null;
   saving: boolean;
+  updateReceiptItem: (
+    index: number,
+    key: keyof ReceiptItem,
+    value: string,
+  ) => void;
 }) {
   const [receiptHtmlOpen, setReceiptHtmlOpen] = useState(false);
+  const [imageViewerOpen, setImageViewerOpen] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<"date" | "time" | null>(
+    null,
+  );
   const merchant = textValue(
     draft.merchant ?? draft.store ?? draft.vendor,
     "ร้านค้าที่สแกน",
@@ -483,6 +495,112 @@ function ReceiptScanDashboard({
           </>
         ) : (
           <>
+            <View style={receiptStyles.sourceImageCard}>
+              <View style={receiptStyles.sourceImageHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={receiptStyles.sourceImageTitle}>รูปต้นฉบับ</Text>
+                  <Text style={receiptStyles.sourceImageSubtitle}>
+                    ดูรูปเทียบกับข้อมูลด้านล่าง แล้วแตะช่องที่ต้องการแก้ไข
+                  </Text>
+                </View>
+                <Pressable onPress={() => pick("library")}>
+                  <MaterialIcon color={C.sage} name="refresh" size={20} />
+                </Pressable>
+              </View>
+              <Pressable onPress={() => setImageViewerOpen(true)}>
+                <Image
+                  contentFit="contain"
+                  source={{ uri: imageUri }}
+                  style={receiptStyles.sourceImage}
+                />
+              </Pressable>
+            </View>
+            <View style={receiptStyles.editorCard}>
+              <Text style={receiptStyles.editorTitle}>ตรวจและแก้ไขผล OCR</Text>
+              <EditableRow
+                icon="storefront"
+                label="ผู้รับ / ร้านค้า"
+                onChangeText={(value) => onDraftChange("merchant", value)}
+                value={textValue(draft.merchant ?? draft.merchantName, "")}
+              />
+              <EditableRow
+                icon="payments"
+                keyboardType="decimal-pad"
+                label="ยอดรวม (บาท)"
+                onChangeText={(value) => onDraftChange("total", value)}
+                value={String(firstPresentValue(draft.total, draft.amount, draft.totalAmount) ?? "")}
+              />
+              <EditableRow
+                icon="category"
+                label="หมวดหมู่"
+                onChangeText={(value) => onDraftChange("category", value)}
+                value={textValue(draft.category, "")}
+              />
+              <PickerDataRow
+                icon="event"
+                label="วันที่"
+                onPress={() => setPickerTarget("date")}
+                value={thaiDateLabel(draft.date)}
+              />
+              <PickerDataRow
+                icon="schedule"
+                label="เวลา"
+                onPress={() => setPickerTarget("time")}
+                value={textValue(draft.time, "แตะเพื่อเลือกเวลา")}
+              />
+              {pickerTarget ? (
+                <NativeDateTimePicker
+                  accentColor={C.sage}
+                  is24Hour
+                  mode={pickerTarget}
+                  onDismiss={() => setPickerTarget(null)}
+                  onValueChange={(_, selectedDate) => {
+                    onDraftChange(
+                      pickerTarget,
+                      pickerTarget === "date"
+                        ? bangkokDateKey(selectedDate)
+                        : timeKey(selectedDate),
+                    );
+                    setPickerTarget(null);
+                  }}
+                  presentation="dialog"
+                  value={pickerTarget === "date" ? dateFromKey(draft.date) : timeFromText(draft.time)}
+                />
+              ) : null}
+              {items.length ? (
+                <View style={localStyles.receiptItemsCard}>
+                  <Text style={localStyles.receiptItemsTitle}>รายการสินค้า</Text>
+                  {items.map((item, index) => (
+                    <View key={`receipt-editor-${index}`} style={localStyles.receiptItemEditor}>
+                      <TextInput
+                        accessibilityLabel={`ชื่อสินค้ารายการที่ ${index + 1}`}
+                        onChangeText={(value) => updateReceiptItem(index, "name", value)}
+                        placeholder="ชื่อสินค้า"
+                        style={localStyles.receiptItemNameInput}
+                        value={item.name}
+                      />
+                      <View style={localStyles.receiptItemNumbers}>
+                        <ReceiptItemInput
+                          label="จำนวน"
+                          onChangeText={(value) => updateReceiptItem(index, "quantity", value)}
+                          value={item.quantity === null ? "" : String(item.quantity)}
+                        />
+                        <ReceiptItemInput
+                          label="ราคาต่อหน่วย"
+                          onChangeText={(value) => updateReceiptItem(index, "unitPrice", value)}
+                          value={item.unitPrice === null ? "" : String(item.unitPrice)}
+                        />
+                        <ReceiptItemInput
+                          label="ราคารวม"
+                          onChangeText={(value) => updateReceiptItem(index, "totalPrice", value)}
+                          value={item.totalPrice === null ? "" : String(item.totalPrice)}
+                        />
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
             <View style={receiptStyles.receiptCard}>
               <View style={receiptStyles.merchantRow}>
                 <View style={receiptStyles.merchantIcon}>
@@ -642,6 +760,11 @@ function ReceiptScanDashboard({
               onClose={() => setReceiptHtmlOpen(false)}
               visible={receiptHtmlOpen}
             />
+            <ScanImageViewer
+              onClose={() => setImageViewerOpen(false)}
+              uri={imageUri}
+              visible={imageViewerOpen}
+            />
           </>
         )}
       </View>
@@ -665,6 +788,13 @@ const receiptStyles = StyleSheet.create({
     marginTop: 13,
     padding: 14,
   },
+  editorCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    marginTop: 13,
+    padding: 14,
+  },
+  editorTitle: { color: C.pine, fontFamily: F.x, fontSize: 13, marginBottom: 6 },
   analysisHead: { color: C.pine, fontFamily: F.b, fontSize: 11 },
   analysisIcon: {
     alignItems: "center",
@@ -809,6 +939,11 @@ const receiptStyles = StyleSheet.create({
   merchantRow: { alignItems: "center", flexDirection: "row", gap: 10 },
   merchantSub: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2 },
   page: { paddingBottom: 6 },
+  sourceImage: { backgroundColor: "#f5f7f2", borderRadius: 14, height: 300, width: "100%" },
+  sourceImageCard: { backgroundColor: "#fff", borderRadius: 20, marginTop: 13, padding: 12 },
+  sourceImageHeader: { alignItems: "center", flexDirection: "row", marginBottom: 9 },
+  sourceImageSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2 },
+  sourceImageTitle: { color: C.pine, fontFamily: F.x, fontSize: 13 },
   pickButton: {
     alignItems: "center",
     backgroundColor: "#fff",
@@ -1200,7 +1335,7 @@ export default function ScanScreen({
 
   const handleScanScroll = (offsetY: number) => {
     const shouldPin = Boolean(
-      result?.scanType === "schedule" &&
+      result &&
       imageUri &&
       imageCardFrame.height > 0 &&
       offsetY >= imageCardFrame.top + imageCardFrame.height,
@@ -1219,8 +1354,9 @@ export default function ScanScreen({
     380,
     Math.max(190, imageContentWidth / safeImageAspectRatio),
   );
-  // Keep the pinned image at the same readable size as the original preview.
-  const pinnedPreviewHeight = previewHeight;
+  // Receipt review needs room for editable fields, so keep a compact floating
+  // source image. Schedules stay wide because table columns need more space.
+  const pinnedPreviewHeight = result?.scanType === "receipt" ? 220 : previewHeight;
 
   const persistOcrResult = async () => {
     if (!result || saving) return;
@@ -1300,10 +1436,12 @@ export default function ScanScreen({
         confirmAndSave={confirmAndSave}
         draft={draft}
         imageUri={imageUri}
+        onDraftChange={updateDraft}
         onNavigate={onNavigate}
         pick={pick}
         result={result}
         saving={saving}
+        updateReceiptItem={updateReceiptItem}
       />
     );
   }
@@ -2021,8 +2159,14 @@ export default function ScanScreen({
             visible={Boolean(feedback)}
           />
         </ScrollView>
-        {isImagePinned && result?.scanType === "schedule" ? (
-          <View pointerEvents="box-none" style={localStyles.pinnedPreviewLayer}>
+        {isImagePinned && result ? (
+          <View
+            pointerEvents="box-none"
+            style={[
+              localStyles.pinnedPreviewLayer,
+              result.scanType === "receipt" && localStyles.pinnedReceiptLayer,
+            ]}
+          >
             <Pressable
               accessibilityHint="แตะเพื่อเปิดภาพเต็มจอและซูม"
               accessibilityLabel="เปิดภาพที่สแกนขนาดใหญ่"
@@ -2806,6 +2950,12 @@ const localStyles = StyleSheet.create({
     right: 18,
     top: 0,
     zIndex: 10,
+  },
+  pinnedReceiptLayer: {
+    left: undefined,
+    right: 12,
+    top: 8,
+    width: 176,
   },
   scanScroll: { flexGrow: 1, paddingBottom: 18 },
   scanShell: { flex: 1 },

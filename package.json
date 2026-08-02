@@ -56,6 +56,7 @@
     "start:expo-go": "expo start --go",
     "start:tunnel": "expo start --dev-client --tunnel",
     "tunnel": "expo start --dev-client --tunnel",
+    "setup:team": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup-team.ps1",
     "deploy:firestore-rules": "npx -y firebase-tools@latest deploy --only firestore:rules --project smartlife-budget",
     "doctor": "node ./scripts/check-runtime-config.cjs",
     "doctor:release": "node ./scripts/check-release-readiness.cjs",
@@ -70,6 +71,9 @@
     "generate:assistant-fuzz": "node ./scripts/generate-assistant-fuzz-dataset.cjs",
     "test:assistant-intents": "node --experimental-strip-types ./scripts/test-assistant-intents.mjs",
     "test:assistant-actions": "node --experimental-strip-types ./scripts/test-assistant-action-intents.mjs",
+    "test:assistant-responses": "node --experimental-strip-types ./scripts/test-assistant-response-strategy.mjs",
+    "test:assistant-runtime": "node --experimental-strip-types ./scripts/test-assistant-runtime-regressions.mjs",
+    "test:assistant-eval": "node ./scripts/test-assistant-evaluation-set.mjs",
     "test:assistant-fuzz": "node --experimental-strip-types ./scripts/test-assistant-fuzz.mjs"
   },
   "private": true

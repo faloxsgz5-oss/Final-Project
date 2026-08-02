@@ -7,10 +7,56 @@ export type AssistantErrorKind =
   | 'authentication'
   | 'firebase'
   | 'gemini'
+  | 'invalid_data'
+  | 'missing_input'
   | 'network'
+  | 'permission'
   | 'quota'
+  | 'server'
+  | 'unsupported'
   | 'unknown';
 export type AssistantFeedbackRating = 'helpful' | 'not_helpful';
+export type AssistantResponseMode =
+  | 'brainstorm'
+  | 'coach'
+  | 'compare'
+  | 'direct'
+  | 'explain'
+  | 'plan'
+  | 'summarize';
+
+export type AssistantFinancialScenario = {
+  dailyBudget?: number;
+  days?: number;
+  foodBudget?: number;
+  mealCount?: number;
+  months?: number;
+  savingsAmount?: number;
+  startingAmount?: number;
+  targetAmount?: number;
+  type: 'budget' | 'savings_goal';
+};
+
+export type AssistantSelectedTask = {
+  dueAt?: string;
+  id?: string;
+  title: string;
+};
+
+export type AssistantConversationState = {
+  conversationId: string;
+  dateReference?: 'month' | 'today' | 'tomorrow' | 'week';
+  financialScenario?: AssistantFinancialScenario;
+  lastIntent?: 'finance' | 'schedule' | 'task_note' | 'unknown';
+  selectedTask?: AssistantSelectedTask;
+  updatedAt: string;
+  version: 1;
+};
+
+export type AssistantConversationStatePatch = Partial<Pick<
+  AssistantConversationState,
+  'dateReference' | 'financialScenario' | 'lastIntent' | 'selectedTask'
+>>;
 
 export type SchedulePayload = {
   endAt?: string;
@@ -99,6 +145,7 @@ export type AssistantChatMessage = {
   proposedAction?: AssistantProposedAction;
   role: 'assistant' | 'system' | 'user';
   source?: AssistantReplySource;
+  suggestions?: string[];
   timestamp: string;
 };
 

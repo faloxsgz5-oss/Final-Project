@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    actor U as ผู้ใช้
+    participant A as Unified Dashboard / AI Assistant
+    participant CF as Cloud Function AI Gateway
+    participant FS as Cloud Firestore
+    participant G as Gemini API
+
+    U->>A: พิมพ์หรือพูดคำถาม
+    A->>CF: ส่ง prompt + uid + context ที่จำเป็น
+    CF->>FS: อ่าน schedules, notes, transactions, activities
+    FS-->>CF: ข้อมูลตามสิทธิ์ของผู้ใช้
+    CF->>G: สร้างคำตอบและจัดลำดับความสำคัญ
+    G-->>CF: answer + priorities + recommendations
+    CF->>FS: บันทึก aiRecommendations / ai usage log
+    CF-->>A: คำตอบและการ์ด Dynamic Prioritization
+    A-->>U: แสดงงานด่วน, งบวันนี้ และคำแนะนำพัก
+
+    Note over A,G: Burnout Predictor ใช้สัดส่วนเรียน งาน พักผ่อน และพฤติกรรมเลื่อนกิจกรรม

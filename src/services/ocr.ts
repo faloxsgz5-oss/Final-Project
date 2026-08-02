@@ -1,6 +1,7 @@
 import {getFunctions, httpsCallable} from 'firebase/functions';
 
 import {isDemoMode} from '@/lib/demo-mode';
+import {ensureAppCheckReady} from '@/lib/app-check';
 import {firebaseApp} from '@/lib/firebase';
 import {uploadUserImage, type UploadKind} from '@/services/storage';
 
@@ -31,6 +32,35 @@ const analyzeScan = httpsCallable<
   {scanType: ScanType; storagePath: string},
   OcrResult
 >(functions, 'analyzeScan');
+
+export type ReviewedReceiptPayload = {
+  amount: number;
+  category: string;
+  confidence: number;
+  items: {
+    discountAmount: number;
+    finalPrice: number;
+    name: string;
+    quantity: number;
+    unitPrice: number;
+  }[];
+  merchant: string;
+  occurredAt: string;
+  scanId: string;
+  storagePath: string;
+};
+
+const saveReviewedReceiptCall = httpsCallable<
+  ReviewedReceiptPayload,
+  {transactionId: string}
+>(functions, 'saveReviewedReceipt');
+
+export async function saveReviewedReceipt(payload: ReviewedReceiptPayload) {
+  if (isDemoMode) return `demo-transaction-${Date.now()}`;
+  await ensureAppCheckReady();
+  const response = await saveReviewedReceiptCall(payload);
+  return response.data.transactionId;
+}
 
 export async function uploadAndAnalyzeScan({
   contentType = 'image/jpeg',

@@ -1,61 +1,64 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SCHEDULE_EXTRACTION_SYSTEM_PROMPT = void 0;
-exports.extractScheduleWithGemini = extractScheduleWithGemini;
-exports.SCHEDULE_EXTRACTION_SYSTEM_PROMPT = `Act as a high-precision university timetable extraction engine.
+exports.SCHEDULE_TEMPORAL_REVIEW_SYSTEM_PROMPT = void 0;
+exports.reviewScheduleTemporalFieldsWithGemini = reviewScheduleTemporalFieldsWithGemini;
+exports.SCHEDULE_TEMPORAL_REVIEW_SYSTEM_PROMPT = `You are a high-precision temporal verifier for Thai class schedules.
 
-Analyze the supplied high-resolution schedule image and OCR text. Accuracy is the highest priority. Extract only information visibly supported by the image or OCR; never autocomplete, invent, or use a default time.
-
-STEP 1 - COURSE DICTIONARY AND EXAMS
-Scan the bottom table labelled "ตารางสอบ" first. Build a dictionary that maps each base course code and section to its exact full course name. A code such as "1101101-1" in the table matches course code "1101101", section "1" in the grid. Preserve meaningful spaces in alphanumeric codes such as "IST30 1104". This dictionary step is mandatory: when a grid course code exists in the bottom table, courseName must contain that table's complete course name and must never be empty.
-Read the midterm column "สอบกลางภาค" and final column "สอบประจำภาค" for each matched course. Preserve the complete visible exam text, including date, time, location, and seat. A dash or blank cell means null. If no exam table exists, both exam fields are null.
-
-STEP 2 - SPATIAL SCHEDULE GRID
-Scan the top grid row by row from Monday through Sunday and inspect every colored class block.
-Line 1 is the course code and section.
-Line 2 is the exact room, building, or location. Preserve it exactly without translation or correction.
-Line 3 is the class time in parentheses. If it is legible, split that exact range into startTime and endTime. If it is blurry or missing, infer both values only by tracing the LEFT and RIGHT edges of that same colored block to the visible time-column headers. Every returned class must have startTime and endTime. Never output a guessed or default time.
-Return one entry per colored class block, including duplicate course codes when they represent different blocks, locations, days, or times.
+Your only task is to verify temporal facts that are visibly printed in the supplied schedule image: day of week, class start time, class end time, semester start/end dates, and academic year.
 
 STRICT RULES
-- Preserve Thai and English course names and locations exactly as visible.
-- Preserve literal Buddhist Era years and dates exactly; do not compare them with today's date.
-- Never use 09:00, 10:00, or any other time unless the block text or its grid boundaries visibly support it.
-- courseName, startTime, and endTime are mandatory for every returned class. Re-check the bottom table and grid boundaries before producing the response.
-- Other fields that genuinely cannot be determined may be null.
-- Do not return exam-only rows that do not appear as classes in the top grid.
-- Return only the JSON array required by the response schema. Do not include Markdown or reasoning.`;
+1. Candidate entries and entry_index values are supplied only as anchors. Never change, infer, or return course codes, course names, sections, rooms, buildings, teachers, exams, or any other non-temporal field.
+2. Use the document image as authority. OCR text is only a hint and can be wrong.
+3. Ignore phone status bars, screenshot clocks, upload times, app UI, and the current system date.
+4. Never guess or use a default time. Return null when a temporal value is not clearly visible.
+5. Normalize days to MON, TUE, WED, THU, FRI, SAT, or SUN.
+6. Normalize class times to 24-hour HH:mm.
+7. Normalize visible semester dates to Gregorian ISO YYYY-MM-DD. Convert a Thai Buddhist year by subtracting 543.
+8. academic_year must preserve the exact visible four-digit year, whether Buddhist Era or Gregorian.
+9. Every correction must include a short exact evidence excerpt visibly supporting it and a confidence from 0 to 1.
+10. Return only the JSON required by the response schema.`;
 const nullableString = { type: ["string", "null"] };
-const requiredString = { type: "string" };
-const requiredTime = { type: "string" };
-const SCHEDULE_SCHEMA = {
-    type: "array",
-    items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-            courseCode: requiredString,
-            courseName: requiredString,
-            section: nullableString,
-            buildingName: nullableString,
-            day: nullableString,
-            startTime: requiredTime,
-            endTime: requiredTime,
-            midtermExam: nullableString,
-            finalExam: nullableString,
+const SCHEDULE_TEMPORAL_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+        academic_year: nullableString,
+        semester_start: nullableString,
+        semester_end: nullableString,
+        calendar_confidence: { type: "number", minimum: 0, maximum: 1 },
+        calendar_evidence: nullableString,
+        entries: {
+            type: "array",
+            items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                    entry_index: { type: "integer", minimum: 0 },
+                    day: nullableString,
+                    start_time: nullableString,
+                    end_time: nullableString,
+                    confidence: { type: "number", minimum: 0, maximum: 1 },
+                    evidence: nullableString,
+                },
+                required: [
+                    "entry_index",
+                    "day",
+                    "start_time",
+                    "end_time",
+                    "confidence",
+                    "evidence",
+                ],
+            },
         },
-        required: [
-            "courseCode",
-            "courseName",
-            "section",
-            "buildingName",
-            "day",
-            "startTime",
-            "endTime",
-            "midtermExam",
-            "finalExam",
-        ],
     },
+    required: [
+        "academic_year",
+        "semester_start",
+        "semester_end",
+        "calendar_confidence",
+        "calendar_evidence",
+        "entries",
+    ],
 };
 const DAY_MAP = {
     MON: "MON",
@@ -95,6 +98,27 @@ function normalizeTime(value) {
     const match = cleanNullable(value)?.match(/^([01]?\d|2[0-3])[:.]([0-5]\d)$/);
     return match ? `${match[1].padStart(2, "0")}:${match[2]}` : null;
 }
+function validIsoDate(value) {
+    const normalized = cleanNullable(value);
+    const match = normalized?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match || !normalized)
+        return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year &&
+        date.getUTCMonth() === month - 1 &&
+        date.getUTCDate() === day ? normalized : null;
+}
+function academicYear(value) {
+    const normalized = cleanNullable(value);
+    return normalized && /^\d{4}$/.test(normalized) ? normalized : null;
+}
+function confidence(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 0;
+}
 function parseImageDataUrl(imageDataUrl) {
     const match = imageDataUrl.match(/^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\r\n]+)$/i);
     if (!match)
@@ -110,22 +134,76 @@ function interactionOutputText(response) {
         .join("")
         .trim() ?? "";
 }
-async function extractScheduleWithGemini(rawText, apiKey, imageDataUrl) {
-    const input = [
-        {
-            type: "text",
-            text: `Cross-reference the schedule image using these OCR hints. The OCR may contain mistakes, so prefer visible image evidence and use the text only as an aid:\n\n${rawText.slice(0, 30000)}`,
-        },
-    ];
-    if (imageDataUrl) {
-        const image = parseImageDataUrl(imageDataUrl);
-        input.push({
-            type: "image",
-            data: image.data,
-            mime_type: image.mimeType,
-            resolution: "high",
-        });
+function temporalCandidates(entries) {
+    return entries.map((entry, entryIndex) => ({
+        entryIndex,
+        courseCode: entry.courseCode,
+        courseName: entry.courseName,
+        day: entry.day,
+        endTime: entry.endTime,
+        section: entry.section,
+        startTime: entry.startTime,
+    }));
+}
+function normalizePayload(value, baseEntries) {
+    if (!value || typeof value !== "object") {
+        throw new Error("Gemini returned an invalid schedule temporal payload.");
     }
+    const payload = value;
+    const reviews = Array.isArray(payload.entries) ?
+        payload.entries : [];
+    const entries = baseEntries.map((entry) => ({ ...entry }));
+    let appliedEntryCount = 0;
+    for (const review of reviews) {
+        const index = Number(review.entry_index);
+        const evidence = cleanNullable(review.evidence);
+        if (!Number.isInteger(index) ||
+            index < 0 ||
+            index >= entries.length ||
+            confidence(review.confidence) < 0.8 ||
+            !evidence)
+            continue;
+        const day = normalizeDay(review.day);
+        const startTime = normalizeTime(review.start_time);
+        const endTime = normalizeTime(review.end_time);
+        const validRange = startTime && endTime && startTime < endTime;
+        if (!day && !validRange)
+            continue;
+        const current = entries[index];
+        entries[index] = {
+            ...current,
+            ...(day ? { day } : {}),
+            ...(validRange ? {
+                classTime: `${startTime}-${endTime}`,
+                endTime,
+                startTime,
+            } : {}),
+            parserSource: `${current.parserSource ?? "schedule"}+gemini-temporal-review`,
+        };
+        appliedEntryCount += 1;
+    }
+    const calendarEvidence = cleanNullable(payload.calendar_evidence);
+    const trustCalendar = confidence(payload.calendar_confidence) >= 0.8 &&
+        Boolean(calendarEvidence);
+    return {
+        academicYear: trustCalendar ? academicYear(payload.academic_year) : null,
+        appliedEntryCount,
+        entries,
+        semesterEnd: trustCalendar ? validIsoDate(payload.semester_end) : null,
+        semesterStart: trustCalendar ? validIsoDate(payload.semester_start) : null,
+    };
+}
+async function reviewScheduleTemporalFieldsWithGemini({ apiKey, entries, imageDataUrl, rawText, }) {
+    if (!entries.length) {
+        return {
+            academicYear: null,
+            appliedEntryCount: 0,
+            entries,
+            semesterEnd: null,
+            semesterStart: null,
+        };
+    }
+    const image = parseImageDataUrl(imageDataUrl);
     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
         method: "POST",
         headers: {
@@ -135,51 +213,32 @@ async function extractScheduleWithGemini(rawText, apiKey, imageDataUrl) {
         body: JSON.stringify({
             model: process.env.GEMINI_SCHEDULE_MODEL ?? "gemini-3.5-flash",
             store: false,
-            system_instruction: exports.SCHEDULE_EXTRACTION_SYSTEM_PROMPT,
-            input,
+            system_instruction: exports.SCHEDULE_TEMPORAL_REVIEW_SYSTEM_PROMPT,
+            input: [
+                {
+                    type: "text",
+                    text: `Verify only temporal fields for these indexed candidates:\n${JSON.stringify(temporalCandidates(entries))}\n\nOCR hints:\n${rawText.slice(0, 30000)}`,
+                },
+                {
+                    type: "image",
+                    data: image.data,
+                    mime_type: image.mimeType,
+                },
+            ],
             response_format: {
                 type: "text",
                 mime_type: "application/json",
-                schema: SCHEDULE_SCHEMA,
-            },
-            generation_config: {
-                temperature: 0,
+                schema: SCHEDULE_TEMPORAL_SCHEMA,
             },
         }),
     });
     const payload = await response.json();
-    if (!response.ok)
+    if (!response.ok) {
         throw new Error(payload.error?.message ?? `Gemini request failed with ${response.status}.`);
+    }
     const outputText = interactionOutputText(payload);
     if (!outputText)
-        throw new Error("Gemini returned no structured schedule output.");
-    const parsed = JSON.parse(outputText);
-    if (!Array.isArray(parsed))
-        throw new Error("Gemini returned an invalid schedule payload.");
-    const normalized = parsed.map((entry) => {
-        const courseCode = cleanNullable(entry.courseCode)?.toUpperCase() ?? null;
-        const courseName = cleanNullable(entry.courseName);
-        const startTime = normalizeTime(entry.startTime);
-        const endTime = normalizeTime(entry.endTime);
-        const buildingName = cleanNullable(entry.buildingName);
-        return {
-            buildingName,
-            classTime: startTime && endTime ? `${startTime}-${endTime}` : null,
-            courseCode,
-            courseName,
-            day: normalizeDay(entry.day),
-            endTime,
-            finalExam: cleanNullable(entry.finalExam),
-            midtermExam: cleanNullable(entry.midtermExam),
-            parserSource: "gemini-high-resolution-vision",
-            room: buildingName,
-            section: cleanNullable(entry.section),
-            startTime,
-        };
-    });
-    if (normalized.some((entry) => !entry.courseCode || !entry.courseName || !entry.startTime || !entry.endTime)) {
-        throw new Error("Gemini returned an incomplete schedule entry after mandatory cross-reference extraction.");
-    }
-    return normalized;
+        throw new Error("Gemini returned no schedule temporal output.");
+    return normalizePayload(JSON.parse(outputText), entries);
 }
 //# sourceMappingURL=gemini-fallback.js.map

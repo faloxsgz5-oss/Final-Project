@@ -1,12 +1,31 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {ActivityIndicator, KeyboardAvoidingView, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
-import * as FileSystem from 'expo-file-system/legacy';
+import {ActivityIndicator, Alert, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {buildAssistantReply, confirmAssistantAction, recordAssistantTelemetry, type AssistantReply} from '@/services/assistant-tools';
+import {
+  assistantActiveConversationKey,
+  assistantConversationHistoryKey,
+  assistantConversationStateKey,
+  createAssistantConversationId,
+  createAssistantConversationState,
+  mergeAssistantConversationState,
+  parseAssistantConversationState,
+  updateAssistantConversationState,
+} from '@/services/assistant-conversation';
+import {classifyAssistantIntent} from '@/services/assistant-intent';
+import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
+import {
+  deleteAssistantConversation,
+  listAssistantConversations,
+  loadAssistantConversation,
+  saveAssistantMessage,
+  updateAssistantMessagePayload,
+  type AssistantConversationSummary,
+} from '@/services/assistant-history';
 import {loadLegacyPageData} from '@/services/legacy-data';
-import type {AssistantChatMessage, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
 import {Card, MaterialIcon, PrimaryButton, UserShell, type UserNavigate, userStyles} from './user-ui';
 
 function nowIso() {
@@ -27,10 +46,6 @@ function assistantIntroMessage(): AssistantChatMessage {
     role: 'assistant',
     timestamp: nowIso(),
   };
-}
-
-function assistantHistoryKey(uid: string) {
-  return `smartlife:assistant:chat-history:${uid}`;
 }
 
 function assistantBriefingKey(uid: string) {
@@ -77,80 +92,6 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeStyle: 'short', timeZone: THAI_TIME_ZONE}).format(new Date(value));
 }
 
-type ImportAsset = {
-  mimeType?: string;
-  name: string;
-  size?: number;
-  uri: string;
-};
-
-function formatFileSize(size?: number) {
-  if (!size || size <= 0) return 'ไม่ทราบขนาด';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function extensionOf(name: string) {
-  return name.split('.').pop()?.toLowerCase() ?? '';
-}
-
-function isTextImport(asset: ImportAsset) {
-  const ext = extensionOf(asset.name);
-  return asset.mimeType?.startsWith('text/') || ['csv', 'ics', 'txt'].includes(ext);
-}
-
-function isPdfImport(asset: ImportAsset) {
-  return asset.mimeType === 'application/pdf' || extensionOf(asset.name) === 'pdf';
-}
-
-function classifyFileName(name: string) {
-  if (/tqf|มคอ|course|syllabus|class|lesson|ตารางเรียน|รายวิชา/i.test(name)) return 'ไฟล์การเรียน';
-  if (/schedule|calendar|meeting|appointment|แผนงาน|นัด|ประชุม|ตารางงาน/i.test(name)) return 'ไฟล์ตารางงาน';
-  if (/budget|finance|expense|income|เงิน|รายจ่าย|รายรับ/i.test(name)) return 'ไฟล์การเงิน';
-  return 'ไฟล์ทั่วไป';
-}
-
-function previewImportedText(name: string, text: string) {
-  const compactText = text.replace(/\u0000/g, '').replace(/[ \t]+/g, ' ').trim();
-  const kind = /(มคอ|แผนการเรียนการสอน|รายวิชา|หน่วยกิต|อาจารย์|quiz|สอบ|lecture|course)/i.test(compactText)
-    ? 'ไฟล์การเรียน'
-    : /(นัด|ประชุม|กำหนดการ|deadline|ส่งงาน|เวลา|วันที่|schedule|meeting|project)/i.test(compactText)
-      ? 'ไฟล์ตารางงาน/แผนงาน'
-      : /(รายรับ|รายจ่าย|งบ|บาท|expense|income|budget)/i.test(compactText)
-        ? 'ไฟล์การเงิน'
-        : 'ไม่รองรับ';
-
-  if (kind === 'ไม่รองรับ') {
-    return `รับไฟล์ "${name}" แล้ว แต่เนื้อหาไม่เหมือนตารางเรียน นัดหมาย แผนงาน หรือข้อมูลการเงินที่ระบบอ่านได้ตอนนี้\n\nไฟล์นี้ยังไม่ถูกบันทึกลง Firebase นะ`;
-  }
-
-  const courseMatch = compactText.match(/(?:รายวิชา|course)\s*([0-9]{6,})?\s*([^.\n\r]{8,80})/i);
-  const dateLike = Array.from(compactText.matchAll(/(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์|Mon|Tue|Wed|Thu|Fri|Sat|Sun).{0,40}?\d{1,2}[.:]\d{2}.{0,20}?(?:\d{1,2}[.:]\d{2})?/gi)).slice(0, 4).map((match) => match[0].trim());
-  const topicLike = Array.from(compactText.matchAll(/(?:Quiz|สอบ|ส่ง|นำเสนอ|Project|รายงาน)[^.\n\r]{0,60}/gi)).slice(0, 5).map((match) => match[0].trim());
-
-  const lines = [
-    `อ่านไฟล์ "${name}" ได้แล้ว`,
-    `ประเภทที่เดาได้: ${kind}`,
-    courseMatch ? `รายวิชา/หัวข้อ: ${[courseMatch[1], courseMatch[2]].filter(Boolean).join(' ')}` : '',
-    dateLike.length ? `เวลาที่พบ:\n${dateLike.map((item) => `• ${item}`).join('\n')}` : '',
-    topicLike.length ? `จุดสำคัญที่พบ:\n${topicLike.map((item) => `• ${item}`).join('\n')}` : '',
-    '',
-    'รอบนี้ฉันยังไม่บันทึกอัตโนมัติ เพื่อให้คุณตรวจข้อมูลก่อนเสมอ ขั้นต่อไปควรทำหน้าพรีวิวให้เลือกว่าจะเพิ่มเป็นตารางเรียน งาน นัดหมาย หรือการเงิน',
-  ].filter(Boolean);
-
-  return lines.join('\n');
-}
-
-function previewImportedPdf(asset: ImportAsset) {
-  const kind = classifyFileName(asset.name);
-  const supportedContext = kind !== 'ไฟล์ทั่วไป';
-  if (!supportedContext) {
-    return `รับไฟล์ "${asset.name}" แล้ว (${formatFileSize(asset.size)})\n\nแต่ชื่อไฟล์ยังไม่บอกว่าเป็นตารางเรียน นัดหมาย แผนงาน หรือข้อมูลการเงิน ระบบเลยยังไม่อ่านต่อและยังไม่บันทึกลง Firebase นะ`;
-  }
-  return `รับไฟล์ "${asset.name}" แล้ว (${formatFileSize(asset.size)})\n\nระบบเดาว่าเป็น${kind} และปุ่มอัปโหลดใช้งานได้แล้ว แต่ PDF ต้องมีตัวดึงข้อความ PDF เพิ่มก่อนถึงจะแยกวัน เวลา หัวข้อ และสอบออกมาเป็นรายการได้โดยไม่ใช้ OCR/LLM\n\nตอนนี้ยังไม่บันทึกลง Firebase ถ้าคัดลอกข้อความจาก PDF มาวางในแชท ฉันจะแยกข้อมูลให้ตรวจได้ทันที`;
-}
-
 function actionDetails(action: AssistantProposedAction) {
   if (action.entity === 'memory') {
     return [
@@ -192,6 +133,7 @@ function actionDetails(action: AssistantProposedAction) {
 
 function MessageBubble({
   message,
+  onAsk,
   onConfirm,
   onFeedback,
   onReject,
@@ -199,6 +141,7 @@ function MessageBubble({
 }: {
   busy: boolean;
   message: AssistantChatMessage;
+  onAsk: (message: string) => void;
   onConfirm: (messageIdValue: string, action: AssistantProposedAction) => void;
   onFeedback: (message: AssistantChatMessage, rating: AssistantFeedbackRating) => void;
   onReject: (messageIdValue: string, action: AssistantProposedAction) => void;
@@ -216,6 +159,21 @@ function MessageBubble({
             onConfirm={() => onConfirm(message.id, message.proposedAction as AssistantProposedAction)}
             onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
           />
+        ) : null}
+        {!isUser && message.suggestions?.length ? (
+          <View style={local.suggestionList}>
+            {message.suggestions.map((suggestion) => (
+              <Pressable
+                accessibilityLabel={`ถามต่อ: ${suggestion}`}
+                disabled={busy}
+                key={suggestion}
+                onPress={() => onAsk(suggestion)}
+                style={({pressed}) => [local.suggestionChip, pressed && local.pressed, busy && local.disabled]}>
+                <Text style={local.suggestionText}>{suggestion}</Text>
+                <MaterialIcon color="#668166" name="arrow_forward" size={14} />
+              </Pressable>
+            ))}
+          </View>
         ) : null}
         {!isUser && message.id !== 'assistant-intro' ? (
           <View style={local.feedbackRow}>
@@ -372,7 +330,37 @@ const shortcuts = [
   ['schedule', 'เวลาว่าง', 'หา AI ช่วยจัดช่วง', 'smartlife_notifications_ai'],
 ];
 
-type QuickAddCategoryId = 'finance' | 'note' | 'task' | 'time';
+type QuickAddCategoryId = 'finance' | 'note' | 'ocr' | 'task' | 'time';
+type QuickAddSuggestion = {detail: string; icon: string; prompt: string; title: string};
+
+const defaultOcrShortcuts: QuickAddSuggestion[] = [
+  {detail: 'ดูข้อมูลจากสลิปหรือใบเสร็จล่าสุด', icon: 'receipt_long', prompt: 'สรุปข้อมูลจาก OCR ล่าสุดให้หน่อย', title: 'ดู OCR ล่าสุด'},
+  {detail: 'แยกปี พ.ศ. และ ค.ศ. ให้ถูกต้อง', icon: 'event_available', prompt: 'ตรวจวันและปีจาก OCR ว่าเป็น พ.ศ. หรือ ค.ศ.', title: 'ตรวจวันและปี'},
+  {detail: 'ค้นจากข้อมูล OCR ช่วงล่าสุด ไม่จำกัดวันเดียว', icon: 'history', prompt: 'แสดงข้อมูล OCR ที่บันทึกไว้ช่วงล่าสุด', title: 'ดู OCR ช่วงล่าสุด'},
+  {detail: 'ชี้ข้อมูลที่ไม่แน่ใจเพื่อให้ตรวจแก้', icon: 'fact_check', prompt: 'ตรวจข้อมูล OCR ที่ยังไม่แน่ใจและบอกจุดที่ควรแก้', title: 'ตรวจจุดไม่แน่ใจ'},
+];
+
+function ocrShortcutsKey(uid: string) {
+  return `smartlife:assistant:ocr-shortcuts:${uid}`;
+}
+
+function parseOcrShortcuts(raw: string | null): QuickAddSuggestion[] {
+  if (!raw) return defaultOcrShortcuts;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return defaultOcrShortcuts;
+    const shortcuts = parsed.slice(0, 4).flatMap((item): QuickAddSuggestion[] => {
+      if (!item || typeof item !== 'object') return [];
+      const title = String(item.title ?? '').trim().slice(0, 40);
+      const prompt = String(item.prompt ?? '').trim().slice(0, 240);
+      if (!title || !prompt) return [];
+      return [{detail: String(item.detail ?? prompt).trim().slice(0, 90), icon: 'document_scanner', prompt, title}];
+    });
+    return shortcuts.length ? shortcuts : defaultOcrShortcuts;
+  } catch {
+    return defaultOcrShortcuts;
+  }
+}
 
 const quickAddCategories: {
   createLabel: string;
@@ -380,7 +368,7 @@ const quickAddCategories: {
   detail: string;
   icon: string;
   id: QuickAddCategoryId;
-  suggestions: {detail: string; icon: string; prompt: string; title: string}[];
+  suggestions: QuickAddSuggestion[];
   title: string;
 }[] = [
   {
@@ -439,6 +427,15 @@ const quickAddCategories: {
     ],
     title: 'โน้ต',
   },
+  {
+    createLabel: 'ตั้งค่าคำถามลัด OCR',
+    createPrompt: '',
+    detail: 'สลิป ใบเสร็จ วันเวลา และข้อมูลสแกนล่าสุด',
+    icon: 'document_scanner',
+    id: 'ocr',
+    suggestions: defaultOcrShortcuts,
+    title: 'OCR',
+  },
 ];
 
 // Refactored UI: these use the existing message pipeline instead of adding a second data flow.
@@ -450,39 +447,87 @@ const shortcutPrompts: Record<string, string> = {
 };
 
 export default function AssistantScreen({uid, onNavigate}: {page: string; uid: string; onNavigate: UserNavigate}) {
+  const autoScrollPendingRef = useRef(true);
   const chatScrollRef = useRef<ScrollView>(null);
+  const cloudWriteQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const scrollToBottomVisibleRef = useRef(false);
   const speechBaseInputRef = useRef('');
+  const temporaryChatRef = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [chatHistory, setChatHistory] = useState<AssistantConversationSummary[]>([]);
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
+  const [conversationId, setConversationId] = useState(() => createAssistantConversationId());
+  const [conversationState, setConversationState] = useState<AssistantConversationState>(() => createAssistantConversationState(conversationId));
+  const [historyReady, setHistoryReady] = useState(false);
   const [historyOwnerUid, setHistoryOwnerUid] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [listening, setListening] = useState(false);
+  const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
+  const [ocrShortcutDrafts, setOcrShortcutDrafts] = useState<QuickAddSuggestion[]>(defaultOcrShortcuts);
+  const [ocrShortcutEditorOpen, setOcrShortcutEditorOpen] = useState(false);
+  const [ocrShortcuts, setOcrShortcuts] = useState<QuickAddSuggestion[]>(defaultOcrShortcuts);
   const [quickAddCategory, setQuickAddCategory] = useState<QuickAddCategoryId | null>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [temporaryChat, setTemporaryChat] = useState(false);
   const [weeklyInsights, setWeeklyInsights] = useState<WeeklyInsightData | null>(null);
   const [messages, setMessages] = useState<AssistantChatMessage[]>(() => [assistantIntroMessage()]);
   // Refactored UI: the clean state remains visible until the user starts a conversation.
   const hasConversation = messages.some((message) => message.role === 'user');
   const visibleMessages = hasConversation ? messages.filter((message) => message.id !== 'assistant-intro') : [];
-  const selectedQuickAddCategory = quickAddCategories.find((category) => category.id === quickAddCategory) ?? null;
+  const baseSelectedQuickAddCategory = quickAddCategories.find((category) => category.id === quickAddCategory) ?? null;
+  const selectedQuickAddCategory = baseSelectedQuickAddCategory?.id === 'ocr'
+    ? {...baseSelectedQuickAddCategory, suggestions: ocrShortcuts}
+    : baseSelectedQuickAddCategory;
+
+  useEffect(() => {
+    temporaryChatRef.current = temporaryChat;
+  }, [temporaryChat]);
+
+  useEffect(() => {
+    AsyncStorage.getItem(ocrShortcutsKey(uid))
+      .then((value) => setOcrShortcuts(parseOcrShortcuts(value)))
+      .catch(() => setOcrShortcuts(defaultOcrShortcuts));
+  }, [uid]);
 
   useEffect(() => {
     let active = true;
     const today = thailandDateKey();
 
     async function loadHistoryAndBriefing() {
-      const [storedMessages, lastBriefingDate] = await Promise.all([
-        AsyncStorage.getItem(assistantHistoryKey(uid)),
+      setHistoryReady(false);
+      setHistoryOwnerUid(null);
+      setTemporaryChat(false);
+      const [storedConversationId, lastBriefingDate] = await Promise.all([
+        AsyncStorage.getItem(assistantActiveConversationKey(uid)),
         AsyncStorage.getItem(assistantBriefingKey(uid)),
+      ]);
+      const activeConversationId = storedConversationId?.startsWith('conversation-') && storedConversationId.length <= 80
+        ? storedConversationId
+        : createAssistantConversationId();
+      const [storedMessages, storedState] = await Promise.all([
+        AsyncStorage.getItem(assistantConversationHistoryKey(uid, activeConversationId)),
+        AsyncStorage.getItem(assistantConversationStateKey(uid, activeConversationId)),
       ]);
       if (!active) return;
 
       const history = parseStoredMessages(storedMessages);
+      const restoredState = parseAssistantConversationState(storedState, activeConversationId);
+      setConversationId(activeConversationId);
+      setConversationState(restoredState);
+      autoScrollPendingRef.current = true;
       setMessages(history.length ? history : [assistantIntroMessage()]);
       setHistoryOwnerUid(uid);
+      setHistoryReady(true);
+      await AsyncStorage.setItem(assistantActiveConversationKey(uid), activeConversationId);
 
       if (lastBriefingDate === today) return;
       try {
-        const reply = await buildAssistantReply(uid, 'สรุปวันนี้');
+        const reply = await buildAssistantReply(uid, 'สรุปวันนี้', [], {
+          conversationId: activeConversationId,
+          conversationState: restoredState,
+        });
         if (!active) return;
         const briefingMessage: AssistantChatMessage = {
           content: reply.content,
@@ -502,8 +547,12 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
     loadHistoryAndBriefing().catch(() => {
       if (!active) return;
+      const fallbackConversationId = createAssistantConversationId();
+      setConversationId(fallbackConversationId);
+      setConversationState(createAssistantConversationState(fallbackConversationId));
       setMessages([assistantIntroMessage()]);
       setHistoryOwnerUid(uid);
+      setHistoryReady(true);
     });
     return () => { active = false; };
   }, [uid]);
@@ -517,9 +566,13 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   }, [uid]);
 
   useEffect(() => {
-    if (historyOwnerUid !== uid) return;
-    AsyncStorage.setItem(assistantHistoryKey(uid), JSON.stringify(trimChatHistory(messages))).catch(() => undefined);
-  }, [historyOwnerUid, messages, uid]);
+    if (!historyReady || historyOwnerUid !== uid || temporaryChat) return;
+    AsyncStorage.multiSet([
+      [assistantActiveConversationKey(uid), conversationId],
+      [assistantConversationHistoryKey(uid, conversationId), JSON.stringify(trimChatHistory(messages))],
+      [assistantConversationStateKey(uid, conversationId), JSON.stringify(conversationState)],
+    ]).catch(() => undefined);
+  }, [conversationId, conversationState, historyOwnerUid, historyReady, messages, temporaryChat, uid]);
 
   useEffect(() => {
     return () => {
@@ -531,37 +584,77 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     };
   }, []);
 
+  const persistMessage = (message: AssistantChatMessage, state: AssistantConversationState) => {
+    if (temporaryChatRef.current || message.id === 'assistant-intro') return;
+    cloudWriteQueueRef.current = cloudWriteQueueRef.current
+      .then(() => saveAssistantMessage({conversationId, message, state, uid}))
+      .catch((error) => console.warn('[SmartLife AI] Chat history save failed.', error));
+  };
+
+  const persistMessagePayload = (message: AssistantChatMessage) => {
+    if (temporaryChatRef.current || message.id === 'assistant-intro') return;
+    cloudWriteQueueRef.current = cloudWriteQueueRef.current
+      .then(() => updateAssistantMessagePayload(uid, conversationId, message))
+      .catch((error) => console.warn('[SmartLife AI] Chat message update failed.', error));
+  };
+
+  const scrollToLatest = (animated = true) => {
+    autoScrollPendingRef.current = false;
+    chatScrollRef.current?.scrollToEnd({animated});
+    if (scrollToBottomVisibleRef.current) {
+      scrollToBottomVisibleRef.current = false;
+      setShowScrollToBottom(false);
+    }
+  };
+
+  const queueScrollToLatest = () => {
+    autoScrollPendingRef.current = true;
+    requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({animated: true}));
+  };
+
   const appendAssistant = (
     content: string,
     proposedAction?: AssistantProposedAction,
-    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'source'>> = {},
+    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'source' | 'suggestions'>> = {},
     id = messageId('assistant'),
+    state = conversationState,
   ) => {
-    setMessages((current) => trimChatHistory([...current, {
+    const nextMessage: AssistantChatMessage = {
       content,
       id,
       proposedAction,
       role: 'assistant',
       timestamp: nowIso(),
       ...metadata,
-    }]));
+    };
+    setMessages((current) => trimChatHistory([...current, nextMessage]));
+    persistMessage(nextMessage, state);
+    queueScrollToLatest();
   };
 
-  const appendUser = (content: string) => {
-    setMessages((current) => trimChatHistory([...current, {content, id: messageId('user'), role: 'user', timestamp: nowIso()}]));
+  const appendUser = (content: string, state = conversationState) => {
+    const nextMessage: AssistantChatMessage = {content, id: messageId('user'), role: 'user', timestamp: nowIso()};
+    setMessages((current) => trimChatHistory([...current, nextMessage]));
+    persistMessage(nextMessage, state);
+    queueScrollToLatest();
   };
 
   const updateActionStatus = (targetMessageId: string, status: ProposedActionStatus) => {
     setMessages((current) => current.map((message) => {
       if (message.id !== targetMessageId || !message.proposedAction) return message;
-      return {...message, proposedAction: {...message.proposedAction, status}};
+      const updated = {...message, proposedAction: {...message.proposedAction, status}};
+      persistMessagePayload(updated);
+      return updated;
     }));
   };
 
   const rateAssistant = (target: AssistantChatMessage, rating: AssistantFeedbackRating) => {
-    setMessages((current) => current.map((message) =>
-      message.id === target.id ? {...message, feedback: rating} : message,
-    ));
+    setMessages((current) => current.map((message) => {
+      if (message.id !== target.id) return message;
+      const updated = {...message, feedback: rating};
+      persistMessagePayload(updated);
+      return updated;
+    }));
     recordAssistantTelemetry({
       errorKind: target.errorKind,
       helpful: rating,
@@ -572,19 +665,88 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     }).catch(() => undefined);
   };
 
+  const startNewConversation = async (mode: 'persistent' | 'temporary') => {
+    if (busy || !historyReady) return;
+    const nextConversationId = createAssistantConversationId();
+    const nextState = createAssistantConversationState(nextConversationId);
+    temporaryChatRef.current = mode === 'temporary';
+    setTemporaryChat(mode === 'temporary');
+    setConversationId(nextConversationId);
+    setConversationState(nextState);
+    setInput('');
+    autoScrollPendingRef.current = true;
+    setMessages([assistantIntroMessage()]);
+    setNewChatMenuOpen(false);
+    setQuickAddCategory(null);
+    setQuickAddOpen(false);
+    if (mode === 'persistent') await AsyncStorage.setItem(assistantActiveConversationKey(uid), nextConversationId);
+  };
+
+  const openChatHistory = async () => {
+    if (!historyReady) return;
+    setChatHistoryOpen(true);
+    setChatHistoryLoading(true);
+    try {
+      setChatHistory(await listAssistantConversations(uid));
+    } catch {
+      Alert.alert('เปิดประวัติไม่สำเร็จ', 'กรุณาตรวจการเชื่อมต่อแล้วลองอีกครั้ง');
+    } finally {
+      setChatHistoryLoading(false);
+    }
+  };
+
+  const selectHistoryConversation = async (conversation: AssistantConversationSummary) => {
+    if (busy) return;
+    setChatHistoryLoading(true);
+    try {
+      const restored = await loadAssistantConversation(uid, conversation);
+      temporaryChatRef.current = false;
+      setTemporaryChat(false);
+      setConversationId(conversation.id);
+      setConversationState(restored.state);
+      autoScrollPendingRef.current = true;
+      setMessages(restored.messages.length ? restored.messages : [assistantIntroMessage()]);
+      setChatHistoryOpen(false);
+      await AsyncStorage.setItem(assistantActiveConversationKey(uid), conversation.id);
+    } catch {
+      Alert.alert('เปิดแชทไม่สำเร็จ', 'ไม่สามารถโหลดข้อความของแชทนี้ได้');
+    } finally {
+      setChatHistoryLoading(false);
+    }
+  };
+
+  const askDeleteHistoryConversation = (conversation: AssistantConversationSummary) => {
+    Alert.alert('ลบแชทนี้?', 'ข้อความในแชทนี้จะถูกลบออกจากบัญชีของคุณ', [
+      {style: 'cancel', text: 'ยกเลิก'},
+      {style: 'destructive', text: 'ลบ', onPress: () => {
+        deleteAssistantConversation(uid, conversation.id)
+          .then(() => setChatHistory((current) => current.filter((item) => item.id !== conversation.id)))
+          .catch(() => Alert.alert('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'));
+      }},
+    ]);
+  };
+
   const sendMessage = async (message?: string) => {
     const text = (message ?? input).trim();
-    if (!text || busy) return;
+    if (!text || busy || !historyReady) return;
     const conversation = messages.slice(-12);
+    const nextIntent = classifyAssistantIntent(text, conversationState.lastIntent);
+    const nextConversationState = updateAssistantConversationState(conversationState, text, nextIntent);
     setQuickAddOpen(false);
     setQuickAddCategory(null);
     setInput('');
     setBusy(true);
-    setMessages((current) => trimChatHistory([...current, {content: text, id: messageId('user'), role: 'user', timestamp: nowIso()}]));
+    setConversationState(nextConversationState);
+    appendUser(text, nextConversationState);
     try {
-      const reply = await buildAssistantReply(uid, text, conversation);
+      const reply = await buildAssistantReply(uid, text, conversation, {
+        conversationId,
+        conversationState: nextConversationState,
+      });
       const interactionId = messageId('assistant');
-      appendAssistant(reply.content, reply.proposedAction, reply, interactionId);
+      const responseState = mergeAssistantConversationState(nextConversationState, reply.statePatch);
+      appendAssistant(reply.content, reply.proposedAction, reply, interactionId, responseState);
+      setConversationState(responseState);
       recordAssistantTelemetry({
         errorKind: reply.errorKind,
         intent: reply.intent,
@@ -624,6 +786,27 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setInput(prompt);
     setQuickAddOpen(false);
     setQuickAddCategory(null);
+  };
+
+  const openOcrShortcutEditor = () => {
+    setOcrShortcutDrafts(ocrShortcuts.map((shortcut) => ({...shortcut})));
+    setOcrShortcutEditorOpen(true);
+  };
+
+  const saveOcrShortcutEditor = async () => {
+    const validShortcuts = ocrShortcutDrafts.slice(0, 4).flatMap((item): QuickAddSuggestion[] => {
+      const title = item.title.trim().slice(0, 40);
+      const prompt = item.prompt.trim().slice(0, 240);
+      if (!title || !prompt) return [];
+      return [{detail: prompt.slice(0, 90), icon: 'document_scanner', prompt, title}];
+    });
+    if (!validShortcuts.length) {
+      Alert.alert('ยังบันทึกไม่ได้', 'กรุณาใส่ชื่อและคำถามอย่างน้อย 1 รายการ');
+      return;
+    }
+    setOcrShortcuts(validShortcuts);
+    setOcrShortcutEditorOpen(false);
+    await AsyncStorage.setItem(ocrShortcutsKey(uid), JSON.stringify(validShortcuts));
   };
 
   const stopVoiceInput = async () => {
@@ -699,10 +882,6 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setQuickAddCategory(null);
     setBusy(true);
     try {
-      if (!NativeModules.ExpoDocumentPicker) {
-        appendAssistant('หน้า AI ใช้งานได้ปกติ แต่ปุ่มอัปโหลดไฟล์ต้อง rebuild Development Build ใหม่ก่อน เพราะแอปใน MuMu ยังไม่มี native module ของ DocumentPicker\n\nตอนนี้เพิ่มข้อมูลผ่านแชทได้ก่อน เช่น “เพิ่มนัดหมาย...” “จ่าย...” หรือ “จดโน้ต...” ส่วนอัปโหลดไฟล์ให้รัน build Android ใหม่หนึ่งครั้ง');
-        return;
-      }
       const DocumentPicker = await import('expo-document-picker');
       const result = await DocumentPicker.getDocumentAsync({
         copyToCacheDirectory: true,
@@ -711,27 +890,29 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       });
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
+      if (asset.size && asset.size > 8 * 1024 * 1024) {
+        appendAssistant('ไฟล์นี้มีขนาดเกิน 8 MB กรุณาเลือกไฟล์ที่เล็กลง');
+        return;
+      }
       appendUser(`อัปโหลดไฟล์: ${asset.name}`);
-
-      if (isTextImport(asset)) {
-        const text = await FileSystem.readAsStringAsync(asset.uri);
-        appendAssistant(previewImportedText(asset.name, text.slice(0, 80_000)));
-        return;
-      }
-
-      if (isPdfImport(asset)) {
-        appendAssistant(previewImportedPdf(asset));
-        return;
-      }
-
-      appendAssistant(`รับไฟล์ "${asset.name}" แล้ว แต่ชนิดไฟล์นี้ยังไม่รองรับ\n\nตอนนี้ระบบรับ PDF/TXT/CSV/ICS ที่เกี่ยวกับตารางเรียน นัดหมาย แผนงาน หรือข้อมูลการเงินก่อน และยังไม่บันทึกไฟล์นี้ลง Firebase`);
+      const analysis = await uploadAndAnalyzeAssistantFile({
+        contentType: asset.mimeType,
+        name: asset.name,
+        uid,
+        uri: asset.uri,
+      });
+      appendAssistant(analysis.content, undefined, {suggestions: analysis.suggestions});
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (/ExpoDocumentPicker|native module|Cannot find native module/i.test(message)) {
-        appendAssistant('หน้า AI ใช้งานได้ปกติแล้ว แต่ปุ่มอัปโหลดไฟล์ต้อง rebuild Development Build ใหม่ก่อน เพราะแอปใน MuMu ยังไม่มี native module ของ DocumentPicker\n\nตอนนี้ใช้แชทกับปุ่มเพิ่มข้อมูลอื่น ๆ ได้ก่อน และถ้าจะเปิดอัปโหลดไฟล์จริงให้รัน build Android ใหม่หนึ่งครั้ง');
+        appendAssistant('เปิดตัวเลือกไฟล์ไม่สำเร็จ กรุณาปิดแล้วเปิด SmartLife ใหม่และลองอีกครั้ง หากยังเกิดซ้ำจึงค่อยติดตั้ง Development Build รุ่นล่าสุด');
         return;
       }
-      appendAssistant('เปิดตัวเลือกไฟล์หรืออ่านไฟล์ไม่สำเร็จนะ ลองเลือกไฟล์ PDF/TXT/CSV ที่อยู่ในเครื่องอีกครั้ง');
+      if (/รองรับเฉพาะ|ชนิดไฟล์|8 MB|too large/i.test(message)) {
+        appendAssistant(message);
+        return;
+      }
+      appendAssistant('อัปโหลดหรือวิเคราะห์ไฟล์ไม่สำเร็จ กรุณาตรวจอินเทอร์เน็ตแล้วลองเลือกไฟล์ PDF, TXT, CSV หรือ ICS อีกครั้ง');
     } finally {
       setBusy(false);
     }
@@ -742,18 +923,49 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       {/* Refactored UI: keep the floating composer above the software keyboard. */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
-        <ScrollView ref={chatScrollRef} contentContainerStyle={local.chatContent} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <ScrollView
+          decelerationRate="normal"
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+          onContentSizeChange={() => {
+            if (!autoScrollPendingRef.current) return;
+            requestAnimationFrame(() => scrollToLatest(false));
+          }}
+          onScroll={(event) => {
+            const {contentOffset, contentSize, layoutMeasurement} = event.nativeEvent;
+            const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+            const shouldShow = hasConversation && distanceFromBottom > 180;
+            if (scrollToBottomVisibleRef.current !== shouldShow) {
+              scrollToBottomVisibleRef.current = shouldShow;
+              setShowScrollToBottom(shouldShow);
+            }
+          }}
+          ref={chatScrollRef}
+          removeClippedSubviews={Platform.OS === 'android'}
+          scrollEventThrottle={16}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={local.chatContent}
+        >
           <View style={local.topBar}>
             <Pressable onPress={() => onNavigate('index')} style={local.circleButton}>
               <MaterialIcon color="#26321f" name="chevron_left" size={22} />
             </Pressable>
             <View style={local.topTitle}>
               <Text style={local.miniBrand}>SmartLife</Text>
-              <Text style={local.screenTitle}>AI Assistant</Text>
+              <View style={local.titleRow}>
+                <Text style={local.screenTitle}>AI Assistant</Text>
+                {temporaryChat ? <View style={local.temporaryBadge}><MaterialIcon color="#5d8059" name="timer" size={12} /><Text style={local.temporaryBadgeText}>ชั่วคราว</Text></View> : null}
+              </View>
             </View>
-            <Pressable accessibilityLabel="ย้อนดูประวัติแชท" onPress={() => chatScrollRef.current?.scrollTo({animated: true, y: 0})} style={local.circleButton}>
-              <MaterialIcon color="#26321f" name="history" size={20} />
-            </Pressable>
+            <View style={local.topActions}>
+              <Pressable accessibilityLabel="เริ่มแชทใหม่" disabled={busy || !historyReady} onPress={() => setNewChatMenuOpen(true)} style={[local.circleButton, (busy || !historyReady) && local.disabled]}>
+                <MaterialIcon color="#26321f" name="add_comment" size={19} />
+              </Pressable>
+              <Pressable accessibilityLabel="ย้อนดูประวัติแชท" onPress={openChatHistory} style={local.circleButton}>
+                <MaterialIcon color="#26321f" name="history" size={20} />
+              </Pressable>
+            </View>
           </View>
 
           {/* Refactored UI: clean greeting banner for the initial assistant state. */}
@@ -783,7 +995,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} key={message.id} message={message} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} />
+              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} />
             ))}
             {busy ? (
               <View style={local.thinking}>
@@ -794,6 +1006,11 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
             <FocusSuggestions messages={visibleMessages} />
           </View> : null}
         </ScrollView>
+        {showScrollToBottom && !quickAddOpen ? (
+          <Pressable accessibilityLabel="เลื่อนไปข้อความล่าสุด" onPress={() => scrollToLatest(true)} style={({pressed}) => [local.scrollToBottomButton, pressed && local.pressed]}>
+            <MaterialIcon color="#4e6f4d" name="keyboard_arrow_down" size={26} />
+          </Pressable>
+        ) : null}
         {/* Refactored UI: a soft fade keeps scrolling content legible behind the floating composer. */}
         <LinearGradient colors={['rgba(241,244,240,0)', '#f1f4f0']} end={{x: 0, y: 1}} pointerEvents="none" start={{x: 0, y: 0}} style={local.inputFade} />
         <View style={local.composerWrap}>
@@ -808,6 +1025,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                     <Text style={local.quickAddTitle}>คำถามลัด: {selectedQuickAddCategory.title}</Text>
                     <Text style={local.quickAddHint}>แตะคำถามเพื่อถาม AI ได้ทันที</Text>
                   </View>
+                  {selectedQuickAddCategory.id === 'ocr' ? <Pressable accessibilityLabel="ตั้งค่าคำถามลัด OCR" onPress={openOcrShortcutEditor} style={local.quickAddBack}><MaterialIcon color="#5d8059" name="settings" size={18} /></Pressable> : null}
                 </View>
               ) : (
                 <>
@@ -829,8 +1047,8 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                       <MaterialIcon color="#9aa595" name="arrow_forward_ios" size={14} />
                     </Pressable>
                   ))}
-                  <Pressable disabled={busy} onPress={() => chooseQuickAdd(selectedQuickAddCategory.createPrompt)} style={({pressed}) => [local.quickAddCreate, pressed && local.pressed, busy && local.disabled]}>
-                    <MaterialIcon color="#ffffff" name="add" size={19} />
+                  <Pressable disabled={busy} onPress={() => selectedQuickAddCategory.id === 'ocr' ? openOcrShortcutEditor() : chooseQuickAdd(selectedQuickAddCategory.createPrompt)} style={({pressed}) => [local.quickAddCreate, pressed && local.pressed, busy && local.disabled]}>
+                    <MaterialIcon color="#ffffff" name={selectedQuickAddCategory.id === 'ocr' ? 'settings' : 'add'} size={19} />
                     <Text style={local.quickAddCreateText}>{selectedQuickAddCategory.createLabel}</Text>
                   </Pressable>
                 </>
@@ -885,11 +1103,83 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         </View>
       </View>
       </KeyboardAvoidingView>
+      <Modal animationType="fade" onRequestClose={() => setNewChatMenuOpen(false)} transparent visible={newChatMenuOpen}>
+        <Pressable onPress={() => setNewChatMenuOpen(false)} style={local.modalOverlay}>
+          <Pressable onPress={(event) => event.stopPropagation()} style={local.modalSheet}>
+            <View style={local.modalHandle} />
+            <Text style={local.modalTitle}>เริ่มแชทใหม่</Text>
+            <Text style={local.modalHint}>เลือกว่าจะเก็บบทสนทนานี้ไว้ในประวัติหรือไม่</Text>
+            <Pressable onPress={() => startNewConversation('persistent')} style={local.modalOption}>
+              <View style={local.modalOptionIcon}><MaterialIcon color="#5d8059" name="add_comment" size={21} /></View>
+              <View style={{flex: 1}}><Text style={local.modalOptionTitle}>แชทใหม่</Text><Text style={local.modalOptionText}>บันทึกข้อความไว้ในประวัติของบัญชีนี้</Text></View>
+              <MaterialIcon color="#9aa595" name="chevron_right" size={20} />
+            </Pressable>
+            <Pressable onPress={() => startNewConversation('temporary')} style={local.modalOption}>
+              <View style={local.modalOptionIcon}><MaterialIcon color="#5d8059" name="timer" size={21} /></View>
+              <View style={{flex: 1}}><Text style={local.modalOptionTitle}>แชทชั่วคราว</Text><Text style={local.modalOptionText}>ไม่บันทึกข้อความไว้ในประวัติหรือในเครื่อง</Text></View>
+              <MaterialIcon color="#9aa595" name="chevron_right" size={20} />
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal animationType="slide" onRequestClose={() => setChatHistoryOpen(false)} transparent visible={chatHistoryOpen}>
+        <Pressable onPress={() => setChatHistoryOpen(false)} style={local.modalOverlay}>
+          <Pressable onPress={(event) => event.stopPropagation()} style={[local.modalSheet, local.historySheet]}>
+            <View style={local.modalHandle} />
+            <View style={local.modalHeaderRow}>
+              <View style={{flex: 1}}><Text style={local.modalTitle}>ประวัติแชท</Text><Text style={local.modalHint}>แตะเพื่อเปิดต่อ หรือลบรายการที่ไม่ต้องการ</Text></View>
+              <Pressable onPress={() => setChatHistoryOpen(false)} style={local.modalClose}><MaterialIcon color="#5d6658" name="close" size={20} /></Pressable>
+            </View>
+            {chatHistoryLoading ? <ActivityIndicator color="#668d65" style={{marginVertical: 30}} /> : (
+              <ScrollView contentContainerStyle={local.historyList} showsVerticalScrollIndicator={false}>
+                {chatHistory.map((conversation) => (
+                  <Pressable key={conversation.id} onPress={() => selectHistoryConversation(conversation)} style={local.historyItem}>
+                    <View style={local.historyIcon}><MaterialIcon color="#5d8059" name="chat_bubble_outline" size={19} /></View>
+                    <View style={{flex: 1}}>
+                      <Text numberOfLines={1} style={local.historyTitle}>{conversation.title}</Text>
+                      <Text numberOfLines={1} style={local.historyPreview}>{conversation.lastMessagePreview || `${conversation.messageCount} ข้อความ`}</Text>
+                      <Text style={local.historyDate}>{formatDate(conversation.updatedAt.toISOString())}</Text>
+                    </View>
+                    <Pressable accessibilityLabel="ลบแชท" hitSlop={8} onPress={(event) => {event.stopPropagation(); askDeleteHistoryConversation(conversation);}} style={local.historyDelete}><MaterialIcon color="#9a6b6b" name="delete_outline" size={19} /></Pressable>
+                  </Pressable>
+                ))}
+                {!chatHistory.length ? <View style={local.emptyHistory}><MaterialIcon color="#91a08d" name="history" size={34} /><Text style={local.modalOptionText}>ยังไม่มีแชทที่บันทึกไว้</Text></View> : null}
+              </ScrollView>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal animationType="slide" onRequestClose={() => setOcrShortcutEditorOpen(false)} transparent visible={ocrShortcutEditorOpen}>
+        <Pressable onPress={() => setOcrShortcutEditorOpen(false)} style={local.modalOverlay}>
+          <Pressable onPress={(event) => event.stopPropagation()} style={[local.modalSheet, local.historySheet]}>
+            <View style={local.modalHandle} />
+            <View style={local.modalHeaderRow}>
+              <View style={{flex: 1}}><Text style={local.modalTitle}>ตั้งค่าคำถามลัด OCR</Text><Text style={local.modalHint}>สร้างได้สูงสุด 4 รายการในหมวด OCR</Text></View>
+              <Pressable onPress={() => setOcrShortcutEditorOpen(false)} style={local.modalClose}><MaterialIcon color="#5d6658" name="close" size={20} /></Pressable>
+            </View>
+            <ScrollView contentContainerStyle={local.shortcutEditorList} keyboardShouldPersistTaps="handled">
+              {ocrShortcutDrafts.map((shortcut, index) => (
+                <View key={`ocr-draft-${index}`} style={local.shortcutEditorCard}>
+                  <View style={local.shortcutEditorHeader}><Text style={local.shortcutEditorNumber}>คำถามลัด {index + 1}</Text><Pressable onPress={() => setOcrShortcutDrafts((current) => current.filter((_, itemIndex) => itemIndex !== index))}><MaterialIcon color="#9a6b6b" name="delete_outline" size={19} /></Pressable></View>
+                  <TextInput maxLength={40} onChangeText={(title) => setOcrShortcutDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? {...item, title} : item))} placeholder="ชื่อปุ่ม เช่น ตรวจวันและปี" placeholderTextColor="#929b8f" style={local.shortcutEditorInput} value={shortcut.title} />
+                  <TextInput maxLength={240} multiline onChangeText={(prompt) => setOcrShortcutDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? {...item, prompt} : item))} placeholder="คำถามที่จะส่งให้ AI" placeholderTextColor="#929b8f" style={[local.shortcutEditorInput, local.shortcutEditorPrompt]} value={shortcut.prompt} />
+                </View>
+              ))}
+              {ocrShortcutDrafts.length < 4 ? <Pressable onPress={() => setOcrShortcutDrafts((current) => [...current, {detail: '', icon: 'document_scanner', prompt: '', title: ''}])} style={local.addShortcutButton}><MaterialIcon color="#5d8059" name="add" size={19} /><Text style={local.addShortcutText}>เพิ่มคำถามลัด</Text></Pressable> : null}
+            </ScrollView>
+            <Pressable onPress={saveOcrShortcutEditor} style={local.saveShortcutButton}><MaterialIcon color="#fff" name="check" size={19} /><Text style={local.quickAddCreateText}>บันทึกคำถามลัด</Text></Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </UserShell>
   );
 }
 
 const local = StyleSheet.create({
+  addShortcutButton: {alignItems: 'center', borderColor: '#cddac9', borderRadius: 14, borderStyle: 'dashed', borderWidth: 1, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 46},
+  addShortcutText: {color: '#5d8059', fontFamily: 'Prompt_700Bold', fontSize: 12},
   actionCard: {alignSelf: 'stretch', marginTop: 8, padding: 14},
   actionHeader: {alignItems: 'center', flexDirection: 'row', gap: 10},
   actionIcon: {alignItems: 'center', backgroundColor: '#e8f1e5', borderRadius: 18, height: 36, justifyContent: 'center', width: 36},
@@ -921,6 +1211,7 @@ const local = StyleSheet.create({
   detailRow: {alignItems: 'flex-start', flexDirection: 'row', gap: 8},
   detailValue: {color: '#33412e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18},
   disabled: {opacity: .5},
+  emptyHistory: {alignItems: 'center', gap: 10, paddingVertical: 36},
   focusHeading: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginBottom: 8},
   focusCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 9},
   focusHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 18},
@@ -941,6 +1232,14 @@ const local = StyleSheet.create({
   heroTitle: {color: '#ffffff', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, lineHeight: 26},
   input: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 14, maxHeight: 100, minHeight: 42, paddingHorizontal: 5, paddingVertical: 8},
   inputFade: {bottom: 0, height: 145, left: 0, position: 'absolute', right: 0},
+  historyDate: {color: '#9aa296', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 3},
+  historyDelete: {alignItems: 'center', backgroundColor: '#f7eeee', borderRadius: 15, height: 32, justifyContent: 'center', width: 32},
+  historyIcon: {alignItems: 'center', backgroundColor: '#eaf2e7', borderRadius: 15, height: 40, justifyContent: 'center', width: 40},
+  historyItem: {alignItems: 'center', borderBottomColor: '#e9eee5', borderBottomWidth: 1, flexDirection: 'row', gap: 10, paddingVertical: 12},
+  historyList: {paddingBottom: 16},
+  historyPreview: {color: '#778274', fontFamily: 'Prompt_400Regular', fontSize: 10, marginTop: 2},
+  historySheet: {maxHeight: '82%', minHeight: 360},
+  historyTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 13},
   insightCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 9},
   insightDivider: {backgroundColor: '#d9e0d3', borderRadius: 99, height: 5, marginTop: 8, width: '100%'},
   insightHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
@@ -950,6 +1249,17 @@ const local = StyleSheet.create({
   messageRow: {alignItems: 'flex-start'},
   messageRowUser: {alignItems: 'flex-end'},
   miniBrand: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 8, lineHeight: 10},
+  modalClose: {alignItems: 'center', backgroundColor: '#eef2eb', borderRadius: 16, height: 34, justifyContent: 'center', width: 34},
+  modalHandle: {alignSelf: 'center', backgroundColor: '#d4ddd0', borderRadius: 99, height: 4, marginBottom: 14, width: 42},
+  modalHeaderRow: {alignItems: 'center', flexDirection: 'row', gap: 10},
+  modalHint: {color: '#778274', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 17, marginBottom: 12, marginTop: 2},
+  modalOption: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e3eadf', borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 11, marginTop: 8, minHeight: 68, padding: 11},
+  modalOptionIcon: {alignItems: 'center', backgroundColor: '#e7f0e4', borderRadius: 16, height: 42, justifyContent: 'center', width: 42},
+  modalOptionText: {color: '#7b8577', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
+  modalOptionTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 13},
+  modalOverlay: {backgroundColor: 'rgba(31,38,29,.42)', flex: 1, justifyContent: 'flex-end'},
+  modalSheet: {backgroundColor: '#ffffff', borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingBottom: 24, paddingHorizontal: 18, paddingTop: 10},
+  modalTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 18},
   pressed: {opacity: .7, transform: [{translateY: -1}]},
   quickAddCopy: {flex: 1, minWidth: 0},
   quickAddBack: {alignItems: 'center', backgroundColor: '#edf4ea', borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
@@ -966,6 +1276,8 @@ const local = StyleSheet.create({
   quickAddOptionTitle: {color: '#29351f', fontFamily: 'Prompt_700Bold', fontSize: 13},
   quickAddTitle: {color: '#29351f', fontFamily: 'Prompt_800ExtraBold', fontSize: 14},
   screenTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 19, lineHeight: 23},
+  saveShortcutButton: {alignItems: 'center', backgroundColor: '#5d8059', borderRadius: 15, flexDirection: 'row', gap: 8, justifyContent: 'center', minHeight: 48, marginTop: 10},
+  scrollToBottomButton: {alignItems: 'center', backgroundColor: '#ffffff', borderColor: '#dce6d8', borderRadius: 22, borderWidth: 1, bottom: 94, boxShadow: '0 5px 16px rgba(45,58,49,.18)', height: 44, justifyContent: 'center', position: 'absolute', right: 24, width: 44, zIndex: 19},
   secondaryButton: {alignItems: 'center', backgroundColor: '#eef1eb', borderRadius: 14, justifyContent: 'center', marginTop: 15, minHeight: 50, paddingHorizontal: 15},
   secondaryButtonText: {color: '#66735f', fontFamily: 'Prompt_700Bold', fontSize: 14},
   sendButton: {alignItems: 'center', backgroundColor: '#749279', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
@@ -973,6 +1285,12 @@ const local = StyleSheet.create({
   shell: {backgroundColor: '#f4f7f4', flex: 1},
   shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 24, flexDirection: 'row', gap: 9, minHeight: 74, padding: 12, width: '48.5%'},
   shortcutGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 9},
+  shortcutEditorCard: {backgroundColor: '#f7faf5', borderColor: '#e2e9de', borderRadius: 16, borderWidth: 1, gap: 8, padding: 11},
+  shortcutEditorHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
+  shortcutEditorInput: {backgroundColor: '#ffffff', borderColor: '#dfe7db', borderRadius: 12, borderWidth: 1, color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 12, minHeight: 42, paddingHorizontal: 11, paddingVertical: 8},
+  shortcutEditorList: {gap: 10, paddingBottom: 8},
+  shortcutEditorNumber: {color: '#4d634a', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  shortcutEditorPrompt: {minHeight: 66, textAlignVertical: 'top'},
   shortcutIcon: {alignItems: 'center', backgroundColor: '#eef5ed', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
   shortcutSubtitle: {color: '#8a9585', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 2},
   shortcutTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
@@ -982,11 +1300,18 @@ const local = StyleSheet.create({
   statusText: {fontFamily: 'Prompt_700Bold', fontSize: 12},
   statusTextConfirmed: {color: '#4f754b'},
   statusTextRejected: {color: '#8a5b5b'},
+  suggestionChip: {alignItems: 'center', alignSelf: 'stretch', backgroundColor: '#f1f6ef', borderColor: '#dce8d8', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, justifyContent: 'space-between', minHeight: 40, paddingHorizontal: 12, paddingVertical: 8},
+  suggestionList: {gap: 7, marginTop: 10},
+  suggestionText: {color: '#52664f', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
   thinking: {alignItems: 'center', flexDirection: 'row', gap: 8, padding: 10},
   timingLabel: {color: '#7e8b7a', fontFamily: 'Prompt_500Medium', fontSize: 8},
   timingTile: {backgroundColor: '#f1f5ef', borderRadius: 14, flex: 1, padding: 10},
   timingValue: {color: '#34412e', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 2},
+  temporaryBadge: {alignItems: 'center', backgroundColor: '#e8f1e5', borderRadius: 99, flexDirection: 'row', gap: 3, paddingHorizontal: 7, paddingVertical: 3},
+  temporaryBadgeText: {color: '#5d8059', fontFamily: 'Prompt_700Bold', fontSize: 8},
+  titleRow: {alignItems: 'center', flexDirection: 'row', gap: 7},
   topBar: {alignItems: 'center', flexDirection: 'row', gap: 9},
+  topActions: {alignItems: 'center', flexDirection: 'row', gap: 6},
   topTitle: {flex: 1},
   userBubble: {backgroundColor: '#749279', borderBottomRightRadius: 8},
   userBubbleText: {color: '#ffffff'},

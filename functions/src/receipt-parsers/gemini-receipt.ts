@@ -212,7 +212,6 @@ export async function extractReceiptWithGemini(rawText: string, apiKey: string, 
           type: "image",
           data: image.data,
           mime_type: image.mimeType,
-          resolution: "high",
         },
       ],
       response_format: {
@@ -220,7 +219,6 @@ export async function extractReceiptWithGemini(rawText: string, apiKey: string, 
         mime_type: "application/json",
         schema: RECEIPT_SCHEMA,
       },
-      generation_config: {temperature: 0},
     }),
   });
 

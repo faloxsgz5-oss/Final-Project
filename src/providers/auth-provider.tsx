@@ -3,7 +3,7 @@ import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useSt
 
 import {demoUid, isDemoMode} from '@/lib/demo-mode';
 import { auth } from '@/lib/firebase';
-import { AppRole, getUserRole, signOutCurrentUser } from '@/services/auth';
+import { AppRole, ensureUserProfile, getUserRole, signOutCurrentUser } from '@/services/auth';
 
 type AuthContextValue = {
   initializing: boolean;
@@ -29,6 +29,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return onIdTokenChanged(auth, async (nextUser) => {
       setUser(nextUser);
       try {
+        if (nextUser) await ensureUserProfile(nextUser);
         setRole(nextUser ? await getUserRole(nextUser) : null);
       } catch (error) {
         console.warn('[Auth] Unable to resolve the current user role', error);

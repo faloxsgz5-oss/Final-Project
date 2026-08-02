@@ -2,7 +2,35 @@
 
 SmartLife is an Expo and React Native application for students. It combines class schedules, notes, personal finance, OCR document scanning, notifications, Google Calendar synchronization, and an AI assistant in one mobile experience.
 
-This repository contains the complete application source, Firebase configuration and security rules, Cloud Functions, Google Cloud Vision OCR integration, and the User and Admin interfaces.
+This repository contains the complete application source, shared Firebase client configuration, security rules, Cloud Functions, Google Cloud Vision/iApp OCR integration, and the User and Admin interfaces.
+
+## Team quick start (Windows CMD)
+
+The app is already connected to the shared `smartlife-budget` backend. Gemini,
+iApp OCR, Firestore, Storage, Authentication, and Cloud Functions are already
+deployed. A teammate does not need to create a Firebase project or obtain API
+keys.
+
+Run this one line in CMD:
+
+```cmd
+git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project && setup-smartlife.cmd -RunAndroid
+```
+
+The setup command automatically:
+
+- installs Node.js LTS with `winget` when Node.js is missing;
+- installs application and Cloud Functions dependencies;
+- creates `.env.local` from the committed public team configuration;
+- creates the local `google-services.json` for `com.smartlife.student`;
+- opens Firebase login when needed;
+- registers a private App Check debug token for that computer and writes it only to the ignored `.env.local`;
+- validates the runtime configuration; and
+- builds and opens the Android application when `-RunAndroid` is included.
+
+The Google account used during setup must first be added as a teammate on the
+`smartlife-budget` Firebase project. No API key or Firebase field needs to be
+copied manually. Server secrets never leave Firebase Secret Manager.
 
 ## Main features
 
@@ -23,7 +51,7 @@ This repository contains the complete application source, Firebase configuration
 - Firebase Authentication, Firestore, Storage, and Cloud Functions
 - Google Cloud Vision API
 - Google Calendar API and Google OAuth 2.0
-- OpenAI fallback extraction through Firebase Secret Manager
+- Gemini AI and iApp OCR through Firebase Secret Manager
 
 ## Requirements
 
@@ -31,65 +59,33 @@ This repository contains the complete application source, Firebase configuration
 - npm
 - Git
 - Android Studio and an Android emulator, or a physical Android device
-- Access to the team's Firebase and Google Cloud projects for backend deployment
+- Team access to the shared Firebase project for automatic App Check registration
 
 Google Login and voice input use native modules. Test those features with a SmartLife Development Build; they are not available in Expo Go.
 
-## Clone and install
+## Setup without launching Android
 
 ```bash
-git clone https://github.com/faloxsgz5-oss/Final-Project.git
-cd Final-Project
-npm install
-cd functions
-npm install
-cd ..
+git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project && setup-smartlife.cmd
 ```
 
-## Local setup and environment variables
+Without `-RunAndroid`, the script prepares and verifies the project, then prints
+the next command. Re-running it is safe; the App Check entry for the same
+computer is replaced instead of accumulating duplicate team tokens.
 
-Sensitive local configuration is intentionally excluded from Git. Create your own `.env.local` from the safe template:
+`.env.example` and `config/google-services.team.json` contain only public mobile
+client identifiers. They are embedded in every installed Firebase application
+and are not server secrets. Never commit `.env.local`, App Check debug tokens,
+service-account JSON, Gemini/iApp keys, production signing keys, or refresh
+tokens.
 
-Windows PowerShell:
+## Shared Firebase and Google Cloud backend
 
-```powershell
-Copy-Item .env.example .env.local
-```
+The shared backend uses Firebase project `smartlife-budget` in
+`asia-southeast1` (Singapore). Teammates use the existing services and data
+rules; they do not create another Firebase project.
 
-macOS or Linux:
-
-```bash
-cp .env.example .env.local
-```
-
-Fill in the following values in `.env.local`:
-
-```env
-EXPO_PUBLIC_FIREBASE_API_KEY=your_api_key
-EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-EXPO_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
-EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
-EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-EXPO_PUBLIC_FIREBASE_APP_ID=your_web_app_id
-EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID=your_measurement_id
-
-EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=your_web_oauth_client_id.apps.googleusercontent.com
-EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID=your_android_oauth_client_id.apps.googleusercontent.com
-EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID=your_ios_oauth_client_id.apps.googleusercontent.com
-
-EXPO_PUBLIC_FACEBOOK_APP_ID=your_facebook_app_id
-EXPO_PUBLIC_SMARTLIFE_DEMO=false
-```
-
-The Firebase values are available under Firebase Console > Project settings > Your apps. The Google OAuth values are available under Google Cloud Console > Google Auth Platform > Clients.
-
-Never commit `.env`, `.env.local`, service-account JSON files, signing keys, `google-services.json`, or `GoogleService-Info.plist`.
-
-## Firebase and Google Cloud setup
-
-The shared backend currently uses Firebase project `smartlife-budget` in `asia-southeast1` (Singapore). A teammate needs the appropriate Firebase IAM role before deploying backend resources.
-
-Enable these services in the Firebase or Google Cloud project:
+These services are already enabled:
 
 - Firebase Authentication: Email/Password and Google providers
 - Cloud Firestore
@@ -98,12 +94,20 @@ Enable these services in the Firebase or Google Cloud project:
 - Google Cloud Vision API
 - Google Calendar API
 
-While the OAuth consent screen is in Testing mode, add each teammate's Google account as a test user. The Android OAuth client must use package `com.smartlife.student` and the SHA-1 certificate of the development build.
+Email/password authentication works against the shared project immediately.
+Native Google Login additionally requires a development build signed with a
+certificate registered for package `com.smartlife.student`; this OAuth
+restriction cannot be replaced by a public API key. Ask the maintainer for the
+team development build if a new computer's local debug certificate is not yet
+registered.
 
-The OpenAI key belongs in Firebase Secret Manager, not in `.env.local`:
+The Gemini and iApp API keys are already stored in Firebase Secret Manager, not
+in `.env.local`, GitHub, or the mobile app. Only a backend maintainer should ever
+rotate them:
 
 ```bash
-npx -y firebase-tools@latest functions:secrets:set OPENAI_API_KEY --project smartlife-budget
+npx -y firebase-tools@latest functions:secrets:set GEMINI_API_KEY --project smartlife-budget
+npx -y firebase-tools@latest functions:secrets:set IAPP_API_KEY --project smartlife-budget
 ```
 
 Only a project owner or authorized backend teammate needs to set this shared secret.

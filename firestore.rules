@@ -5,6 +5,7 @@ service cloud.firestore {
     // SmartLife data model:
     // users/{uid}
     // users/{uid}/{schedules|activities|notes|transactions|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
+    // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
     // Admin access is derived only from the trusted `admin` custom claim.
 
@@ -114,7 +115,9 @@ service cloud.firestore {
         && data.note is string && data.note.size() <= 1000
         && data.occurredAt is timestamp
         && data.receiptPath is string && data.receiptPath.size() <= 512
-        && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/receipts/.*'))
+        // Dedicated receipt scans use /receipts; automatic document scans use
+        // /scans and may still be classified as receipts by OCR.
+        && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/(receipts|scans)/.*'))
         && (!('confidence' in data) || (data.confidence is number && data.confidence >= 0 && data.confidence <= 1))
         && (!('items' in data) || (data.items is list && data.items.size() <= 100))
         && (!('reviewedByUser' in data) || data.reviewedByUser is bool)
@@ -129,7 +132,7 @@ service cloud.firestore {
         && data.ownerId == userId
         && data.kind in ['schedule', 'receipt']
         && data.imagePath is string && data.imagePath.size() >= 1 && data.imagePath.size() <= 512
-        && data.imagePath.matches('^users/' + userId + '/(schedules|receipts)/.*')
+        && data.imagePath.matches('^users/' + userId + '/(schedules|receipts|scans)/.*')
         && data.status in ['pending', 'processing', 'completed', 'failed']
         && data.extractedText is string && data.extractedText.size() <= 30000
         && data.errorMessage is string && data.errorMessage.size() <= 1000
@@ -143,6 +146,28 @@ service cloud.firestore {
         && data.type in ['ai', 'schedule-scan', 'expense-category', 'other']
         && data.message is string && data.message.size() >= 1 && data.message.size() <= 5000
         && data.status == 'new'
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validAssistantConversation(data, userId) {
+      return data.keys().hasAll(['ownerId', 'mode', 'title', 'lastMessagePreview', 'messageCount', 'stateJson', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'mode', 'title', 'lastMessagePreview', 'messageCount', 'stateJson', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.mode == 'persistent'
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 100
+        && data.lastMessagePreview is string && data.lastMessagePreview.size() <= 300
+        && data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 10000
+        && data.stateJson is string && data.stateJson.size() <= 5000
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validAssistantMessage(data, userId) {
+      return data.keys().hasAll(['ownerId', 'role', 'content', 'payload', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'role', 'content', 'payload', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.role in ['user', 'assistant']
+        && data.content is string && data.content.size() >= 1 && data.content.size() <= 8000
+        && data.payload is string && data.payload.size() <= 20000
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
@@ -265,6 +290,35 @@ service cloud.firestore {
       match /assistantInteractions/{interactionId} {
         allow read: if isOwner(userId) || isAdmin();
         allow write: if false;
+      }
+
+      // Persistent assistant chats are private to their owner. Temporary chats
+      // never write to these paths. Message updates may only change local UI
+      // metadata such as feedback or proposed-action status inside `payload`.
+      match /assistantConversations/{conversationId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId)
+          && userExists(userId)
+          && validAssistantConversation(request.resource.data, userId)
+          && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && validAssistantConversation(request.resource.data, userId)
+          && hasValidUpdateMeta(request.resource.data, userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'lastMessagePreview', 'messageCount', 'stateJson', 'updatedAt']);
+        allow delete: if isOwner(userId);
+
+        match /messages/{messageId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow create: if isOwner(userId)
+            && userExists(userId)
+            && validAssistantMessage(request.resource.data, userId)
+            && hasValidCreateMeta(request.resource.data, userId);
+          allow update: if isOwner(userId)
+            && validAssistantMessage(request.resource.data, userId)
+            && hasValidUpdateMeta(request.resource.data, userId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt']);
+          allow delete: if isOwner(userId);
+        }
       }
 
       match /feedback/{feedbackId} {

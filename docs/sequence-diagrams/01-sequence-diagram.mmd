@@ -1,0 +1,33 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#eef4eb','primaryTextColor':'#26351f','primaryBorderColor':'#4f794c','lineColor':'#6f8f6d','actorBkg':'#ffffff','actorBorder':'#4f794c','signalColor':'#4f794c','signalTextColor':'#26351f'}}}%%
+sequenceDiagram
+    autonumber
+    actor U as User / Admin
+    participant A as SmartLife Expo App
+    participant AU as Firebase Authentication
+    participant FS as Cloud Firestore
+    participant AS as Secure Session Storage
+
+    U->>A: เปิดแอป
+    A->>AU: ตรวจสอบ session เดิม
+    AU-->>A: currentUser หรือ null
+    alt มี session
+        A->>FS: อ่าน users/{uid}
+        FS-->>A: profile + role
+        A->>AS: เก็บสถานะ session อย่างปลอดภัย
+        alt role = admin
+            A-->>U: เปิด Admin Dashboard
+        else role = user
+            A-->>U: เปิด Unified Dashboard
+        end
+    else ยังไม่เข้าสู่ระบบ
+        U->>A: Email/Password หรือ Google Login
+        A->>AU: signIn / signInWithCredential
+        AU-->>A: uid และ session
+        A->>FS: สร้างหรืออัปเดต users/{uid}
+        FS-->>A: profile + role เริ่มต้น
+        A-->>U: เปิด Unified Dashboard
+    end
+    U->>A: Logout
+    A->>AU: signOut()
+    A->>AS: ล้างข้อมูล local session
+    A-->>U: กลับหน้า Login

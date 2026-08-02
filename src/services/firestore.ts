@@ -164,6 +164,9 @@ export const schedules = {
 
 export const activities = {
   create: (uid: string, data: Omit<Activity, keyof CreateFields | 'ownerId'>) => isDemoMode ? demoCreate('activities') : createOwned(uid, 'activities', data),
+  listTasks: (uid: string) => isDemoMode
+    ? Promise.resolve((demoCollection('activities') as WithId<Activity>[]).filter((item) => item.type === 'task'))
+    : listOwned<Activity>(uid, 'activities', [where('type', '==', 'task'), limit(200)]),
   update: (uid: string, id: string, data: Partial<Omit<Activity, keyof CreateFields | 'ownerId'>>) => isDemoMode ? Promise.resolve() : updateOwned(uid, 'activities', id, data),
   remove: (uid: string, id: string) => isDemoMode ? Promise.resolve() : removeOwned(uid, 'activities', id),
   between: (uid: string, from: Date, to: Date) => isDemoMode ? Promise.resolve(demoBetween('activities', from, to) as WithId<Activity>[]) : listOwned<Activity>(uid, 'activities', [
