@@ -28,6 +28,15 @@ import {buildCourseTableLookup, mergeCourseTableNames} from "./schedule-parsers/
 import {mergeExamFields, parseOptionalExamTable} from "./schedule-parsers/vision-exam-table";
 import {parseSpatialScheduleGrid} from "./schedule-parsers/vision-grid-table";
 
+export {
+  cleanupExpiredLinePendingReviews,
+  confirmLineTransaction,
+  enqueueLinePendingReview,
+  rejectLinePendingReview,
+  reportLineListenerStatus,
+  updateLineConsent,
+} from "./line-import";
+
 if (!getApps().length) initializeApp();
 
 const db = getFirestore();
@@ -1643,6 +1652,10 @@ export const smartLifeAssistantReply = onCall(
     const responseModes = new Set(["brainstorm", "coach", "compare", "direct", "explain", "plan", "summarize"]);
     const requestedResponseMode = assistantString(request.data?.responseMode, 20);
     const responseMode = responseModes.has(requestedResponseMode) ? requestedResponseMode : "direct";
+    const clientDynamicContext = request.data?.clientDynamicContext &&
+      typeof request.data.clientDynamicContext === "object" ?
+      request.data.clientDynamicContext :
+      null;
     const history = Array.isArray(request.data?.history) ?
       request.data.history
         .slice(-12)
@@ -1856,6 +1869,7 @@ export const smartLifeAssistantReply = onCall(
         recentTransactions: transactions.slice(0, 30),
       },
       dataAvailability,
+      dynamic: clientDynamicContext,
       notes,
       ocrResults,
       schedules,

@@ -6,6 +6,9 @@ export type NoteCategory = 'study' | 'work' | 'idea' | 'personal';
 export type ScanKind = 'schedule' | 'receipt';
 export type ScanStatus = 'pending' | 'processing' | 'completed' | 'failed';
 export type TransactionType = 'income' | 'expense';
+export type TransactionSource = 'bank_auto_listener' | 'line_auto_listener' | 'line_paste' | 'line_share' | 'manual_entry' | 'receipt_scan';
+export type ConsentTier = 'line_auto_sync' | 'manual_only';
+export type LineListenerStatus = 'active' | 'not_applicable' | 'permission_revoked';
 
 export type OwnedDocument = {
   createdAt: Timestamp;
@@ -52,9 +55,15 @@ export type Note = OwnedDocument & {
 };
 
 export type Transaction = OwnedDocument & {
+  accountLast4?: string | null;
   amount: number;
+  balanceAfterReported?: number | null;
+  bank?: string;
   category: string;
+  confirmationMethod?: 'auto_verified_line_notification' | 'explicit_user_confirm';
   confidence?: number;
+  dedupeKeys?: string[];
+  fingerprint?: string;
   items?: {
     discountAmount: number;
     finalPrice: number;
@@ -65,11 +74,51 @@ export type Transaction = OwnedDocument & {
   merchant: string;
   note: string;
   occurredAt: Timestamp;
+  rawTextRetained?: boolean;
   receiptPath: string;
   reviewedByUser?: boolean;
+  reviewedAt?: Timestamp;
   scanId?: string;
+  source?: TransactionSource;
   status?: 'verified' | 'needs_review';
   type: TransactionType;
+};
+
+export type PendingLineReview = OwnedDocument & {
+  capturedAt: Timestamp;
+  dedupeKeys?: string[];
+  expiresAt: Timestamp;
+  fingerprint: string;
+  parsedDraft: {
+    accountLast4: string | null;
+    amount: number;
+    balanceAfterReported: number | null;
+    bank: 'bbl' | 'gsb' | 'kbank' | 'krungsri' | 'ktb' | 'scb' | 'ttb' | 'unknown';
+    category: string;
+    confidence: number;
+    merchant: string;
+    needsReview: boolean;
+    note: string;
+    occurredAt: string;
+    parserMode: 'generic' | 'llm' | 'regex';
+    type: TransactionType;
+    warnings: string[];
+  };
+  rawText: string;
+  source: 'bank_auto_listener' | 'line_auto_listener';
+  status: 'pending';
+};
+
+export type LineConsentProfile = {
+  consentHistory?: {
+    changedAt: Timestamp;
+    method: 'onboarding' | 'settings';
+    tier: ConsentTier;
+  }[];
+  consentTier?: ConsentTier;
+  lineConsentUpdatedAt?: Timestamp | null;
+  lineConsentVersion?: number;
+  lineListenerStatus?: LineListenerStatus;
 };
 
 export type ScanLog = OwnedDocument & {

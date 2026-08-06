@@ -1,7 +1,8 @@
 import {Timestamp} from 'firebase/firestore';
 
-import {schedules} from '@/services/firestore';
-import {saveReviewedReceipt, type OcrResult} from '@/services/ocr';
+import {schedules, transactions} from '@/services/firestore';
+import type {OcrResult} from '@/services/ocr';
+import {ensureUserProfile} from '@/services/auth';
 
 type ScheduleEntry = {
   buildingName?: string;
@@ -289,6 +290,8 @@ export async function saveOcrResult({
   result: OcrResult;
   uid: string;
 }): Promise<SavedScan> {
+  await ensureUserProfile();
+
   if (result.scanType === 'receipt') {
     const amount = parseCurrencyAmount(firstAmountValue(draft));
     if (amount === null) throw new Error('\u0e01\u0e23\u0e38\u0e13\u0e32\u0e01\u0e23\u0e2d\u0e01\u0e22\u0e2d\u0e14\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1b\u0e47\u0e19\u0e15\u0e31\u0e27\u0e40\u0e25\u0e02 \u0e40\u0e0a\u0e48\u0e19 90 \u0e2b\u0e23\u0e37\u0e2d 1,250.00');
@@ -297,15 +300,19 @@ export async function saveOcrResult({
       ? Number(Math.min(1, Math.max(0, rawConfidence)).toFixed(2))
       : 0;
 
-    const id = await saveReviewedReceipt({
+    const id = await transactions.create(uid, {
       amount,
       category: text(draft.category) || 'Others',
       confidence,
       items: receiptItemsForStorage(draft.items),
       merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',
-      occurredAt: receiptOccurredAt(draft.date, draft.time).toISOString(),
+      note: '\u0e19\u0e33\u0e40\u0e02\u0e49\u0e32\u0e08\u0e32\u0e01 Smart Scan OCR',
+      occurredAt: Timestamp.fromDate(receiptOccurredAt(draft.date, draft.time)),
+      receiptPath: text(result.storagePath),
+      reviewedByUser: Boolean(result.parsed.needsReview),
       scanId: result.logId,
-      storagePath: text(result.storagePath),
+      status: 'verified',
+      type: 'expense',
     });
     return {destination: 'smartlife_finance_month', documentIds: [id]};
   }

@@ -18,7 +18,7 @@ import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { Platform } from 'react-native';
 
-import {isDemoMode, demoUid} from '@/lib/demo-mode';
+import {demoUid, hasFirebaseConfig, hasRealPublicConfigValue, isDemoMode} from '@/lib/demo-mode';
 import { auth, db } from '@/lib/firebase';
 import {isExpoGo} from '@/lib/expo-runtime';
 import { clearGoogleCalendarSession } from '@/services/google-calendar';
@@ -42,12 +42,20 @@ const demoUser = {
 // when a teammate has not copied the optional value into .env.local yet.
 const FIREBASE_GOOGLE_WEB_CLIENT_ID = '302211453614-ui2mf0hqknu0itr8r4g76g1odrfhc6fe.apps.googleusercontent.com';
 
+function requireFirebaseConfig() {
+  if (!hasFirebaseConfig) {
+    throw new Error('ยังไม่ได้ตั้งค่า Firebase ของโปรเจกต์จริงครับ กรุณาใส่ค่า Firebase config ของ smartlife-budget ในไฟล์ .env.local แล้ว restart แอป');
+  }
+}
+
 function googleWebClientId() {
-  return process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() || FIREBASE_GOOGLE_WEB_CLIENT_ID;
+  const configured = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim();
+  return hasRealPublicConfigValue(configured) ? configured : FIREBASE_GOOGLE_WEB_CLIENT_ID;
 }
 
 export async function registerWithEmail({ displayName, email, password }: RegisterInput) {
   if (isDemoMode) return {...demoUser, displayName: displayName || demoUser.displayName, email} as User;
+  requireFirebaseConfig();
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
 
   try {
@@ -57,6 +65,11 @@ export async function registerWithEmail({ displayName, email, password }: Regist
       email: credential.user.email,
       displayName: displayName.trim(),
       avatarUrl: '',
+      consentHistory: [{changedAt: new Date(), method: 'onboarding', tier: 'manual_only'}],
+      consentTier: 'manual_only',
+      lineConsentUpdatedAt: serverTimestamp(),
+      lineConsentVersion: 1,
+      lineListenerStatus: 'not_applicable',
       role: 'user',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -71,8 +84,8 @@ export async function registerWithEmail({ displayName, email, password }: Regist
 
 export async function signInWithEmail(email: string, password: string) {
   if (isDemoMode) return {...demoUser, email} as User;
+  requireFirebaseConfig();
   const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
-  await ensureUserProfile(credential.user);
   return credential.user;
 }
 
@@ -81,15 +94,22 @@ function logGoogleLoginConfiguration() {
   const webClientId = googleWebClientId();
   const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID?.trim();
   console.info('[Google Login] OAuth environment', {
-    androidClientIdLoaded: Boolean(androidClientId),
+    androidClientIdLoaded: hasRealPublicConfigValue(androidClientId),
     platform: Platform.OS,
     webClientIdLoaded: Boolean(webClientId),
     webClientProject: webClientId?.split('-')[0] ?? '<missing>',
   });
 }
 
-export async function ensureUserProfile(user: User) {
-  if (isDemoMode) return;
+async function createSocialUserProfile(user: User) {
+  await ensureUserProfile(user);
+}
+
+export async function ensureUserProfile(user = auth.currentUser) {
+  if (!user) {
+    throw new Error('กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล');
+  }
+
   const reference = doc(db, 'users', user.uid);
   if ((await getDoc(reference)).exists()) return;
 
@@ -98,6 +118,11 @@ export async function ensureUserProfile(user: User) {
     email: user.email ?? '',
     displayName: user.displayName?.trim() || user.email?.split('@')[0] || 'ผู้ใช้ SmartLife',
     avatarUrl: user.photoURL?.startsWith('https://') ? user.photoURL : '',
+    consentHistory: [{changedAt: new Date(), method: 'onboarding', tier: 'manual_only'}],
+    consentTier: 'manual_only',
+    lineConsentUpdatedAt: serverTimestamp(),
+    lineConsentVersion: 1,
+    lineListenerStatus: 'not_applicable',
     role: 'user',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -112,6 +137,7 @@ function parseOAuthCallbackParams(url: string) {
 
 export async function signInWithGoogle() {
   if (isDemoMode) return demoUser;
+  requireFirebaseConfig();
   logGoogleLoginConfiguration();
   let user: User;
 
@@ -151,12 +177,13 @@ export async function signInWithGoogle() {
     }
   }
 
-  await ensureUserProfile(user);
+  await createSocialUserProfile(user);
   return user;
 }
 
 export async function signInWithFacebook() {
   if (isDemoMode) return demoUser;
+  requireFirebaseConfig();
   let user: User;
 
   if (Platform.OS === 'web') {
@@ -188,17 +215,18 @@ export async function signInWithFacebook() {
     user = (await signInWithCredential(auth, credential)).user;
   }
 
-  await ensureUserProfile(user);
+  await createSocialUserProfile(user);
   return user;
 }
 
 export async function sendResetEmail(email: string) {
   if (isDemoMode) return;
+  requireFirebaseConfig();
   await sendPasswordResetEmail(auth, email.trim());
 }
 
 export async function signOutCurrentUser() {
-  if (!isDemoMode) await signOut(auth);
+  if (!isDemoMode && hasFirebaseConfig) await signOut(auth);
   await Promise.allSettled([
     AsyncStorage.removeItem('smartlife:last-ocr:receipt'),
     AsyncStorage.removeItem('smartlife:last-ocr:schedule'),
@@ -208,6 +236,7 @@ export async function signOutCurrentUser() {
 
 export async function getUserRole(user: User): Promise<AppRole> {
   if (isDemoMode) return 'user';
+  requireFirebaseConfig();
   const token = await getIdTokenResult(user, true);
   return token.claims.admin === true ? 'admin' : 'user';
 }

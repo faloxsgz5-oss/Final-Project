@@ -4,7 +4,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // SmartLife data model:
     // users/{uid}
-    // users/{uid}/{schedules|activities|notes|transactions|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
+    // users/{uid}/{schedules|activities|notes|transactions|pendingReview|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
     // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
     // Admin access is derived only from the trusted `admin` custom claim.
@@ -44,7 +44,12 @@ service cloud.firestore {
 
     function validProfile(data, userId) {
       return data.keys().hasAll(['uid', 'email', 'displayName', 'avatarUrl', 'role', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'displayName', 'avatarUrl', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'avatarUrl', 'role',
+          'consentHistory', 'consentTier', 'lineConsentUpdatedAt',
+          'lineConsentVersion', 'lineListenerStatus',
+          'createdAt', 'updatedAt'
+        ])
         && data.uid == userId
         && data.uid is string
         && data.email == request.auth.token.email
@@ -57,6 +62,11 @@ service cloud.firestore {
         && data.avatarUrl.size() <= 2048
         && (data.avatarUrl == '' || data.avatarUrl.matches('^https://.*'))
         && data.role == 'user'
+        && (!('consentHistory' in data) || (data.consentHistory is list && data.consentHistory.size() <= 50))
+        && (!('consentTier' in data) || data.consentTier in ['manual_only', 'line_auto_sync'])
+        && (!('lineConsentUpdatedAt' in data) || data.lineConsentUpdatedAt is timestamp)
+        && (!('lineConsentVersion' in data) || (data.lineConsentVersion is int && data.lineConsentVersion == 1))
+        && (!('lineListenerStatus' in data) || data.lineListenerStatus in ['active', 'not_applicable', 'permission_revoked'])
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -106,7 +116,14 @@ service cloud.firestore {
 
     function validTransaction(data, userId) {
       return data.keys().hasAll(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'type', 'amount', 'category', 'merchant', 'note', 'occurredAt', 'receiptPath', 'confidence', 'items', 'reviewedByUser', 'scanId', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'type', 'amount', 'category', 'merchant', 'note',
+          'occurredAt', 'receiptPath', 'accountLast4',
+          'balanceAfterReported', 'bank', 'confirmationMethod',
+          'confidence', 'fingerprint', 'items', 'rawTextRetained',
+          'reviewedAt', 'reviewedByUser', 'scanId', 'source', 'status',
+          'createdAt', 'updatedAt'
+        ])
         && data.ownerId == userId
         && data.type in ['income', 'expense']
         && data.amount is number && data.amount > 0 && data.amount <= 1000000000
@@ -120,8 +137,16 @@ service cloud.firestore {
         && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/(receipts|scans)/.*'))
         && (!('confidence' in data) || (data.confidence is number && data.confidence >= 0 && data.confidence <= 1))
         && (!('items' in data) || (data.items is list && data.items.size() <= 100))
+        && (!('accountLast4' in data) || data.accountLast4 == null || (data.accountLast4 is string && data.accountLast4.matches('^[0-9]{4}$')))
+        && (!('balanceAfterReported' in data) || data.balanceAfterReported == null || (data.balanceAfterReported is number && data.balanceAfterReported >= 0 && data.balanceAfterReported <= 1000000000000))
+        && (!('bank' in data) || (data.bank is string && data.bank.size() <= 40))
+        && (!('confirmationMethod' in data) || data.confirmationMethod == 'explicit_user_confirm')
+        && (!('fingerprint' in data) || (data.fingerprint is string && data.fingerprint.matches('^[a-f0-9]{64}$')))
+        && (!('rawTextRetained' in data) || data.rawTextRetained == false)
+        && (!('reviewedAt' in data) || data.reviewedAt is timestamp)
         && (!('reviewedByUser' in data) || data.reviewedByUser is bool)
         && (!('scanId' in data) || (data.scanId is string && data.scanId.size() <= 128))
+        && (!('source' in data) || data.source in ['line_auto_listener', 'line_paste', 'line_share', 'manual_entry', 'receipt_scan'])
         && (!('status' in data) || data.status in ['verified', 'needs_review'])
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
@@ -213,6 +238,9 @@ service cloud.firestore {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId)
         && validProfile(request.resource.data, userId)
+        && (!('consentTier' in request.resource.data) || request.resource.data.consentTier == 'manual_only')
+        && (!('lineConsentVersion' in request.resource.data) || request.resource.data.lineConsentVersion == 1)
+        && (!('lineListenerStatus' in request.resource.data) || request.resource.data.lineListenerStatus == 'not_applicable')
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
       allow update: if isOwner(userId)
@@ -248,9 +276,28 @@ service cloud.firestore {
 
       match /transactions/{transactionId} {
         allow read: if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && userExists(userId) && validTransaction(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
-        allow update: if isOwner(userId) && validTransaction(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        // LINE-derived records are created only by trusted callable functions
+        // after explicit user confirmation. A client cannot forge that audit trail.
+        allow create: if isOwner(userId)
+          && userExists(userId)
+          && validTransaction(request.resource.data, userId)
+          && hasValidCreateMeta(request.resource.data, userId)
+          && (!('source' in request.resource.data) || request.resource.data.source in ['manual_entry', 'receipt_scan']);
+        allow update: if isOwner(userId)
+          && validTransaction(request.resource.data, userId)
+          && hasValidUpdateMeta(request.resource.data, userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'amount', 'category', 'merchant', 'note', 'occurredAt',
+            'status', 'updatedAt'
+          ]);
         allow delete: if isOwner(userId);
+      }
+
+      match /pendingReview/{draftId} {
+        // Pending raw LINE text is server-created, expires after seven days,
+        // and is removed by the confirmation/rejection callable functions.
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
       }
 
       match /scanLogs/{scanId} {

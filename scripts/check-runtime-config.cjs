@@ -65,13 +65,22 @@ const firebaseVars = [
   'EXPO_PUBLIC_FIREBASE_APP_ID',
 ];
 
-for (const name of firebaseVars) {
-  if (env[name]) ok(`${name} is set`);
-  else fail(`${name} is missing`);
+function isPlaceholder(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return !normalized ||
+    normalized.startsWith('your_') ||
+    normalized.includes('your_project') ||
+    normalized.includes('from_firebase_console') ||
+    normalized.includes('demo-');
 }
 
-if (env.EXPO_PUBLIC_SMARTLIFE_DEMO === '1') {
-  fail('EXPO_PUBLIC_SMARTLIFE_DEMO=1 forces demo mode');
+for (const name of firebaseVars) {
+  if (isPlaceholder(env[name])) fail(`${name} is missing or still a placeholder`);
+  else ok(`${name} is set`);
+}
+
+if (env.EXPO_PUBLIC_SMARTLIFE_DEMO === '1' || String(env.EXPO_PUBLIC_SMARTLIFE_DEMO).toLowerCase() === 'true') {
+  fail('EXPO_PUBLIC_SMARTLIFE_DEMO forces demo mode');
 } else {
   ok('demo mode is not forced');
 }
@@ -97,16 +106,22 @@ const bundledGoogleWebClient = googleServices?.client
   ?.flatMap((client) => client.oauth_client ?? [])
   ?.find((client) => client.client_type === 3)?.client_id;
 if (env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || bundledGoogleWebClient) {
-  ok('Google web OAuth client ID is available');
+  if (env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID && isPlaceholder(env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID)) {
+    ok('Google web OAuth client ID uses bundled Firebase fallback');
+  } else {
+    ok('Google web OAuth client ID is available');
+  }
 } else {
   warn('Google web OAuth client ID is missing; Google login/calendar will not be fully usable');
 }
 for (const name of ['EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID', 'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID']) {
-  if (env[name]) ok(`${name} is set`);
+  if (env[name] && !isPlaceholder(env[name])) ok(`${name} is set`);
+  else if (env[name]) warn(`${name} is still a placeholder; add the real OAuth client when enabling that platform-specific flow`);
   else warn(`${name} is missing; add it when enabling that platform-specific OAuth flow`);
 }
 
-if (env.EXPO_PUBLIC_FACEBOOK_APP_ID) ok('EXPO_PUBLIC_FACEBOOK_APP_ID is set');
+if (env.EXPO_PUBLIC_FACEBOOK_APP_ID && !isPlaceholder(env.EXPO_PUBLIC_FACEBOOK_APP_ID)) ok('EXPO_PUBLIC_FACEBOOK_APP_ID is set');
+else if (env.EXPO_PUBLIC_FACEBOOK_APP_ID) warn('EXPO_PUBLIC_FACEBOOK_APP_ID is still a placeholder; Facebook login will not be usable');
 else warn('EXPO_PUBLIC_FACEBOOK_APP_ID is missing; Facebook login will not be usable');
 
 const localProperties = read('android/local.properties');

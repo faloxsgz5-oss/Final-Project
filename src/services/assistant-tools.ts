@@ -24,7 +24,13 @@ import {isNoteLookupIntent, noteLookupTerms} from '@/services/assistant-note-int
 import {chooseAssistantExecutionRoute, chooseAssistantResponseMode, isSavingsPlanningRequest} from '@/services/assistant-response-strategy';
 import {isReceiptImageLookupRequest, selfContainedAssistantFallback} from '@/services/assistant-safe-fallback';
 import {rankAssistantTasks} from '@/services/assistant-task-ranking';
+import {
+  calculateBurnoutDynamicInsight,
+  calculateFinanceBudgetInsight,
+  type SmartLifeDynamicInsight,
+} from '@/services/dynamic-insights';
 import {activities, notes, scanLogs, schedules, transactions} from '@/services/firestore';
+import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
 import type {AssistantChatMessage, AssistantConversationState, AssistantConversationStatePatch, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantResponseMode, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, ScanLog, Schedule, Transaction, WithId} from '@/types/smartlife';
 
@@ -45,6 +51,7 @@ export const assistantToolSchemas: AssistantToolSchema[] = [
 export type AssistantContext = {
   availability: Record<'finance' | 'notes' | 'ocr' | 'schedules' | 'tasks', 'available' | 'failed' | 'partial'>;
   balance: number;
+  dynamic: SmartLifeDynamicInsight;
   monthExpense: number;
   monthIncome: number;
   monthTransactions: WithId<Transaction>[];
@@ -64,7 +71,7 @@ const THAI_TIME_ZONE = 'Asia/Bangkok';
 const EXAM_PATTERN = /(สอบ|กลางภาค|ปลายภาค|midterm|final|quiz|ควิซ|test|exam)/i;
 const assistantFunctions = getFunctions(firebaseApp, 'asia-southeast1');
 const smartLifeAssistantReply = httpsCallable<
-  {conversationId: string; conversationState: AssistantConversationState; history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string; responseMode: AssistantResponseMode},
+  {clientDynamicContext?: SmartLifeDynamicInsight; conversationId: string; conversationState: AssistantConversationState; history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string; responseMode: AssistantResponseMode},
   {content: string; selectedTask?: {dueAt?: string; title: string}; suggestions?: string[]}
 >(assistantFunctions, 'smartLifeAssistantReply');
 const assistantTelemetry = httpsCallable<
@@ -427,6 +434,18 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
   const recentScanLogs = settledValue(scanLogsResult) as WithId<ScanLog>[];
   const monthIncome = monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
   const monthExpense = monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
+  const monthlyBudget = await loadMonthlyBudget(uid, currentMonthKey());
+  const financeDynamic = monthlyBudget
+    ? calculateFinanceBudgetInsight({monthlyBudget: monthlyBudget.amount, transactions: monthTransactions})
+    : null;
+  const dynamic: SmartLifeDynamicInsight = {
+    burnout: calculateBurnoutDynamicInsight({
+      activities: [...todayActivities, ...pendingTasks],
+      finance: financeDynamic,
+      schedules: todaySchedules,
+    }),
+    ...(financeDynamic ? {finance: financeDynamic} : {}),
+  };
   return {
     availability: {
       finance: sourceAvailability([weekTransactionsResult, monthTransactionsResult]),
@@ -443,6 +462,7 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
       tasks: sourceAvailability([pendingTasksResult, notesResult]),
     },
     balance: monthIncome - monthExpense,
+    dynamic,
     monthExpense,
     monthIncome,
     monthTransactions,
@@ -1901,12 +1921,42 @@ function buildRecentOcrAnswer(context: AssistantContext) {
   ].join('\n');
 }
 
+function buildDynamicBurnoutAnswer(context: AssistantContext) {
+  const insight = context.dynamic.burnout;
+  const riskLabel = insight.riskLevel === 'high' ? 'สูง' : insight.riskLevel === 'medium' ? 'ปานกลาง' : 'ต่ำ';
+  const reasons = insight.reasons.length
+    ? ` เหตุผลหลักคือ ${insight.reasons.slice(0, 3).join(', ')}`
+    : ' วันนี้ยังมีช่องว่างพอจัดการงานแบบไม่กดดันมาก';
+  return `ความเสี่ยงหมดไฟวันนี้อยู่ระดับ${riskLabel} คะแนน ${insight.score}/100.${reasons} มีงานค้าง ${insight.pendingTaskCount} รายการ งานด่วน ${insight.urgentTaskCount} รายการ และช่วงว่างยาวสุดประมาณ ${insight.longestFreeSlotMinutes} นาทีครับ`;
+}
+
+function buildDynamicBudgetAnswer(context: AssistantContext) {
+  const finance = context.dynamic.finance;
+  if (!finance) return 'ยังไม่มีงบรายเดือนที่ใช้คำนวณ AI Dynamic ครับ ไปที่หน้าการเงิน > กำหนดงบรายเดือน แล้วบันทึกงบก่อน ระบบจะคำนวณงบต่อวันและแรงกดดันทางการเงินให้ทันที';
+  const pressureLabel = finance.financePressureLevel === 'critical'
+    ? 'เกินงบแล้ว'
+    : finance.financePressureLevel === 'high'
+      ? 'ตึงมาก'
+      : finance.financePressureLevel === 'medium'
+        ? 'เริ่มตึง'
+        : finance.financePressureLevel === 'low'
+          ? 'ยังพอไหวแต่ควรระวัง'
+          : 'ปกติ';
+  return `AI Dynamic คำนวณจากงบเดือนนี้ ${finance.monthlyBudget.toLocaleString('th-TH')} บาท หักรายจ่ายจริง ${finance.spentSoFar.toLocaleString('th-TH')} บาท เหลืองบ ${finance.remainingBudget.toLocaleString('th-TH')} บาท เฉลี่ยควรใช้ได้ประมาณวันละ ${finance.remainingDailyBudget.toLocaleString('th-TH')} บาท สถานะคือ ${pressureLabel} ครับ`;
+}
+
 function contextAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
   if (/^(?:หวัดดี|สวัสดี|ดีจ้า|hello|hi)(?:ครับ|ค่ะ|คับ|จ้า)?$/i.test(message.trim())) {
     return 'หวัดดีครับ! ฉันช่วยเช็กตาราง งานค้าง เงินคงเหลือ หรือช่วยจดรายการให้ได้เลย วันนี้อยากจัดการเรื่องไหนก่อนครับ?';
   }
   const selfContainedAnswer = selfContainedAssistantFallback(message);
   if (selfContainedAnswer) return selfContainedAnswer;
+  if (/(หมดไฟ|burn\s*out|burnout|เครียด|เหนื่อย|ล้า)/i.test(message)) {
+    return buildDynamicBurnoutAnswer(context);
+  }
+  if (/(ai\s*dynamic|ไดนามิก|งบรายเดือน|งบต่อวัน|งบวันนี้|เงินพอไหม|ใช้เงินได้เท่าไร)/i.test(message)) {
+    return buildDynamicBudgetAnswer(context);
+  }
   if (
     /(ตารางเรียน|ตาราง|เรียน)/i.test(message) &&
     /(งาน.*(?:ใกล้ส่ง|ค้าง|กำหนดส่ง)|(?:ใกล้ส่ง|ค้าง|กำหนดส่ง).*งาน)/i.test(message) &&
@@ -2105,6 +2155,7 @@ export async function buildAssistantReply(
   if (executionRoute === 'gemini') {
     try {
       await ensureAppCheckReady();
+      const [context] = await loadAssistantState(uid);
       const history = conversation
         .filter((turn): turn is AssistantConversationTurn & {role: 'assistant' | 'user'} =>
           turn.role === 'assistant' || turn.role === 'user',
@@ -2112,6 +2163,7 @@ export async function buildAssistantReply(
         .slice(-12)
         .map((turn) => ({content: turn.content.slice(0, 600), role: turn.role}));
       const assistantRequest = {
+        clientDynamicContext: context.dynamic,
         conversationId: runtimeConversationState.conversationId,
         // Do not send an old finance scenario into an unrelated turn. History
         // remains available, but the latest message must explicitly continue

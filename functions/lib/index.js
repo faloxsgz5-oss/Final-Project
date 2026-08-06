@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = void 0;
+exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
 exports.addReceiptReview = addReceiptReview;
 const vision_1 = require("@google-cloud/vision");
 const app_1 = require("firebase-admin/app");
@@ -20,6 +20,13 @@ const gemini_fallback_1 = require("./schedule-parsers/gemini-fallback");
 const vision_course_table_1 = require("./schedule-parsers/vision-course-table");
 const vision_exam_table_1 = require("./schedule-parsers/vision-exam-table");
 const vision_grid_table_1 = require("./schedule-parsers/vision-grid-table");
+var line_import_1 = require("./line-import");
+Object.defineProperty(exports, "cleanupExpiredLinePendingReviews", { enumerable: true, get: function () { return line_import_1.cleanupExpiredLinePendingReviews; } });
+Object.defineProperty(exports, "confirmLineTransaction", { enumerable: true, get: function () { return line_import_1.confirmLineTransaction; } });
+Object.defineProperty(exports, "enqueueLinePendingReview", { enumerable: true, get: function () { return line_import_1.enqueueLinePendingReview; } });
+Object.defineProperty(exports, "rejectLinePendingReview", { enumerable: true, get: function () { return line_import_1.rejectLinePendingReview; } });
+Object.defineProperty(exports, "reportLineListenerStatus", { enumerable: true, get: function () { return line_import_1.reportLineListenerStatus; } });
+Object.defineProperty(exports, "updateLineConsent", { enumerable: true, get: function () { return line_import_1.updateLineConsent; } });
 if (!(0, app_1.getApps)().length)
     (0, app_1.initializeApp)();
 const db = (0, firestore_1.getFirestore)();
@@ -1440,6 +1447,10 @@ exports.smartLifeAssistantReply = (0, https_1.onCall)({
     const responseModes = new Set(["brainstorm", "coach", "compare", "direct", "explain", "plan", "summarize"]);
     const requestedResponseMode = assistantString(request.data?.responseMode, 20);
     const responseMode = responseModes.has(requestedResponseMode) ? requestedResponseMode : "direct";
+    const clientDynamicContext = request.data?.clientDynamicContext &&
+        typeof request.data.clientDynamicContext === "object" ?
+        request.data.clientDynamicContext :
+        null;
     const history = Array.isArray(request.data?.history) ?
         request.data.history
             .slice(-12)
@@ -1648,6 +1659,7 @@ exports.smartLifeAssistantReply = (0, https_1.onCall)({
             recentTransactions: transactions.slice(0, 30),
         },
         dataAvailability,
+        dynamic: clientDynamicContext,
         notes,
         ocrResults,
         schedules,
