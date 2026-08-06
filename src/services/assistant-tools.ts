@@ -15,7 +15,9 @@ import {
 import {classifyAssistantIntent, latestConversationIntent, type AssistantIntent} from '@/services/assistant-intent';
 import {loadAssistantPreferences, saveAssistantPreference, type AssistantPreferences} from '@/services/assistant-memory';
 import {isNoteLookupIntent, noteLookupTerms} from '@/services/assistant-note-intent';
+import {calculateBurnoutDynamicInsight, calculateFinanceBudgetInsight, type SmartLifeDynamicInsight} from '@/services/dynamic-insights';
 import {activities, notes, schedules, transactions} from '@/services/firestore';
+import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
 import type {AssistantChatMessage, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, Schedule, Transaction, WithId} from '@/types/smartlife';
 
@@ -35,6 +37,7 @@ export const assistantToolSchemas: AssistantToolSchema[] = [
 
 export type AssistantContext = {
   balance: number;
+  dynamic: SmartLifeDynamicInsight;
   monthExpense: number;
   monthIncome: number;
   monthTransactions: WithId<Transaction>[];
@@ -52,7 +55,7 @@ const THAI_TIME_ZONE = 'Asia/Bangkok';
 const EXAM_PATTERN = /(สอบ|กลางภาค|ปลายภาค|midterm|final|quiz|ควิซ|test|exam)/i;
 const assistantFunctions = getFunctions(firebaseApp, 'asia-southeast1');
 const smartLifeAssistantReply = httpsCallable<
-  {history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string},
+  {clientDynamicContext?: SmartLifeDynamicInsight; history?: {content: string; role: 'assistant' | 'user'}[]; intent: AssistantIntent; message: string},
   {content: string}
 >(assistantFunctions, 'smartLifeAssistantReply');
 const assistantTelemetry = httpsCallable<
@@ -365,7 +368,7 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
   // more than two months away.
   upcomingEnd.setDate(upcomingEnd.getDate() + 180);
   const monthQueryEnd = new Date(month.end.getTime() - 1);
-  const [todaySchedules, todayActivities, weekSchedules, weekActivities, upcomingSchedules, upcomingActivities, weekTransactions, monthTransactions, noteList] = await Promise.all([
+  const [todaySchedules, todayActivities, weekSchedules, weekActivities, upcomingSchedules, upcomingActivities, weekTransactions, monthTransactions, noteList, monthlyBudget] = await Promise.all([
     schedules.between(uid, today.start, today.end),
     activities.between(uid, today.start, today.end),
     schedules.between(uid, week.start, week.end),
@@ -375,10 +378,13 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
     transactions.between(uid, week.start, new Date(week.end.getTime() - 1)),
     transactions.between(uid, month.start, monthQueryEnd),
     notes.list(uid),
+    loadMonthlyBudget(uid, currentMonthKey()),
   ]);
   const monthIncome = monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
   const monthExpense = monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
-  return {balance: monthIncome - monthExpense, monthExpense, monthIncome, monthTransactions, notes: noteList, todayActivities, todaySchedules, upcomingActivities, upcomingSchedules, weekActivities, weekSchedules, weekTransactions};
+  const finance = calculateFinanceBudgetInsight({monthlyBudget: monthlyBudget?.amount ?? 0, transactions: monthTransactions});
+  const burnout = calculateBurnoutDynamicInsight({activities: todayActivities, finance, schedules: todaySchedules});
+  return {balance: monthIncome - monthExpense, dynamic: {burnout, ...(finance ? {finance} : {})}, monthExpense, monthIncome, monthTransactions, notes: noteList, todayActivities, todaySchedules, upcomingActivities, upcomingSchedules, weekActivities, weekSchedules, weekTransactions};
 }
 
 function checklistItems(message: string) {
@@ -1811,11 +1817,43 @@ function buildNoteLookupAnswer(message: string, context: AssistantContext) {
   return `พบโน้ต ${matchingNotes.length} รายการครับ\n${lines.join('\n')}`;
 }
 
+function buildDynamicBurnoutAnswer(context: AssistantContext) {
+  const burnout = context.dynamic.burnout;
+  const label = burnout.riskLevel === 'high' ? 'สูง' : burnout.riskLevel === 'medium' ? 'กลาง' : 'ต่ำ';
+  const reasons = burnout.reasons.length ? burnout.reasons.slice(0, 3).join(' / ') : 'วันนี้ตารางยังไม่แน่นมาก';
+  const financeLine = context.dynamic.finance && ['high', 'critical'].includes(context.dynamic.finance.financePressureLevel)
+    ? `\nเรื่องเงินก็ตึงอยู่: เหลือใช้ประมาณ ${context.dynamic.finance.remainingDailyBudget.toLocaleString('th-TH')} บาท/วัน ควรเลี่ยงรายจ่ายไม่จำเป็นวันนี้`
+    : '';
+  if (burnout.riskLevel === 'high') {
+    return `วันนี้ความเสี่ยงหมดไฟอยู่ระดับ${label}ครับ (${burnout.score}/100)\nเหตุผลหลัก: ${reasons}\nแนะนำให้เลือกงานสำคัญสุดแค่ 1 อย่างก่อน แล้วกันช่วงพักจริงอย่างน้อย 30-45 นาที${financeLine}`;
+  }
+  if (burnout.riskLevel === 'medium') {
+    return `วันนี้เริ่มมีสัญญาณล้าระดับ${label}ครับ (${burnout.score}/100)\nเหตุผลหลัก: ${reasons}\nแนะนำให้ทำงานด่วนก่อน 1-2 รายการ แล้วอย่าอัดตารางติดกันยาวเกินไป${financeLine}`;
+  }
+  return `วันนี้ความเสี่ยงหมดไฟยัง${label}ครับ (${burnout.score}/100)\n${reasons}\nถ้าจะให้คุ้ม ลองใช้ช่วงว่างยาวที่สุดประมาณ ${burnout.longestFreeSlotMinutes} นาทีไปทำงานที่สำคัญสุดก่อน${financeLine}`;
+}
+
+function buildDynamicBudgetAnswer(context: AssistantContext) {
+  const finance = context.dynamic.finance;
+  if (!finance) return '';
+  const level = finance.financePressureLevel === 'critical' ? 'ใช้เกินงบแล้ว'
+    : finance.financePressureLevel === 'high' ? 'งบตึงมาก'
+    : finance.financePressureLevel === 'medium' ? 'เริ่มตึง'
+    : finance.financePressureLevel === 'low' ? 'ควรระวัง'
+    : 'ยังปลอดภัย';
+  return `งบเดือนนี้สถานะ: ${level}\nงบเฉลี่ยทั้งเดือนคือประมาณ ${finance.averageDailyBudget.toLocaleString('th-TH')} บาท/วัน แต่จากยอดที่ใช้ไป ตอนนี้เหลือใช้ได้จริงประมาณ ${finance.remainingDailyBudget.toLocaleString('th-TH')} บาท/วัน\nใช้ไปแล้ว ${finance.spentSoFar.toLocaleString('th-TH')} บาท จากงบ ${finance.monthlyBudget.toLocaleString('th-TH')} บาท เหลืออีก ${finance.daysRemainingIncludingToday} วัน`;
+}
+
 function contextAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
   if (/^(?:หวัดดี|สวัสดี|ดีจ้า|hello|hi)(?:ครับ|ค่ะ|คับ|จ้า)?$/i.test(message.trim())) {
     return 'หวัดดีครับ! ฉันช่วยเช็กตาราง งานค้าง เงินคงเหลือ หรือช่วยจดรายการให้ได้เลย วันนี้อยากจัดการเรื่องไหนก่อนครับ?';
   }
   if (/(สรุปวันนี้|briefing|วันนี้ต้องทำอะไร)/i.test(message)) return buildDailyBriefing(context, preferences);
+  if (/(หมดไฟ|เหนื่อย|ไม่ไหว|ท้อ|burnout|เครียด)/i.test(message)) return buildDynamicBurnoutAnswer(context);
+  if (/(งบตึง|เงินพอไหม|ควรใช้วันละ|เช็กงบ|วิเคราะห์งบ|งบต่อวัน|daily budget)/i.test(message)) {
+    const dynamicBudget = buildDynamicBudgetAnswer(context);
+    if (dynamicBudget) return dynamicBudget;
+  }
   const courseStudyPlan = buildCourseStudyPlan(message, context, preferences);
   if (courseStudyPlan) return courseStudyPlan;
   if (isCalendarTimeLookupIntent(message)) return buildCalendarTimeAnswer(message, context);
@@ -1967,7 +2005,7 @@ export async function buildAssistantReply(
         )
         .slice(-12)
         .map((turn) => ({content: turn.content.slice(0, 600), role: turn.role}));
-      const result = await smartLifeAssistantReply({history, intent, message: understoodMessage});
+      const result = await smartLifeAssistantReply({clientDynamicContext: context.dynamic, history, intent, message: understoodMessage});
       const content = result.data.content.trim();
       if (content) return reply(content, 'gemini');
     } catch (error) {

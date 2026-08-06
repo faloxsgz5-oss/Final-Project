@@ -1,0 +1,348 @@
+import {activities, notes, schedules} from '@/services/firestore';
+import type {Activity, ActivityType, Note, NoteCategory, Schedule, WithId} from '@/types/smartlife';
+
+type TimeValue = Date | string | number | {seconds?: number; toDate?: () => Date; toMillis?: () => number} | null | undefined;
+
+type BusyBlock = {
+  end: Date;
+  source: 'activity' | 'schedule';
+  start: Date;
+  title: string;
+};
+
+type FreeSlot = {
+  end: Date;
+  minutes: number;
+  start: Date;
+};
+
+export type ActivitySuggestion = {
+  detail: string;
+  endAt: string;
+  location: string;
+  note: string;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  reasons: string[];
+  score: number;
+  startAt: string;
+  time: string;
+  title: string;
+  type: ActivityType;
+};
+
+export type NoteSuggestion = {
+  category: NoteCategory;
+  content: string;
+  detail: string;
+  reasons: string[];
+  score: number;
+  title: string;
+};
+
+const urgentWords = ['quiz', 'ควิซ', 'สอบ', 'ส่ง', 'deadline', 'project', 'โปรเจค', 'รายงาน', 'lab', 'แลบ'];
+const studyWords = ['เรียน', 'สอบ', 'ควิซ', 'quiz', 'lab', 'แลบ', 'assignment', 'homework', 'การบ้าน', 'รายงาน'];
+const workWords = ['งาน', 'task', 'todo', 'นัด', 'ประชุม', 'ส่งงาน', 'โปรเจค', 'project'];
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+export function recommendationLevel(score: number) {
+  if (score >= 85) return 'ด่วนมาก';
+  if (score >= 70) return 'สำคัญ';
+  if (score >= 55) return 'ควรทำ';
+  if (score >= 40) return 'ว่างพอดี';
+  return 'สำรอง';
+}
+
+function toDate(value: TimeValue) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value.toDate === 'function') return value.toDate();
+  if (typeof value.toMillis === 'function') return new Date(value.toMillis());
+  if (typeof value.seconds === 'number') return new Date(value.seconds * 1000);
+  return null;
+}
+
+function startOfDay(date: Date, offsetDays = 0) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + offsetDays);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function endOfDay(date: Date, offsetDays = 0) {
+  const result = startOfDay(date, offsetDays);
+  result.setHours(23, 59, 59, 999);
+  return result;
+}
+
+function activeWindow(date: Date) {
+  const start = startOfDay(date);
+  start.setHours(8, 0, 0, 0);
+  const end = startOfDay(date);
+  end.setHours(22, 0, 0, 0);
+  return {end, start};
+}
+
+function formatTime(date: Date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatTimeRange(start: Date, end: Date) {
+  return `${formatTime(start)} - ${formatTime(end)}`;
+}
+
+function normalizeText(...values: unknown[]) {
+  return values.filter(Boolean).join(' ').toLowerCase();
+}
+
+function hasAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(word.toLowerCase()));
+}
+
+function minutesUntil(date: Date, now: Date) {
+  return Math.round((date.getTime() - now.getTime()) / 60000);
+}
+
+function itemDates(item: {endAt?: TimeValue; startAt?: TimeValue}) {
+  const start = toDate(item.startAt);
+  const end = toDate(item.endAt);
+  if (!start) return null;
+  return {end: end && end > start ? end : new Date(start.getTime() + 60 * 60000), start};
+}
+
+function buildBusyBlocks(scheduleItems: WithId<Schedule>[], activityItems: WithId<Activity>[]) {
+  const blocks: BusyBlock[] = [];
+  scheduleItems.forEach((item) => {
+    const dates = itemDates(item);
+    if (dates) blocks.push({source: 'schedule', title: item.title, ...dates});
+  });
+  activityItems.forEach((item) => {
+    const dates = itemDates(item);
+    if (dates && item.status !== 'cancelled') blocks.push({source: 'activity', title: item.title, ...dates});
+  });
+  return blocks.sort((first, second) => first.start.getTime() - second.start.getTime());
+}
+
+function findFreeSlots(blocks: BusyBlock[], day: Date, minMinutes = 30) {
+  const window = activeWindow(day);
+  const slots: FreeSlot[] = [];
+  let cursor = new Date(window.start);
+  blocks
+    .filter((block) => block.end > window.start && block.start < window.end)
+    .forEach((block) => {
+      const blockStart = new Date(Math.max(block.start.getTime(), window.start.getTime()));
+      const blockEnd = new Date(Math.min(block.end.getTime(), window.end.getTime()));
+      if (blockStart.getTime() - cursor.getTime() >= minMinutes * 60000) {
+        slots.push({end: blockStart, minutes: Math.round((blockStart.getTime() - cursor.getTime()) / 60000), start: new Date(cursor)});
+      }
+      if (blockEnd > cursor) cursor = blockEnd;
+    });
+  if (window.end.getTime() - cursor.getTime() >= minMinutes * 60000) {
+    slots.push({end: window.end, minutes: Math.round((window.end.getTime() - cursor.getTime()) / 60000), start: new Date(cursor)});
+  }
+  return slots;
+}
+
+function fitSlot(slot: FreeSlot, preferredMinutes: number) {
+  const minutes = Math.min(slot.minutes, preferredMinutes);
+  return {end: new Date(slot.start.getTime() + minutes * 60000), start: slot.start};
+}
+
+function scoreTask(item: WithId<Activity>, now: Date) {
+  const dates = itemDates(item);
+  const text = normalizeText(item.title, item.note, item.category, item.location);
+  let score = 22;
+  const reasons: string[] = [];
+
+  if (item.priority === 'urgent') { score += 35; reasons.push('ผู้ใช้เลือกด่วน'); }
+  else if (item.priority === 'high') { score += 25; reasons.push('ผู้ใช้เลือกสำคัญสูง'); }
+  else if (item.priority === 'normal') score += 10;
+
+  if (dates) {
+    const minutes = minutesUntil(dates.start, now);
+    if (minutes <= 0) { score += 30; reasons.push('ถึงกำหนดแล้ว'); }
+    else if (minutes <= 180) { score += 35; reasons.push('เหลือน้อยกว่า 3 ชั่วโมง'); }
+    else if (minutes <= 1440) { score += 26; reasons.push('ใกล้ถึงกำหนดในวันนี้'); }
+    else if (minutes <= 4320) { score += 15; reasons.push('ใกล้ถึงกำหนดใน 3 วัน'); }
+  }
+
+  if (hasAny(text, urgentWords)) { score += 12; reasons.push('มีคำสำคัญ เช่น สอบ/ควิซ/ส่งงาน'); }
+  if (item.status === 'completed') score -= 75;
+
+  return {dates, reasons, score: clampScore(score)};
+}
+
+function readableActivityTitle(item: WithId<Activity>) {
+  if (/^(ทำ|อ่าน|เตรียม|ทบทวน)/i.test(item.title.trim())) return item.title.trim();
+  return `ทำ ${item.title.trim()}`;
+}
+
+function noteCategoryFromText(text: string): NoteCategory {
+  if (hasAny(text, workWords)) return 'work';
+  if (hasAny(text, studyWords)) return 'study';
+  return 'personal';
+}
+
+function isDuplicateNote(title: string, existingNotes: WithId<Note>[]) {
+  const normalized = title.toLowerCase().replace(/\s+/g, '');
+  return existingNotes.some((note) => note.title.toLowerCase().replace(/\s+/g, '').includes(normalized) || normalized.includes(note.title.toLowerCase().replace(/\s+/g, '')));
+}
+
+export function buildActivitySuggestionsFromData(
+  scheduleItems: WithId<Schedule>[],
+  activityItems: WithId<Activity>[],
+  now = new Date(),
+) {
+  const today = startOfDay(now);
+  const blocks = buildBusyBlocks(scheduleItems, activityItems);
+  const slots = findFreeSlots(blocks, today, 30).filter((slot) => slot.end > now);
+  const tasks = activityItems
+    .filter((item) => item.type === 'task' && item.status !== 'completed')
+    .map((item) => ({item, ...scoreTask(item, now)}))
+    .filter((item) => item.score > 0)
+    .sort((first, second) => second.score - first.score);
+
+  const suggestions: ActivitySuggestion[] = [];
+  const bestTask = tasks[0];
+  const taskSlot = slots.find((slot) => slot.minutes >= 35);
+  if (bestTask && taskSlot) {
+    const fitted = fitSlot(taskSlot, bestTask.score >= 80 ? 60 : 35);
+    suggestions.push({
+      detail: `${bestTask.reasons.slice(0, 2).join(' • ') || 'งานนี้ควรวางไว้ในช่วงว่าง'} และไม่ชนตารางเรียน`,
+      endAt: fitted.end.toISOString(),
+      location: bestTask.item.location || 'เวลาว่าง',
+      note: bestTask.item.note || `AI แนะนำให้เริ่มจากงานสำคัญที่สุดก่อน: ${bestTask.item.title}`,
+      priority: bestTask.score >= 80 ? 'urgent' : bestTask.score >= 60 ? 'high' : 'normal',
+      reasons: [...bestTask.reasons, 'มีช่วงว่างพอทำได้จริง'],
+      score: bestTask.score,
+      startAt: fitted.start.toISOString(),
+      time: formatTimeRange(fitted.start, fitted.end),
+      title: readableActivityTitle(bestTask.item),
+      type: 'task',
+    });
+  }
+
+  const nextClass = scheduleItems
+    .map((item) => ({dates: itemDates(item), item}))
+    .filter((entry): entry is {dates: {end: Date; start: Date}; item: WithId<Schedule>} => entry.dates !== null && entry.dates.start >= now)
+    .sort((first, second) => first.dates.start.getTime() - second.dates.start.getTime())[0];
+  if (nextClass) {
+    const afterClassSlot = slots.find((slot) => slot.start >= nextClass.dates.end && slot.minutes >= 30) ?? slots.find((slot) => slot.minutes >= 30);
+    if (afterClassSlot) {
+      const fitted = fitSlot(afterClassSlot, 45);
+      suggestions.push({
+        detail: `เหมาะหลัง ${nextClass.item.title} เพื่อทบทวนทันที`,
+        endAt: fitted.end.toISOString(),
+        location: nextClass.item.location || 'ห้องเรียน/หอพัก',
+        note: `ทบทวนหัวข้อจาก ${nextClass.item.title} และจดสิ่งที่ยังไม่เข้าใจ`,
+        priority: 'normal',
+        reasons: ['อิงจากตารางเรียนจริง', 'มีช่องว่างไม่ชนรายการอื่น'],
+        score: 62,
+        startAt: fitted.start.toISOString(),
+        time: formatTimeRange(fitted.start, fitted.end),
+        title: `ทบทวน ${nextClass.item.courseCode || nextClass.item.title}`,
+        type: 'activity',
+      });
+    }
+  }
+
+  const remainingSlot = slots.find((slot) => slot.minutes >= 30 && !suggestions.some((item) => item.startAt === slot.start.toISOString()));
+  if (remainingSlot && suggestions.length < 2) {
+    const fitted = fitSlot(remainingSlot, 30);
+    suggestions.push({
+      detail: 'ช่วงนี้ไม่มีตารางชน เหมาะสำหรับจัดงานค้างหรือพักแบบมีแผน',
+      endAt: fitted.end.toISOString(),
+      location: 'เวลาว่าง',
+      note: 'ใช้ช่วงนี้เคลียร์งานเล็ก ๆ หรือวางแผนงานต่อไป',
+      priority: 'low',
+      reasons: ['พบช่องว่างในตารางวันนี้', 'ช่วยลดงานสะสม'],
+      score: 45,
+      startAt: fitted.start.toISOString(),
+      time: formatTimeRange(fitted.start, fitted.end),
+      title: 'เคลียร์งานสั้น ๆ',
+      type: 'task',
+    });
+  }
+
+  return suggestions.sort((first, second) => second.score - first.score).slice(0, 3);
+}
+
+export function buildNoteSuggestionsFromData(
+  scheduleItems: WithId<Schedule>[],
+  activityItems: WithId<Activity>[],
+  noteItems: WithId<Note>[],
+  now = new Date(),
+) {
+  const suggestions: NoteSuggestion[] = [];
+  const scoredTasks = activityItems
+    .filter((item) => item.status !== 'completed')
+    .map((item) => ({item, ...scoreTask(item, now)}))
+    .sort((first, second) => second.score - first.score);
+
+  scoredTasks.slice(0, 2).forEach(({item, reasons, score}) => {
+    const text = normalizeText(item.title, item.note, item.category, item.location);
+    const title = `Checklist: ${item.title}`;
+    if (isDuplicateNote(title, noteItems)) return;
+    suggestions.push({
+      category: noteCategoryFromText(text),
+      content: `สิ่งที่ต้องทำสำหรับ ${item.title}\n- สรุปสิ่งที่ต้องส่ง/ต้องเตรียม\n- แยกขั้นตอนที่ทำได้ภายใน 30-45 นาที\n- เช็กไฟล์หรือเอกสารก่อนถึงเวลา`,
+      detail: reasons.slice(0, 2).join(' • ') || 'แนะนำจากงานที่ยังไม่เสร็จ',
+      reasons: [...reasons, 'ยังไม่มีโน้ตซ้ำในระบบ'],
+      score,
+      title,
+    });
+  });
+
+  scheduleItems
+    .map((item) => ({dates: itemDates(item), item}))
+    .filter((entry): entry is {dates: {end: Date; start: Date}; item: WithId<Schedule>} => entry.dates !== null && entry.dates.start >= now)
+    .sort((first, second) => first.dates.start.getTime() - second.dates.start.getTime())
+    .slice(0, 2)
+    .forEach(({item}) => {
+      const title = `โน้ต ${item.courseCode || item.title}`;
+      if (isDuplicateNote(title, noteItems)) return;
+      suggestions.push({
+        category: 'study',
+        content: `หัวข้อที่ควรจดจาก ${item.title}\n- ประเด็นที่อาจารย์เน้น\n- ตัวอย่าง/โจทย์ที่ยังไม่เข้าใจ\n- งานหรือการบ้านที่เกี่ยวข้อง`,
+        detail: 'แนะนำจากตารางเรียนที่กำลังจะมาถึง',
+        reasons: ['อิงจากตารางเรียนจริง', 'ช่วยเตรียมตัวก่อน/หลังเรียน'],
+        score: 58,
+        title,
+      });
+    });
+
+  return suggestions.sort((first, second) => second.score - first.score).slice(0, 3);
+}
+
+export async function getActivitySuggestions(uid: string) {
+  const now = new Date();
+  const from = startOfDay(now);
+  const to = endOfDay(now, 1);
+  const [scheduleItems, activityItems] = await Promise.all([
+    schedules.between(uid, from, to),
+    activities.between(uid, from, to),
+  ]);
+  return buildActivitySuggestionsFromData(scheduleItems, activityItems, now);
+}
+
+export async function getNoteSuggestions(uid: string) {
+  const now = new Date();
+  const from = startOfDay(now);
+  const to = endOfDay(now, 7);
+  const [scheduleItems, activityItems, noteItems] = await Promise.all([
+    schedules.between(uid, from, to),
+    activities.between(uid, from, to),
+    notes.list(uid),
+  ]);
+  return buildNoteSuggestionsFromData(scheduleItems, activityItems, noteItems, now);
+}

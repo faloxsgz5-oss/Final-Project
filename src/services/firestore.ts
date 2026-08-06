@@ -38,6 +38,7 @@ import type {
   Feedback,
   Note,
   Notification,
+  PendingLineReview,
   ScanLog,
   Schedule,
   Transaction,
@@ -50,6 +51,7 @@ type UserCollection =
   | 'feedback'
   | 'notes'
   | 'notifications'
+  | 'pendingReview'
   | 'scanLogs'
   | 'schedules'
   | 'transactions';
@@ -190,6 +192,28 @@ export const transactions = {
     where('occurredAt', '<=', Timestamp.fromDate(to)),
     orderBy('occurredAt', 'desc'),
   ]),
+};
+
+export const pendingReviews = {
+  get: async (uid: string, id: string) => {
+    if (isDemoMode) return null;
+    const snapshot = await getDoc(doc(db, 'users', uid, 'pendingReview', id));
+    return snapshot.exists() ? ({id: snapshot.id, ...snapshot.data()} as WithId<PendingLineReview>) : null;
+  },
+  list: (uid: string) => isDemoMode
+    ? Promise.resolve([] as WithId<PendingLineReview>[])
+    : listOwned<PendingLineReview>(uid, 'pendingReview', [orderBy('createdAt', 'desc'), limit(100)]),
+  watch: (
+    uid: string,
+    onChange: (value: WithId<PendingLineReview>[]) => void,
+    onError?: (error: Error) => void,
+  ) => isDemoMode
+    ? (onChange([]), () => undefined)
+    : onSnapshot(
+      query(userCollection(uid, 'pendingReview'), orderBy('createdAt', 'desc'), limit(100)),
+      (snapshot) => onChange(snapshot.docs.map((item: QueryDocumentSnapshot<DocumentData>) => mapDocument<PendingLineReview>(item))),
+      onError,
+    ),
 };
 
 export const scanLogs = {

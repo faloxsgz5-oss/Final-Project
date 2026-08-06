@@ -3,7 +3,6 @@ import type {
   BurnoutRiskLevel,
   DashboardContext,
   DashboardItem,
-  DashboardItemType,
   DashboardVisibility,
   FinanceAlertDashboardItem,
   PartialPriorityScoringConfig,

@@ -10,7 +10,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { Platform } from 'react-native';
 
-import {hasFirebaseConfig, isDemoMode} from '@/lib/demo-mode';
+import {hasFirebaseConfig} from '@/lib/demo-mode';
 
 const firebaseConfig: FirebaseOptions = {
   apiKey: hasFirebaseConfig ? process.env.EXPO_PUBLIC_FIREBASE_API_KEY : 'missing-firebase-config',

@@ -30,12 +30,16 @@ import ScheduleFinanceScreen from '@/screens/native/user/schedule-finance-screen
 import OnboardingScreen from '@/screens/native/user/onboarding-screen';
 import NoteFormScreen from '@/screens/native/user/note-form-screen';
 import MiscScreen from '@/screens/native/user/misc-screen';
+import LineImportScreen from '@/screens/native/user/line-import-screen';
 
 export function generateStaticParams() {
   return [
     ...legacyPageParams.map(({ section, page }) => ({ section, page })),
     {section: 'user', page: 'smartlife_ocr_history'},
     {section: 'user', page: 'smartlife_monthly_budget'},
+    {section: 'user', page: 'smartlife_line_import'},
+    {section: 'user', page: 'smartlife_line_pending'},
+    {section: 'user', page: 'smartlife_line_settings'},
   ];
 }
 
@@ -200,6 +204,7 @@ export default function LegacyPageRoute() {
   if (section === 'user' && user && ['smartlife_calendar_day', 'smartlife_calendar_week', 'smartlife_calendar_month'].includes(page)) return <CalendarScreen page={page as 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_finance_day', 'smartlife_finance_week', 'smartlife_finance_month', 'smartlife_finance_income', 'smartlife_finance_expense'].includes(page)) return <FinanceScreen page={page as 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month' | 'smartlife_finance_income' | 'smartlife_finance_expense'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_monthly_budget') return <MonthlyBudgetScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
+  if (section === 'user' && user && ['smartlife_line_import', 'smartlife_line_pending', 'smartlife_line_settings'].includes(page)) return <LineImportScreen page={page as 'smartlife_line_import' | 'smartlife_line_pending' | 'smartlife_line_settings'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_notes', 'smartlife_notes_study', 'smartlife_notes_work', 'smartlife_notes_ideas'].includes(page)) return <NotesScreen page={page as 'smartlife_notes' | 'smartlife_notes_study' | 'smartlife_notes_work' | 'smartlife_notes_ideas'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_notifications', 'smartlife_notifications_urgent', 'smartlife_notifications_ai', 'smartlife_notifications_finance', 'smartlife_notifications_schedule'].includes(page)) return <NotificationsScreen page={page as 'smartlife_notifications' | 'smartlife_notifications_urgent' | 'smartlife_notifications_ai' | 'smartlife_notifications_finance' | 'smartlife_notifications_schedule'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_profile') return <ProfileScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} onLogout={handleLogout} />;
