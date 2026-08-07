@@ -121,35 +121,49 @@ function normalizeResult(value) {
 }
 async function extractDocumentTimestampWithGemini({ apiKey, imageDataUrl, ocrCandidate, rawText, }) {
     const image = parseImageDataUrl(imageDataUrl);
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-            model: process.env.GEMINI_RECEIPT_MODEL ?? "gemini-3.5-flash",
-            store: false,
-            system_instruction: DOCUMENT_TIMESTAMP_PROMPT,
-            input: [
-                {
-                    type: "text",
-                    text: `Deterministic OCR candidate (keep it when the image visibly agrees):\n${JSON.stringify(ocrCandidate ?? null)}\n\nFull OCR evidence may contain recognition errors. Use the image to verify only the document's transaction date/time:\n${rawText.slice(0, 30000)}`,
-                },
-                {
-                    type: "image",
-                    data: image.data,
-                    mime_type: image.mimeType,
-                },
-            ],
-            response_format: {
-                type: "text",
-                mime_type: "application/json",
-                schema: DOCUMENT_TIMESTAMP_SCHEMA,
+    const models = [...new Set([
+            process.env.GEMINI_RECEIPT_MODEL,
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+        ].filter((value) => Boolean(value)))];
+    let response = null;
+    let payload = {};
+    for (const [index, model] of models.entries()) {
+        response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": apiKey,
             },
-        }),
-    });
-    const payload = await response.json();
+            body: JSON.stringify({
+                model,
+                store: false,
+                system_instruction: DOCUMENT_TIMESTAMP_PROMPT,
+                input: [
+                    {
+                        type: "text",
+                        text: `Deterministic OCR candidate (keep it when the image visibly agrees):\n${JSON.stringify(ocrCandidate ?? null)}\n\nFull OCR evidence may contain recognition errors. Use the image to verify only the document's transaction date/time:\n${rawText.slice(0, 30000)}`,
+                    },
+                    {
+                        type: "image",
+                        data: image.data,
+                        mime_type: image.mimeType,
+                    },
+                ],
+                response_format: {
+                    type: "text",
+                    mime_type: "application/json",
+                    schema: DOCUMENT_TIMESTAMP_SCHEMA,
+                },
+            }),
+        });
+        payload = await response.json();
+        if (response.ok || response.status !== 404 || index === models.length - 1)
+            break;
+    }
+    if (!response)
+        throw new Error("Gemini timestamp request could not start.");
     if (!response.ok) {
         throw new Error(payload.error?.message ?? `Gemini request failed with ${response.status}.`);
     }

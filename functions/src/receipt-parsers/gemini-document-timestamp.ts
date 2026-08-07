@@ -156,16 +156,25 @@ export async function extractDocumentTimestampWithGemini({
   rawText: string;
 }) {
   const image = parseImageDataUrl(imageDataUrl);
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/interactions",
-    {
+  const models = [...new Set([
+    process.env.GEMINI_RECEIPT_MODEL,
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+  ].filter((value): value is string => Boolean(value)))];
+  let response: Response | null = null;
+  let payload: GeminiInteractionResponse = {};
+  for (const [index, model] of models.entries()) {
+    response = await fetch(
+      "https://generativelanguage.googleapis.com/v1/interactions",
+      {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify({
-        model: process.env.GEMINI_RECEIPT_MODEL ?? "gemini-3.5-flash",
+        model,
         store: false,
         system_instruction: DOCUMENT_TIMESTAMP_PROMPT,
         input: [
@@ -185,10 +194,12 @@ export async function extractDocumentTimestampWithGemini({
           schema: DOCUMENT_TIMESTAMP_SCHEMA,
         },
       }),
-    },
-  );
-
-  const payload = await response.json() as GeminiInteractionResponse;
+      },
+    );
+    payload = await response.json() as GeminiInteractionResponse;
+    if (response.ok || response.status !== 404 || index === models.length - 1) break;
+  }
+  if (!response) throw new Error("Gemini timestamp request could not start.");
   if (!response.ok) {
     throw new Error(
       payload.error?.message ?? `Gemini request failed with ${response.status}.`,

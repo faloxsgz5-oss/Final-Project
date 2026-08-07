@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import {GoogleAuthProvider, reauthenticateWithPopup} from 'firebase/auth';
 
-import {isDemoMode} from '@/lib/demo-mode';
+import {hasRealPublicConfigValue, isDemoMode} from '@/lib/demo-mode';
 import {isExpoGo} from '@/lib/expo-runtime';
 import {auth, db} from '@/lib/firebase';
 import {schedules} from '@/services/firestore';
@@ -22,6 +22,7 @@ const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 const BANGKOK_TIME_ZONE = 'Asia/Bangkok';
+const FIREBASE_GOOGLE_WEB_CLIENT_ID = '302211453614-ui2mf0hqknu0itr8r4g76g1odrfhc6fe.apps.googleusercontent.com';
 
 type GoogleEventDate = {date?: string; dateTime?: string; timeZone?: string};
 type GoogleCalendarEvent = {
@@ -171,15 +172,20 @@ function maskedClientId(value?: string) {
   return `${match[1]}-${client.slice(0, 6)}…${client.slice(-4)}.apps.googleusercontent.com`;
 }
 
+function googleWebClientId() {
+  const configured = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim();
+  return hasRealPublicConfigValue(configured) ? configured : FIREBASE_GOOGLE_WEB_CLIENT_ID;
+}
+
 function logGoogleOAuthConfiguration() {
   if (!__DEV__ || loggedOAuthConfiguration) return;
   loggedOAuthConfiguration = true;
-  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim();
+  const webClientId = googleWebClientId();
   const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID?.trim();
   const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID?.trim();
   console.info('[Google OAuth] configuration', {
-    androidClientId: maskedClientId(androidClientId),
-    iosClientId: maskedClientId(iosClientId),
+    androidClientId: maskedClientId(hasRealPublicConfigValue(androidClientId) ? androidClientId : ''),
+    iosClientId: maskedClientId(hasRealPublicConfigValue(iosClientId) ? iosClientId : ''),
     origin: currentWebOrigin() || '<native>',
     platform: Platform.OS,
     webClientId: maskedClientId(webClientId),
@@ -327,7 +333,7 @@ async function authorizeGoogleCalendarWeb(webClientId: string) {
 
 async function authorizeGoogleCalendar() {
   logGoogleOAuthConfiguration();
-  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim();
+  const webClientId = googleWebClientId();
   if (!webClientId) throw new Error('ยังไม่ได้ตั้งค่า EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ใน .env.local');
   if (!/^\d+-[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(webClientId)) {
     throw new Error('EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID มีรูปแบบไม่ถูกต้อง กรุณาคัดลอก Client ID โดยไม่ใส่เครื่องหมายคำพูด');

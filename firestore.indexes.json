@@ -25,6 +25,14 @@
       ]
     },
     {
+      "collectionGroup": "pendingReview",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
@@ -71,6 +79,54 @@
         { "fieldPath": "active", "order": "ASCENDING" },
         { "fieldPath": "startAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "schedulingBehaviorEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "activityCategory", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "schedulingSuggestions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "schedulingPatterns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "activityCategory", "order": "ASCENDING" },
+        { "fieldPath": "dayOfWeek", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "scheduleChangeHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "scheduleItemId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "activities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isFlexible", "order": "ASCENDING" },
+        { "fieldPath": "startAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "read", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [
@@ -97,6 +153,11 @@
       "indexes": [
         { "queryScope": "COLLECTION_GROUP", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "pendingReview",
+      "fieldPath": "rawText",
+      "indexes": []
     }
   ]
 }

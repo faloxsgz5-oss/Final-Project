@@ -42,6 +42,10 @@ declare module 'firebase/firestore' {
   export const onSnapshot: (reference: any, onNext: (snapshot: any) => void, onError?: (error: any) => void) => Unsubscribe;
   export const orderBy: (...args: any[]) => QueryConstraint;
   export const query: (...args: any[]) => any;
+  export const runTransaction: <T>(firestore: any, updateFunction: (transaction: {
+    get: (reference: any) => Promise<{exists(): boolean}>;
+    set: (...args: any[]) => void;
+  }) => Promise<T>) => Promise<T>;
   export const serverTimestamp: () => Timestamp;
   export const setDoc: (...args: any[]) => Promise<void>;
   export const startAt: (...args: any[]) => QueryConstraint;

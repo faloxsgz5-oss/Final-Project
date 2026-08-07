@@ -6,10 +6,12 @@ import { useFonts as useSymbolFonts, MaterialSymbols_400Regular } from '@expo-go
 
 import { AuthProvider } from '@/providers/auth-provider';
 import { InstitutionProvider } from '@/providers/institution-provider';
+import {useDeadlineNotificationNavigation} from '@/services/deadline-notifications';
 
 export default function RootLayout() {
   const [promptLoaded] = usePromptFonts({Prompt_400Regular, Prompt_500Medium, Prompt_600SemiBold, Prompt_700Bold, Prompt_800ExtraBold});
   const [symbolsLoaded] = useSymbolFonts({MaterialSymbols_400Regular});
+  useDeadlineNotificationNavigation();
   if (!promptLoaded || !symbolsLoaded) return null;
   return (
     <SafeAreaProvider>

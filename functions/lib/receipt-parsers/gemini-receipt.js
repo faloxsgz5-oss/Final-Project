@@ -24,13 +24,13 @@ PROCESSING RULES
    On payment-success slips and receipts, labels such as \"QR Payment\", \"amount paid\", \"paid amount\", or \"\u0e08\u0e33\u0e19\u0e27\u0e19\u0e40\u0e07\u0e34\u0e19\u0e17\u0e35\u0e48\u0e0a\u0e33\u0e23\u0e30\" are authoritative. Accept whole-Baht amounts such as \"16 \u0e1a\u0e32\u0e17\" as well as decimal amounts.
 3. Extract every visibly purchased product in reading order. Inspect the entire receipt from the first product row through the row immediately before Item(s), Total, or payment. Do not stop after the first product. Product name, quantity, and line total may be split across several OCR lines; bind them by visual proximity.
    Clean each item name by removing barcode-only lines and pack-size, weight, volume, or quantity metadata such as "600MEB", "600ML", "13ก.", "500G", "x12", and "8851952350789".
-4. Return ONLY purchased products and explicit discount rows in items. Never create items from Total, VAT, payment, QR payment, references, change, questionnaire/survey, download, exchange/refund, footer, loyalty-message rows, payment methods such as "TrueMoney", "ทรูมันนี่", cash, credit card, or debit card, or section headers such as "#ยกเว้น", "EXEMPT", "Description", "Qty", "Price", and "Amount". A positive-priced product name must identify an actual thing or product.
-5. Return a discount row such as "ลด -5.00" as a separate item with a descriptive name and a negative total_price. Keep the related product's total_price before that discount so the discount is not subtracted twice.
+4. Return ONLY purchased products. Never create items from Total, VAT, payment, QR payment, references, change, questionnaire/survey, download, exchange/refund, footer, loyalty-message rows, payment methods such as "TrueMoney", "ทรูมันนี่", cash, credit card, or debit card, or section headers such as "#ยกเว้น", "EXEMPT", "Description", "Qty", "Price", and "Amount". A product name must identify an actual purchased thing.
+5. Attach an explicit discount to the purchased product it visually belongs to. original_price is the price before discount, discount_amount is the positive discount, and final_price is the remaining price after discount. If no discount is visibly tied to the product, use discount_amount 0 and set original_price equal to final_price. Never treat a discount line as a separate product.
 6. If quantity is not visibly printed for a genuine product, use quantity 1. Never invent a product.
    Lines containing only quantity and per-unit metadata, such as \"2.0000 1.00/PCS\", are not products and must never appear as item names.
    Payment slips are a single financial transaction, not an itemized receipt; return an empty items array unless actual purchased-product rows are visibly present.
-7. For a receipt, calculate the sum of every item total_price, including negative discount rows. It must closely agree with grand_total, allowing only a reasonable VAT or rounding difference. If the difference is massive, the selected total is wrong: re-read only the permitted Grand Total anchors and never substitute a footer or promotional number.
-8. Return exactly four top-level fields: document_type, merchant_name, grand_total, and items. Each item must contain exactly name, quantity, and total_price.
+7. For a receipt, the sum of every item final_price must closely agree with grand_total, allowing only a reasonable VAT or rounding difference. If the difference is massive, re-check product/discount associations but never replace the printed grand total with a calculated value.
+8. Return exactly four top-level fields: document_type, merchant_name, grand_total, and items. Each item must contain exactly name, quantity, original_price, discount_amount, and final_price.
 9. Return only raw valid JSON required by the response schema. Do not return Markdown, backticks, explanations, or additional properties.`;
 const CATEGORY_VALUES = [
     "Food",
@@ -58,9 +58,11 @@ const RECEIPT_SCHEMA = {
                 properties: {
                     name: { type: "string" },
                     quantity: { type: "number", minimum: 0 },
-                    total_price: { type: "number" },
+                    original_price: { type: "number", minimum: 0 },
+                    discount_amount: { type: "number", minimum: 0 },
+                    final_price: { type: "number", minimum: 0 },
                 },
-                required: ["name", "quantity", "total_price"],
+                required: ["name", "quantity", "original_price", "discount_amount", "final_price"],
             },
         },
     },
@@ -107,7 +109,6 @@ function normalizeResult(value, fallbackDate) {
         ? Number.NaN
         : typeof payload.grand_total === "number" ? payload.grand_total : Number(payload.grand_total);
     const nonProductText = /(?:\b(?:TOTAL|SUBTOTAL|VAT|VATABLE|PAYMENT|APPROVAL|REFERENCE|CHANGE|QUESTIONNAIRE|SURVEY|DOWNLOAD|EXCHANGE|REFUND|CASHIER|OPERATOR)\b|\u0e20\.?\u0e1e\.?|\u0e20\u0e32\u0e29\u0e35|\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e21\u0e35\u0e20\u0e1e|\u0e41\u0e1a\u0e1a\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21|\u0e23\u0e48\u0e27\u0e21\u0e15\u0e2d\u0e1a|\u0e14\u0e32\u0e27\u0e19\u0e4c\u0e42\u0e2b\u0e25\u0e14)/i;
-    const discountName = /^(?:(?:\u0e25\u0e14|\u0e2a\u0e48\u0e27\u0e19\u0e25\u0e14)|(?:disc(?:ount)?|promo(?:tion)?)\b)/i;
     const quantityMetadataOnly = /^\s*\d+(?:\.\d+)?\s*(?:@|x)?\s*\d+(?:\.\d+)?\s*\/?\s*(?:pcs?|ea|ชิ้น)?\s*$/i;
     const items = Array.isArray(payload.items) ? payload.items.flatMap((value) => {
         if (!value || typeof value !== "object")
@@ -123,23 +124,29 @@ function normalizeResult(value, fallbackDate) {
             .trim()
             .slice(0, 180);
         const quantity = Number(item.quantity);
-        const totalPrice = Number(item.total_price);
-        const isDiscount = discountName.test(name);
+        const originalPrice = Number(item.original_price ?? item.total_price);
+        const rawDiscount = Number(item.discount_amount ?? 0);
+        const finalPrice = Number(item.final_price ?? item.total_price);
         if (!name || quantityMetadataOnly.test(name) ||
-            (!isDiscount && nonProductText.test(name)) ||
-            !Number.isFinite(totalPrice) ||
-            (totalPrice < 0 && !isDiscount) ||
-            (totalPrice >= 0 && isDiscount))
+            nonProductText.test(name) ||
+            !Number.isFinite(originalPrice) || originalPrice < 0 ||
+            !Number.isFinite(finalPrice) || finalPrice < 0)
             return [];
         const normalizedQuantity = Number.isFinite(quantity) && quantity > 0
             ? quantity
             : 1;
+        const discount = Number.isFinite(rawDiscount) && rawDiscount > 0
+            ? Number(Math.min(rawDiscount, originalPrice).toFixed(2))
+            : null;
+        const normalizedFinalPrice = discount !== null && finalPrice > originalPrice
+            ? Number(Math.max(0, originalPrice - discount).toFixed(2))
+            : Number(finalPrice.toFixed(2));
         return [{
-                discount: null,
+                discount,
                 name,
                 quantity: normalizedQuantity,
-                totalPrice: Number(totalPrice.toFixed(2)),
-                unitPrice: Number((totalPrice / normalizedQuantity).toFixed(2)),
+                totalPrice: normalizedFinalPrice,
+                unitPrice: Number((originalPrice / normalizedQuantity).toFixed(2)),
             }];
     }).slice(0, 200) : [];
     const documentType = DOCUMENT_TYPE_VALUES.includes(payload.document_type)
@@ -149,7 +156,10 @@ function normalizeResult(value, fallbackDate) {
     const category = /(?:7[\s-]?ELEVEN|BIG\s*C|LOTUS|MAKRO|TOPS|FOODLAND|CJ\s*EXPRESS|SUPERMARKET|ซูเปอร์|ตลาด)/i.test(categoryText) ? "Groceries" :
         /(?:RESTAURANT|CAFE|COFFEE|MCDONALD|KFC|STARBUCKS|ร้านอาหาร|กาแฟ|ข้าว|อาหาร)/i.test(categoryText) ? "Food" :
             /(?:FUEL|PTT|BANGCHAK|SHELL|TAXI|GRAB|BTS|MRT|น้ำมัน|เดินทาง|รถ)/i.test(categoryText) ? "Transport" :
-                "Others";
+                /(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC|ค่าไฟ|ค่าน้ำ|อินเทอร์เน็ต|โทรศัพท์)/i.test(categoryText) ? "Utilities" :
+                    /(?:NETFLIX|SPOTIFY|STEAM|CINEMA|MAJOR\s*CINEPLEX|GAME|ภาพยนตร์|บันเทิง|เกม)/i.test(categoryText) ? "Entertainment" :
+                        /(?:MR\.?\s*D\.?\s*I\.?\s*Y|SHOPEE|LAZADA|UNIQLO|ADVICE|ELECTRONIC|DEPARTMENT\s*STORE|ช้อป|ร้านค้า)/i.test(categoryText) ? "Shopping" :
+                            "Others";
     const confidenceScore = amount >= 0 && merchantName ? 0.9 : amount >= 0 || merchantName ? 0.7 : 0.4;
     return {
         category,
@@ -164,35 +174,49 @@ function normalizeResult(value, fallbackDate) {
 async function extractReceiptWithGemini(rawText, apiKey, imageDataUrl) {
     const currentBangkokDate = bangkokDateKey();
     const image = parseImageDataUrl(imageDataUrl);
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-            model: process.env.GEMINI_RECEIPT_MODEL ?? "gemini-3.5-flash",
-            store: false,
-            system_instruction: exports.RECEIPT_EXTRACTION_SYSTEM_PROMPT,
-            input: [
-                {
-                    type: "text",
-                    text: `Current Bangkok date: ${currentBangkokDate}\n\nOCR text (may contain recognition errors; prefer visible image evidence):\n${rawText.slice(0, 30000)}`,
-                },
-                {
-                    type: "image",
-                    data: image.data,
-                    mime_type: image.mimeType,
-                },
-            ],
-            response_format: {
-                type: "text",
-                mime_type: "application/json",
-                schema: RECEIPT_SCHEMA,
+    const models = [...new Set([
+            process.env.GEMINI_RECEIPT_MODEL,
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+        ].filter((value) => Boolean(value)))];
+    let response = null;
+    let payload = {};
+    for (const [index, model] of models.entries()) {
+        response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": apiKey,
             },
-        }),
-    });
-    const payload = await response.json();
+            body: JSON.stringify({
+                model,
+                store: false,
+                system_instruction: exports.RECEIPT_EXTRACTION_SYSTEM_PROMPT,
+                input: [
+                    {
+                        type: "text",
+                        text: `Current Bangkok date: ${currentBangkokDate}\n\nOCR text (may contain recognition errors; prefer visible image evidence):\n${rawText.slice(0, 30000)}`,
+                    },
+                    {
+                        type: "image",
+                        data: image.data,
+                        mime_type: image.mimeType,
+                    },
+                ],
+                response_format: {
+                    type: "text",
+                    mime_type: "application/json",
+                    schema: RECEIPT_SCHEMA,
+                },
+            }),
+        });
+        payload = await response.json();
+        if (response.ok || response.status !== 404 || index === models.length - 1)
+            break;
+    }
+    if (!response)
+        throw new Error("Gemini receipt request could not start.");
     if (!response.ok)
         throw new Error(payload.error?.message ?? `Gemini request failed with ${response.status}.`);
     const outputText = interactionOutputText(payload);

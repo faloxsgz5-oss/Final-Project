@@ -26,6 +26,7 @@ local.properties
 
 # Metro
 .metro-health-check*
+.codex-metro*.log
 
 # debug
 npm-debug.*
@@ -44,6 +45,7 @@ artifacts/
 .tmp-*
 firestore-rules-audit.json
 .firebase/
+firestore-debug.log
 .runtimeconfig.json
 
 # macOS
@@ -72,6 +74,7 @@ example
 # generated native folders
 /ios
 /android
+modules/**/android/build/
 
 # IDE and operating-system files
 .idea/

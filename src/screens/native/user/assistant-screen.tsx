@@ -1,9 +1,14 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {ActivityIndicator, Alert, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import {ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
+import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
+import {appCheckErrorMessage, isAppCheckError} from '@/lib/app-check';
+import {explicitMutationClause, isReadOnlyOrAdviceRequest} from '@/services/assistant-action-intent';
 import {buildAssistantReply, confirmAssistantAction, recordAssistantTelemetry, type AssistantReply} from '@/services/assistant-tools';
+import {adaptiveScheduling, type AdaptiveDashboard, type AdaptiveProposedActivity, type AdaptiveSuggestion} from '@/services/adaptive-scheduling';
 import {
   assistantActiveConversationKey,
   assistantConversationHistoryKey,
@@ -26,7 +31,7 @@ import {
 } from '@/services/assistant-history';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
-import {Card, MaterialIcon, PrimaryButton, UserShell, type UserNavigate, userStyles} from './user-ui';
+import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
 
 function nowIso() {
   return new Date().toISOString();
@@ -88,8 +93,62 @@ async function requestMicrophonePermission() {
   return result === PermissionsAndroid.RESULTS.GRANTED;
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeStyle: 'short', timeZone: THAI_TIME_ZONE}).format(new Date(value));
+function validTimeZone(timeZone?: string) {
+  if (!timeZone) return THAI_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat('en-US', {timeZone}).format(new Date(0));
+    return timeZone;
+  } catch {
+    return THAI_TIME_ZONE;
+  }
+}
+
+function formatDate(value: string, timeZone = THAI_TIME_ZONE) {
+  return new Intl.DateTimeFormat('th-TH', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: validTimeZone(timeZone),
+  }).format(new Date(value));
+}
+
+type ZonedDateTimeParts = {day: number; hour: number; minute: number; month: number; year: number};
+
+function assistantZonedParts(value: Date, timeZone: string): ZonedDateTimeParts | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {calendar: 'iso8601', day: '2-digit', hour: '2-digit', hourCycle: 'h23', minute: '2-digit', month: '2-digit', numberingSystem: 'latn', timeZone, year: 'numeric'}).formatToParts(value);
+    const read = (part: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === part)?.value);
+    const result = {day: read('day'), hour: read('hour'), minute: read('minute'), month: read('month'), year: read('year')};
+    return Object.values(result).every(Number.isFinite) ? result : null;
+  } catch { return null; }
+}
+
+function assistantLocalInput(value: string, timeZone: string) {
+  const parts = assistantZonedParts(new Date(value), timeZone);
+  if (!parts) return '';
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)} ${pad(parts.hour)}:${pad(parts.minute)}`;
+}
+
+function parseAssistantLocalInput(value: string, timeZone: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const intended = {day: Number(match[3]), hour: Number(match[4]), minute: Number(match[5]), month: Number(match[2]), year: Number(match[1])};
+  const intendedUtc = new Date(Date.UTC(intended.year, intended.month - 1, intended.day, intended.hour, intended.minute));
+  if (intendedUtc.getUTCFullYear() !== intended.year || intendedUtc.getUTCMonth() + 1 !== intended.month || intendedUtc.getUTCDate() !== intended.day || intended.hour > 23 || intended.minute > 59) return null;
+  const asUtcMs = intendedUtc.getTime();
+  const offsetAt = (instantMs: number) => {
+    const parts = assistantZonedParts(new Date(instantMs), timeZone);
+    return parts ? Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute) - instantMs : null;
+  };
+  const firstOffset = offsetAt(asUtcMs);
+  if (firstOffset === null) return null;
+  let instantMs = asUtcMs - firstOffset;
+  const correctedOffset = offsetAt(instantMs);
+  if (correctedOffset === null) return null;
+  instantMs = asUtcMs - correctedOffset;
+  const date = new Date(instantMs);
+  const verified = assistantZonedParts(date, timeZone);
+  return verified && verified.year === intended.year && verified.month === intended.month && verified.day === intended.day && verified.hour === intended.hour && verified.minute === intended.minute ? date : null;
 }
 
 function actionDetails(action: AssistantProposedAction) {
@@ -125,8 +184,12 @@ function actionDetails(action: AssistantProposedAction) {
   return [
     ['ประเภท', action.payload.type === 'class' ? 'คลาสเรียน' : action.payload.type === 'task' ? 'งาน' : 'นัดหมาย'],
     ['หัวข้อ', action.payload.title],
-    ['เวลาเริ่ม', formatDate(action.payload.startAt)],
-    ['เวลาจบ', action.payload.endAt ? formatDate(action.payload.endAt) : '-'],
+    ['เวลาเริ่ม', formatDate(action.payload.startAt, action.payload.generatedForTimeZone)],
+    ['เวลาจบ', action.payload.endAt ? formatDate(action.payload.endAt, action.payload.generatedForTimeZone) : '-'],
+    ...(action.payload.isFlexible ? [
+      ['Adaptive', 'ย้ายเวลาได้'],
+      ['ระยะเวลา', `${action.payload.estimatedDurationMinutes ?? 60} นาที`],
+    ] : []),
     ['สถานที่', action.payload.location || '-'],
   ];
 }
@@ -138,6 +201,7 @@ function MessageBubble({
   onFeedback,
   onReject,
   busy,
+  savingActionId,
 }: {
   busy: boolean;
   message: AssistantChatMessage;
@@ -145,6 +209,7 @@ function MessageBubble({
   onConfirm: (messageIdValue: string, action: AssistantProposedAction) => void;
   onFeedback: (message: AssistantChatMessage, rating: AssistantFeedbackRating) => void;
   onReject: (messageIdValue: string, action: AssistantProposedAction) => void;
+  savingActionId: string;
 }) {
   const isUser = message.role === 'user';
   return (
@@ -156,7 +221,8 @@ function MessageBubble({
           <ActionCard
             action={message.proposedAction}
             busy={busy}
-            onConfirm={() => onConfirm(message.id, message.proposedAction as AssistantProposedAction)}
+            saving={savingActionId === message.proposedAction.id}
+            onConfirm={(updatedAction) => onConfirm(message.id, updatedAction)}
             onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
           />
         ) : null}
@@ -200,17 +266,76 @@ function MessageBubble({
 function ActionCard({
   action,
   busy,
+  saving,
   onConfirm,
   onReject,
 }: {
   action: AssistantProposedAction;
   busy: boolean;
-  onConfirm: () => void;
+  saving: boolean;
+  onConfirm: (updatedAction: AssistantProposedAction) => void;
   onReject: () => void;
 }) {
-  const rows = actionDetails(action);
   const done = action.status !== 'pending';
   const icon = action.entity === 'finance' ? 'payments' : action.entity === 'note' ? 'note_alt' : action.entity === 'memory' ? 'psychology' : action.entity === 'checklist' ? 'checklist' : 'event';
+  const scheduleTimeZone = action.entity === 'schedule' ? validTimeZone(action.payload.generatedForTimeZone) : THAI_TIME_ZONE;
+  const initialScheduleInput = action.entity === 'schedule' ? assistantLocalInput(action.payload.startAt, scheduleTimeZone) : '';
+  const [dateDraft, setDateDraft] = useState(initialScheduleInput.slice(0, 10));
+  const [durationDraft, setDurationDraft] = useState(action.entity === 'schedule' ? String(action.payload.estimatedDurationMinutes ?? Math.max(15, Math.round(((action.payload.endAt ? new Date(action.payload.endAt).getTime() : new Date(action.payload.startAt).getTime() + 3_600_000) - new Date(action.payload.startAt).getTime()) / 60_000))) : '60');
+  const [editError, setEditError] = useState('');
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<'date' | 'time' | null>(null);
+  const [timeDraft, setTimeDraft] = useState(initialScheduleInput.slice(11, 16));
+  const pickerValue = parseAssistantLocalInput(`${dateDraft} ${timeDraft}`, scheduleTimeZone) ?? new Date();
+  const durationOptions = [30, 45, 60, 90, 120];
+
+  const selectPickerValue = (selectedDate: Date) => {
+    if (pickerTarget === 'date') {
+      const year = selectedDate.getFullYear();
+      const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDate.getDate()).padStart(2, '0');
+      setDateDraft(`${year}-${month}-${day}`);
+    } else if (pickerTarget === 'time') {
+      setTimeDraft(`${String(selectedDate.getHours()).padStart(2, '0')}:${String(selectedDate.getMinutes()).padStart(2, '0')}`);
+    }
+    setEditError('');
+    setPickerTarget(null);
+  };
+
+  const editedAction = (): AssistantProposedAction | null => {
+    if (action.entity !== 'schedule' || !editorOpen) return action;
+    const startAt = parseAssistantLocalInput(`${dateDraft} ${timeDraft}`, scheduleTimeZone);
+    const durationMinutes = Number(durationDraft);
+    if (!startAt) {
+      setEditError('กรุณาระบุวันที่และเวลาให้ถูกต้อง');
+      return null;
+    }
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 720) {
+      setEditError('ระยะเวลาต้องอยู่ระหว่าง 15–720 นาที');
+      return null;
+    }
+    if (startAt.getTime() < Date.now() + 5 * 60_000) {
+      setEditError('กรุณาเลือกเวลาในอนาคตอย่างน้อย 5 นาที');
+      return null;
+    }
+    setEditError('');
+    return {
+      ...action,
+      payload: {
+        ...action.payload,
+        endAt: new Date(startAt.getTime() + durationMinutes * 60_000).toISOString(),
+        estimatedDurationMinutes: durationMinutes,
+        generatedForTimeZone: scheduleTimeZone,
+        startAt: startAt.toISOString(),
+      },
+    };
+  };
+
+  const rows = actionDetails(action);
+  const confirm = () => {
+    const nextAction = editedAction();
+    if (nextAction) onConfirm(nextAction);
+  };
   return (
     <Card colors={['#ffffff', '#f6faf3']} style={local.actionCard}>
       <View style={local.actionHeader}>
@@ -230,14 +355,68 @@ function ActionCard({
           </View>
         ))}
       </View>
+      {!done && action.entity === 'schedule' ? (
+        <View style={local.actionEditorWrap}>
+          <Pressable
+            accessibilityLabel="แก้ไขวันที่ เวลา และระยะเวลาก่อนบันทึก"
+            disabled={busy}
+            onPress={() => { setEditorOpen((value) => !value); setEditError(''); }}
+            style={[local.actionEditorToggle, editorOpen && local.actionEditorToggleActive, busy && local.disabled]}>
+            <MaterialIcon color={editorOpen ? '#ffffff' : '#5d8059'} name="edit_calendar" size={18} />
+            <Text style={[local.actionEditorToggleText, editorOpen && local.actionEditorToggleTextActive]}>{editorOpen ? 'กำลังใช้เวลาที่คุณกำหนด' : 'แก้ไขวัน เวลา และระยะเวลาเอง'}</Text>
+            <MaterialIcon color={editorOpen ? '#ffffff' : '#71806d'} name={editorOpen ? 'expand_less' : 'expand_more'} size={18} />
+          </Pressable>
+          {editorOpen ? (
+            <View style={local.actionEditorPanel}>
+              <View style={local.actionEditorRow}>
+                <View style={local.actionEditorField}>
+                  <Text style={local.actionEditorLabel}>วันที่</Text>
+                  <Pressable accessibilityLabel="เลือกวันที่" onPress={() => setPickerTarget('date')} style={local.actionPickerButton}>
+                    <MaterialIcon color="#5d8059" name="calendar_month" size={18} />
+                    <Text style={local.actionPickerValue}>{dateDraft}</Text>
+                    <MaterialIcon color="#879383" name="expand_more" size={17} />
+                  </Pressable>
+                </View>
+                <View style={local.actionEditorFieldSmall}>
+                  <Text style={local.actionEditorLabel}>เวลา</Text>
+                  <Pressable accessibilityLabel="เลือกชั่วโมงและนาที" onPress={() => setPickerTarget('time')} style={local.actionPickerButton}>
+                    <MaterialIcon color="#5d8059" name="schedule" size={18} />
+                    <Text style={local.actionPickerValue}>{timeDraft}</Text>
+                    <MaterialIcon color="#879383" name="expand_more" size={17} />
+                  </Pressable>
+                </View>
+              </View>
+              {pickerTarget ? <NativeDateTimePicker
+                accentColor="#5d8059"
+                is24Hour
+                mode={pickerTarget}
+                onDismiss={() => setPickerTarget(null)}
+                onValueChange={(_, selectedDate) => selectPickerValue(selectedDate)}
+                presentation="dialog"
+                value={pickerValue}
+              /> : null}
+              <View style={local.actionEditorDurationRow}>
+                <View style={{flex: 1}}>
+                  <Text style={local.actionEditorLabel}>ระยะเวลา (นาที)</Text>
+                  <TextInput keyboardType="number-pad" onChangeText={setDurationDraft} placeholder="60" placeholderTextColor="#9aa395" style={local.actionEditorInput} value={durationDraft} />
+                </View>
+                <View style={local.actionEditorHintBadge}><MaterialIcon color="#5d8059" name="verified" size={15} /><Text style={local.actionEditorHintBadgeText}>ตรวจช่วงว่างก่อนบันทึก</Text></View>
+              </View>
+              <View style={local.actionDurationOptions}>{durationOptions.map((minutes) => <Pressable key={minutes} onPress={() => setDurationDraft(String(minutes))} style={[local.actionDurationChip, durationDraft === String(minutes) && local.actionDurationChipActive]}><Text style={[local.actionDurationChipText, durationDraft === String(minutes) && local.actionDurationChipTextActive]}>{minutes < 60 ? `${minutes} นาที` : `${minutes / 60} ชม.`}</Text></Pressable>)}</View>
+              {editError ? <Text style={local.actionEditorError}>{editError}</Text> : <Text style={local.actionEditorHint}>เวลาที่คุณเลือกจะมีสิทธิ์เหนือคำแนะนำของ AI และระบบจะตรวจสอบอีกครั้งก่อนบันทึก</Text>}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
       {done ? <StatusPill status={action.status} /> : (
         <View style={local.confirmRow}>
           <Pressable disabled={busy} onPress={onReject} style={[local.secondaryButton, busy && local.disabled]}>
             <Text style={local.secondaryButtonText}>ไม่บันทึก</Text>
           </Pressable>
-          <View style={{flex: 1}}>
-            <PrimaryButton disabled={busy} label="ยืนยันบันทึก" onPress={onConfirm} />
-          </View>
+          <Pressable disabled={busy} onPress={confirm} style={[local.actionConfirmButton, busy && local.disabled]}>
+            {saving ? <ActivityIndicator color="#ffffff" size="small" /> : <MaterialIcon color="#ffffff" name="check" size={19} />}
+            <Text style={local.actionConfirmText}>{saving ? 'กำลังบันทึก...' : 'ยืนยันบันทึก'}</Text>
+          </Pressable>
         </View>
       )}
     </Card>
@@ -246,14 +425,85 @@ function ActionCard({
 
 function StatusPill({status}: {status: ProposedActionStatus}) {
   const confirmed = status === 'confirmed';
+  const [progress] = useState(() => new Animated.Value(0));
+  useEffect(() => {
+    Animated.spring(progress, {bounciness: 14, speed: 15, toValue: 1, useNativeDriver: true}).start();
+  }, [progress]);
   return (
-    <View style={[local.statusPill, confirmed ? local.statusConfirmed : local.statusRejected]}>
-      <MaterialIcon color={confirmed ? '#4f754b' : '#8a5b5b'} name={confirmed ? 'check_circle' : 'block'} size={16} />
+    <Animated.View style={[local.statusPill, confirmed ? local.statusConfirmed : local.statusRejected, {opacity: progress, transform: [{scale: progress}]}]}>
+      <View style={[local.statusIcon, confirmed ? local.statusIconConfirmed : local.statusIconRejected]}><MaterialIcon color="#ffffff" name={confirmed ? 'check' : 'close'} size={16} /></View>
       <Text style={[local.statusText, confirmed ? local.statusTextConfirmed : local.statusTextRejected]}>
         {confirmed ? 'บันทึกแล้ว' : 'ยกเลิกแล้ว'}
       </Text>
-    </View>
+    </Animated.View>
   );
+}
+
+const adaptiveCategoryLabels: Record<string, string> = {
+  administration: 'งานทั่วไป',
+  assignment: 'งานส่ง',
+  exercise: 'ออกกำลังกาย',
+  gaming: 'โหมดเล่นเกม',
+  other: 'กิจกรรมยืดหยุ่น',
+  personal_project: 'โปรเจกต์ส่วนตัว',
+  programming: 'เขียนโปรแกรม',
+  reading: 'อ่านหนังสือ',
+  rest: 'พักผ่อน',
+  shopping: 'ซื้อของ',
+  study: 'เรียน/ทบทวน',
+};
+
+function adaptiveConfidenceLabel(value: number) {
+  if (value >= .75) return 'มั่นใจสูง';
+  if (value >= .5) return 'มั่นใจปานกลาง';
+  if (value >= .3) return 'กำลังเรียนรู้';
+  return 'ข้อมูลยังน้อย';
+}
+
+function InlineAdaptivePanel({
+  busyKey,
+  onAccept,
+  onAlternative,
+  onReject,
+  suggestions,
+}: {
+  busyKey: string;
+  onAccept: (suggestion: AdaptiveSuggestion) => void;
+  onAlternative: (suggestion: AdaptiveSuggestion, startAt: string) => void;
+  onReject: (suggestion: AdaptiveSuggestion) => void;
+  suggestions: AdaptiveSuggestion[];
+}) {
+  if (!suggestions.length) return null;
+  return <LinearGradient colors={['#f1f8ed', '#ffffff', '#f4f2fa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={local.inlineAdaptivePanel}>
+    <View style={local.inlineAdaptiveHeader}>
+      <View style={local.inlineAdaptiveHeaderIcon}><MaterialIcon color="#ffffff" name="auto_awesome" size={19} /></View>
+      <View style={{flex: 1}}><Text style={local.inlineAdaptiveHeading}>Adaptive ทำงานในแชตนี้</Text><Text style={local.inlineAdaptiveHint}>ตรวจและยืนยันได้ตรงนี้ ไม่ต้องเปลี่ยนหน้า</Text></View>
+      <View style={local.inlineAdaptiveCount}><Text style={local.inlineAdaptiveCountText}>{suggestions.length}</Text></View>
+    </View>
+    {suggestions.map((suggestion) => {
+      const timeZone = validTimeZone(suggestion.generatedForTimeZone);
+      const loading = busyKey.endsWith(suggestion.id);
+      return <View key={suggestion.id} style={local.inlineAdaptiveCard}>
+        <View style={local.inlineAdaptiveTitleRow}>
+          <View style={local.inlineAdaptiveCategory}><Text style={local.inlineAdaptiveCategoryText}>{adaptiveCategoryLabels[suggestion.activityCategory] ?? suggestion.activityCategory}</Text></View>
+          <Text style={local.inlineAdaptiveConfidence}>{adaptiveConfidenceLabel(suggestion.confidence)} · {Math.round(suggestion.confidence * 100)}%</Text>
+        </View>
+        <Text style={local.inlineAdaptiveTitle}>{suggestion.taskTitle}</Text>
+        <View style={local.inlineAdaptiveTimeRow}>
+          <View style={{flex: 1}}><Text style={local.inlineAdaptiveTimeLabel}>เวลาเดิม</Text><Text style={local.inlineAdaptiveTimeValue}>{formatDate(suggestion.originalStartAt, timeZone)}</Text></View>
+          <View style={local.inlineAdaptiveArrow}><MaterialIcon color="#5e805b" name="arrow_forward" size={17} /></View>
+          <View style={{flex: 1}}><Text style={local.inlineAdaptiveTimeLabel}>เวลาที่แนะนำ</Text><Text style={local.inlineAdaptiveTimeValue}>{formatDate(suggestion.suggestedStartAt, timeZone)}</Text></View>
+        </View>
+        <Text style={local.inlineAdaptiveReason}>{suggestion.explanation}</Text>
+        <Text style={local.inlineAdaptiveLearning}>{suggestion.observationCount > 0 ? `เรียนรู้จากพฤติกรรม ${suggestion.observationCount} ครั้ง` : 'ใช้ตารางจริงและค่าที่คุณตั้งไว้ ข้อมูลพฤติกรรมยังไม่พอสำหรับสรุปถาวร'}</Text>
+        {suggestion.alternativeOptions?.length ? <View style={local.inlineAlternativeList}>{suggestion.alternativeOptions.slice(0, 2).map((option) => <Pressable disabled={Boolean(busyKey)} key={`${suggestion.id}-${option.startAt}`} onPress={() => onAlternative(suggestion, option.startAt)} style={({pressed}) => [local.inlineAlternativeButton, pressed && local.pressed, Boolean(busyKey) && local.disabled]}><MaterialIcon color="#5e7e5b" name="schedule" size={15} /><Text style={local.inlineAlternativeText}>{option.label || formatDate(option.startAt, timeZone)}</Text></Pressable>)}</View> : null}
+        <View style={local.inlineAdaptiveActions}>
+          <Pressable disabled={Boolean(busyKey)} onPress={() => onReject(suggestion)} style={[local.inlineRejectButton, Boolean(busyKey) && local.disabled]}><Text style={local.inlineRejectText}>ไม่ใช้เวลานี้</Text></Pressable>
+          <Pressable disabled={Boolean(busyKey)} onPress={() => onAccept(suggestion)} style={[local.inlineAcceptButton, Boolean(busyKey) && local.disabled]}>{loading ? <ActivityIndicator color="#ffffff" size="small" /> : <MaterialIcon color="#ffffff" name="check" size={18} />}<Text style={local.inlineAcceptText}>{loading ? 'กำลังตรวจ...' : 'ยืนยันใช้เวลานี้'}</Text></Pressable>
+        </View>
+      </View>;
+    })}
+  </LinearGradient>;
 }
 
 type InsightItem = {icon: string; subtitle: string; title: string};
@@ -275,7 +525,7 @@ function insightDate(item: Record<string, unknown>) {
 }
 
 // Added for AI Assistant insights: present seven-day workload, behavior, and focus using existing calendar data only.
-function AssistantInsights({data, onAsk}: {data: WeeklyInsightData | null; onAsk: (prompt: string) => void}) {
+function AssistantInsights({adaptiveDashboard, data, onAsk}: {adaptiveDashboard: AdaptiveDashboard | null; data: WeeklyInsightData | null; onAsk: (prompt: string) => void}) {
   const insight = useMemo(() => {
     const schedules = insightRecords(data?.schedules);
     const activities = insightRecords(data?.activities);
@@ -286,7 +536,20 @@ function AssistantInsights({data, onAsk}: {data: WeeklyInsightData | null; onAsk
     const morning = all.filter((item) => item.date && item.date.getHours() < 12).length;
     const afternoon = all.filter((item) => item.date && item.date.getHours() >= 12 && item.date.getHours() < 17).length;
     const evening = all.filter((item) => item.date && item.date.getHours() >= 17).length;
-    const preferred = morning >= afternoon && morning >= evening ? 'ช่วงเช้า' : afternoon >= evening ? 'ช่วงบ่าย' : 'ช่วงเย็น';
+    const schedulePreferred = morning >= afternoon && morning >= evening ? 'ช่วงเช้า' : afternoon >= evening ? 'ช่วงบ่าย' : 'ช่วงเย็น';
+    const learnedPattern = [...(adaptiveDashboard?.patterns ?? [])]
+      .filter((pattern) => pattern.observationCount > 0)
+      .sort((left, right) => right.confidenceScore - left.confidenceScore || right.observationCount - left.observationCount)[0];
+    const learnedHour = learnedPattern?.preferredStartHour;
+    const preferred = learnedHour === undefined
+      ? schedulePreferred
+      : learnedHour < 11 ? 'ช่วงเช้า' : learnedHour < 17 ? 'ช่วงบ่าย' : learnedHour < 21 ? 'ช่วงเย็น' : 'ช่วงกลางคืน';
+    const focusMinutes = learnedPattern
+      ? Math.max(15, Math.min(120, Math.round(learnedPattern.averageDurationMinutes / 5) * 5))
+      : 35;
+    const behaviorEvidence = learnedPattern
+      ? `${adaptiveCategoryLabels[learnedPattern.activityCategory] ?? learnedPattern.activityCategory} · เรียนรู้จากผลลัพธ์จริง ${learnedPattern.observationCount} ครั้ง`
+      : 'ยังมีข้อมูลผลลัพธ์ไม่พอ จึงใช้เฉพาะตาราง 7 วันและจะไม่สรุปเป็นนิสัยถาวร';
     const workload = all.length;
     const risk = workload >= 10 ? 'สูง' : workload >= 6 ? 'ปานกลาง' : 'ต่ำ';
     const riskCopy = workload >= 10
@@ -300,14 +563,14 @@ function AssistantInsights({data, onAsk}: {data: WeeklyInsightData | null; onAsk
       {icon: 'task_alt', subtitle: 'ช่วยจัดลำดับให้ได้', title: 'บันทึกงานที่ต้องส่ง'},
       {icon: 'savings', subtitle: 'วางแผนง่ายขึ้น', title: 'กำหนดงบสำหรับสัปดาห์นี้'},
     );
-    return {focus, preferred, risk, riskCopy, workload};
-  }, [data]);
+    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskCopy, workload};
+  }, [adaptiveDashboard?.patterns, data]);
 
   return <View style={local.insightSection}>
     <View style={local.insightHeader}><Text style={local.insightHeading}>วิเคราะห์ข้อมูล 7 วันที่ผ่านมา</Text><Text style={local.insightCount}>{insight.workload} รายการ</Text></View>
     <View style={local.insightDivider} />
     <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text></View></View>
-    <View style={local.behaviorPanel}><View style={local.behaviorHeading}><View style={local.behaviorIcon}><MaterialIcon color="#668d65" name="schedule" size={18} /></View><View style={{flex: 1}}><Text style={local.behaviorTitle}>AI เรียนรู้พฤติกรรม</Text><Text style={local.behaviorText}>ระบบดูรูปแบบตารางเพื่อช่วยเลือกเวลาที่เหมาะกับคุณ</Text></View></View><View style={local.behaviorTiming}><View style={local.timingTile}><Text style={local.timingLabel}>ช่วงที่พบมาก</Text><Text style={local.timingValue}>{insight.preferred}</Text></View><View style={local.timingTile}><Text style={local.timingLabel}>คำแนะนำ</Text><Text style={local.timingValue}>โฟกัส 35 นาที</Text></View></View><Pressable onPress={() => onAsk('ช่วยจัดช่วงโฟกัสให้เหมาะกับตารางของฉัน')} style={local.behaviorAction}><MaterialIcon color="#fff" name="check" size={17} /><Text style={local.behaviorActionText}>ใช้แผนที่ AI แนะนำ</Text></Pressable></View>
+    <View style={local.behaviorPanel}><View style={local.behaviorHeading}><View style={local.behaviorIcon}><MaterialIcon color="#668d65" name="schedule" size={18} /></View><View style={{flex: 1}}><Text style={local.behaviorTitle}>AI เรียนรู้พฤติกรรม</Text><Text style={local.behaviorText}>{insight.behaviorEvidence}</Text></View></View><View style={local.behaviorTiming}><View style={local.timingTile}><Text style={local.timingLabel}>ช่วงที่เหมาะ</Text><Text style={local.timingValue}>{insight.preferred}</Text></View><View style={local.timingTile}><Text style={local.timingLabel}>ระยะเวลาที่แนะนำ</Text><Text style={local.timingValue}>โฟกัส {insight.focusMinutes} นาที</Text></View></View><Pressable onPress={() => onAsk(`ช่วยจัดช่วงโฟกัส ${insight.focusMinutes} นาทีให้เหมาะกับตารางของฉัน`)} style={local.behaviorAction}><MaterialIcon color="#fff" name="check" size={17} /><Text style={local.behaviorActionText}>ใช้แผน Adaptive ในแชตนี้</Text></Pressable></View>
     <View style={local.focusHeader}><Text style={local.focusHeading}>AI แนะนำให้โฟกัส</Text><Text style={local.focusCount}>{insight.focus.length} รายการ</Text></View>
     <View style={local.focusList}>{insight.focus.map((item, index) => <Pressable key={`${item.title}-${index}`} onPress={() => onAsk(`ช่วยวางแผน ${item.title}`)} style={local.focusItem}><View style={local.focusIcon}><MaterialIcon color="#678266" name={item.icon} size={17} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={local.focusItemTitle}>{item.title}</Text><Text numberOfLines={1} style={local.focusText}>{item.subtitle}</Text></View><MaterialIcon color="#95a18f" name="chevron_right" size={18} /></Pressable>)}</View>
   </View>;
@@ -323,15 +586,17 @@ function FocusSuggestions({messages}: {messages: AssistantChatMessage[]}) {
   </View>;
 }
 
+const ADAPTIVE_AI_SHORTCUT = 'smartlife_adaptive_ai';
+
 const shortcuts = [
   ['calendar_month', 'ตารางวันนี้', 'ดูงานเรียงลำดับ', 'smartlife_notifications_schedule'],
   ['check_box', 'งานค้าง', 'เรียงความสำคัญ', 'smartlife_notifications_urgent'],
   ['account_balance_wallet', 'งบวันนี้', 'เช็กเงินคงเหลือ', 'smartlife_notifications_finance'],
-  ['schedule', 'เวลาว่าง', 'หา AI ช่วยจัดช่วง', 'smartlife_notifications_ai'],
+  ['auto_awesome', 'Adaptive AI', 'จัดงานลงเวลาว่าง', ADAPTIVE_AI_SHORTCUT],
 ];
 
-type QuickAddCategoryId = 'finance' | 'note' | 'ocr' | 'task' | 'time';
-type QuickAddSuggestion = {detail: string; icon: string; prompt: string; title: string};
+type QuickAddCategoryId = 'adaptive' | 'finance' | 'note' | 'ocr' | 'task' | 'time';
+type QuickAddSuggestion = {action?: 'activate_adaptive'; detail: string; icon: string; prompt: string; title: string};
 
 const defaultOcrShortcuts: QuickAddSuggestion[] = [
   {detail: 'ดูข้อมูลจากสลิปหรือใบเสร็จล่าสุด', icon: 'receipt_long', prompt: 'สรุปข้อมูลจาก OCR ล่าสุดให้หน่อย', title: 'ดู OCR ล่าสุด'},
@@ -342,6 +607,44 @@ const defaultOcrShortcuts: QuickAddSuggestion[] = [
 
 function ocrShortcutsKey(uid: string) {
   return `smartlife:assistant:ocr-shortcuts:${uid}`;
+}
+
+function isAdaptiveSchedulingCommand(value: string) {
+  return /(หาเวลา(?:ให้|ทำ|อ่าน)|(?:ย้าย|เลื่อน|จัด|วาง|แบ่ง|แทรก).*(?:งาน|การบ้าน|อ่าน|เรียน|ออกกำลัง)|(?:งานค้าง|งานที่ยังไม่เสร็จ).*(?:ลง|ใส่|ย้าย|จัด).*(?:เวลาว่าง|ตาราง)|ตาราง.*(?:เบา|แน่น|ล้น)|(?:ช่วย)?จัด.*สัปดาห์|สัปดาห์.*(?:จัด|วาง|ปรับ)|สมดุล.*สัปดาห์|plan my|find time|move my unfinished|make tomorrow less busy|when am i most productive|productive|ประสิทธิภาพ|ช่วงไหน.*(?:ทำงาน|อ่าน|เรียน).*ดี|อย่า.*(?:จัด|วาง)|ไม่.*(?:จัด|วาง).*(?:เช้า|บ่าย|เย็น|ดึก)|do not schedule|always schedule|จัด.*(?:อ่าน|เรียน|ออกกำลัง|เขียนโปรแกรม).*(?:เช้า|บ่าย|เย็น|ดึก)|why.*move|ทำไม.*ย้าย)/i.test(value);
+}
+
+function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantProposedAction {
+  return {
+    entity: 'schedule',
+    id: messageId('adaptive-action'),
+    payload: {
+      aiReason: proposal.explanation,
+      aiScheduled: true,
+      allowAiReschedule: true,
+      category: proposal.activityCategory,
+      deadline: proposal.deadline,
+      endAt: proposal.endAt,
+      estimatedDurationMinutes: proposal.durationMinutes,
+      generatedForTimeZone: proposal.generatedForTimeZone,
+      isFlexible: true,
+      location: '',
+      startAt: proposal.startAt,
+      title: proposal.title,
+      type: 'task',
+    },
+    status: 'pending',
+    summary: `เพิ่มงานยืดหยุ่น "${proposal.title}" ลงช่วงว่างที่ AI ตรวจแล้ว`,
+    type: 'create',
+  };
+}
+
+function confirmAdaptivePreference() {
+  return new Promise<boolean>((resolve) => Alert.alert(
+    'ยืนยันการตั้งค่า Adaptive',
+    'บันทึกช่วงเวลานี้เป็นข้อกำหนดสำหรับการจัดตารางครั้งต่อไปไหม?',
+    [{onPress: () => resolve(false), style: 'cancel', text: 'ยังไม่บันทึก'}, {onPress: () => resolve(true), text: 'บันทึก'}],
+    {cancelable: true, onDismiss: () => resolve(false)},
+  ));
 }
 
 function parseOcrShortcuts(raw: string | null): QuickAddSuggestion[] {
@@ -428,6 +731,20 @@ const quickAddCategories: {
     title: 'โน้ต',
   },
   {
+    createLabel: 'เปิด Adaptive AI',
+    createPrompt: 'เปิด Adaptive AI และช่วยจัดงานค้างลงในเวลาว่างตั้งแต่ตอนนี้',
+    detail: 'จัดเวลาว่าง วันนี้ ทั้งสัปดาห์ และเรียนรู้พฤติกรรม',
+    icon: 'auto_awesome',
+    id: 'adaptive',
+    suggestions: [
+      {action: 'activate_adaptive', detail: 'ตรวจงานยืดหยุ่นและสร้างคำแนะนำในหน้าแชตนี้', icon: 'auto_awesome', prompt: 'เปิด Adaptive AI และช่วยจัดงานค้างลงในเวลาว่างตั้งแต่ตอนนี้', title: 'จัดงานลงเวลาว่าง'},
+      {detail: 'ลดความแน่นของวันนี้โดยไม่ชนรายการที่ล็อกไว้', icon: 'today', prompt: 'ช่วยปรับตารางวันนี้ให้สมดุลและสร้างตัวเลือกให้ยืนยันในแชตนี้', title: 'ปรับตารางวันนี้'},
+      {detail: 'กระจายงานยืดหยุ่นตลอดสัปดาห์ตามกำหนดส่ง', icon: 'date_range', prompt: 'ช่วยจัดทั้งสัปดาห์ให้สมดุลและสร้างตัวเลือกให้ยืนยันในแชตนี้', title: 'จัดทั้งสัปดาห์'},
+      {detail: 'สรุปช่วงที่ทำสำเร็จจริงจากประวัติของฉัน', icon: 'psychology', prompt: 'จากพฤติกรรมจริง ช่วงไหนฉันทำกิจกรรมสำเร็จได้ดีที่สุด', title: 'ดูสิ่งที่ AI เรียนรู้'},
+    ],
+    title: 'Adaptive',
+  },
+  {
     createLabel: 'ตั้งค่าคำถามลัด OCR',
     createPrompt: '',
     detail: 'สลิป ใบเสร็จ วันเวลา และข้อมูลสแกนล่าสุด',
@@ -453,7 +770,24 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const scrollToBottomVisibleRef = useRef(false);
   const speechBaseInputRef = useRef('');
   const temporaryChatRef = useRef(false);
+  const retryConfirmActionRef = useRef<{action: AssistantProposedAction; targetMessageId: string} | null>(null);
+  const confirmActionInFlightRef = useRef(false);
+  const adaptiveActivationInFlightRef = useRef(false);
+  const inlineAdaptiveActionInFlightRef = useRef(false);
+  const retryInlineAdaptiveActionRef = useRef<{action: () => Promise<unknown>; key: string; successMessage: string; title: string} | null>(null);
   const [busy, setBusy] = useState(false);
+  const [adaptiveActivationStatus, setAdaptiveActivationStatus] = useState<AsyncActionStatus>('idle');
+  const [adaptiveActivationError, setAdaptiveActivationError] = useState('');
+  const [confirmationActionStatus, setConfirmationActionStatus] = useState<AsyncActionStatus>('idle');
+  const [confirmationActionError, setConfirmationActionError] = useState('');
+  const [pendingNavigationPage, setPendingNavigationPage] = useState('');
+  const [savingActionId, setSavingActionId] = useState('');
+  const [inlineAdaptiveBusyKey, setInlineAdaptiveBusyKey] = useState('');
+  const [inlineAdaptiveError, setInlineAdaptiveError] = useState('');
+  const [inlineAdaptiveFeedbackMessage, setInlineAdaptiveFeedbackMessage] = useState('');
+  const [inlineAdaptiveFeedbackStatus, setInlineAdaptiveFeedbackStatus] = useState<AsyncActionStatus>('idle');
+  const [inlineAdaptiveFeedbackTitle, setInlineAdaptiveFeedbackTitle] = useState('');
+  const [inlineAdaptiveSuggestions, setInlineAdaptiveSuggestions] = useState<AdaptiveSuggestion[]>([]);
   const [chatHistory, setChatHistory] = useState<AssistantConversationSummary[]>([]);
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
@@ -472,6 +806,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const [weeklyInsights, setWeeklyInsights] = useState<WeeklyInsightData | null>(null);
+  const [adaptiveInsightDashboard, setAdaptiveInsightDashboard] = useState<AdaptiveDashboard | null>(null);
   const [messages, setMessages] = useState<AssistantChatMessage[]>(() => [assistantIntroMessage()]);
   // Refactored UI: the clean state remains visible until the user starts a conversation.
   const hasConversation = messages.some((message) => message.role === 'user');
@@ -559,6 +894,14 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
   useEffect(() => {
     let active = true;
+    adaptiveScheduling.getDashboard()
+      .then((value) => { if (active) setAdaptiveInsightDashboard(value); })
+      .catch(() => { if (active) setAdaptiveInsightDashboard(null); });
+    return () => { active = false; };
+  }, [uid]);
+
+  useEffect(() => {
+    let active = true;
     loadLegacyPageData(uid, 'user/smartlife_calendar_week')
       .then((data) => { if (active) setWeeklyInsights(data as WeeklyInsightData); })
       .catch(() => { if (active) setWeeklyInsights({}); });
@@ -639,10 +982,10 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     queueScrollToLatest();
   };
 
-  const updateActionStatus = (targetMessageId: string, status: ProposedActionStatus) => {
+  const updateActionStatus = (targetMessageId: string, status: ProposedActionStatus, updatedAction?: AssistantProposedAction) => {
     setMessages((current) => current.map((message) => {
       if (message.id !== targetMessageId || !message.proposedAction) return message;
-      const updated = {...message, proposedAction: {...message.proposedAction, status}};
+      const updated = {...message, proposedAction: {...(updatedAction ?? message.proposedAction), status}} as AssistantChatMessage;
       persistMessagePayload(updated);
       return updated;
     }));
@@ -676,6 +1019,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setInput('');
     autoScrollPendingRef.current = true;
     setMessages([assistantIntroMessage()]);
+    setInlineAdaptiveSuggestions([]);
     setNewChatMenuOpen(false);
     setQuickAddCategory(null);
     setQuickAddOpen(false);
@@ -706,6 +1050,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setConversationState(restored.state);
       autoScrollPendingRef.current = true;
       setMessages(restored.messages.length ? restored.messages : [assistantIntroMessage()]);
+      setInlineAdaptiveSuggestions([]);
       setChatHistoryOpen(false);
       await AsyncStorage.setItem(assistantActiveConversationKey(uid), conversation.id);
     } catch {
@@ -739,6 +1084,69 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setConversationState(nextConversationState);
     appendUser(text, nextConversationState);
     try {
+      // Use semantic scheduling analysis for all schedule/task language. The
+      // user does not need command words; read-only questions simply fall
+      // through when Adaptive returns no operation.
+      const explicitAdaptiveCommand = isAdaptiveSchedulingCommand(text);
+      const readOnlyRequest = isReadOnlyOrAdviceRequest(text) && !explicitMutationClause(text);
+      if (!readOnlyRequest && (explicitAdaptiveCommand || nextIntent === 'schedule' || nextIntent === 'task_note')) {
+        let adaptive: Awaited<ReturnType<typeof adaptiveScheduling.processCommand>> | undefined;
+        try {
+          adaptive = await adaptiveScheduling.processCommand(text);
+        } catch (error) {
+          // A semantic preflight must never block ordinary schedule/task
+          // questions. Explicit Adaptive commands still surface the error.
+          if (explicitAdaptiveCommand) throw error;
+        }
+        if (adaptive?.preferencePatch) {
+          const confirmed = await confirmAdaptivePreference();
+          if (confirmed) {
+            await adaptiveScheduling.updatePreferences(adaptive.preferencePatch);
+            appendAssistant('บันทึกข้อกำหนดเวลาไว้แล้วนะ ระบบจะให้ค่าที่คุณเลือกมีสิทธิ์เหนือรูปแบบที่เรียนรู้ และยังตรวจเวลาว่างจริงทุกครั้ง');
+          } else appendAssistant('ยังไม่บันทึกการตั้งค่านี้นะ ตารางเดิมไม่ถูกเปลี่ยน');
+          return;
+        }
+        if (adaptive?.proposedActivity) {
+          const proposal = adaptive.proposedActivity;
+          const proposalTimeZone = validTimeZone(proposal.generatedForTimeZone);
+          const endTime = new Intl.DateTimeFormat('th-TH', {timeStyle: 'short', timeZone: proposalTimeZone}).format(new Date(proposal.endAt));
+          appendAssistant(
+            `${proposal.explanation}\n\nฉันเตรียมช่วง ${formatDate(proposal.startAt, proposalTimeZone)} ถึง ${endTime} ให้แล้ว ตรวจการ์ดและกดยืนยันเพื่อเพิ่มลงตารางจริงได้เลย`,
+            adaptiveProposalAction(proposal),
+            {suggestions: [`จัด ${proposal.title} ช่วงเย็น`, `จัด ${proposal.title} 90 นาที`]},
+            undefined,
+            nextConversationState,
+          );
+          return;
+        }
+        if (adaptive?.suggestion) {
+          setInlineAdaptiveSuggestions((current) => [adaptive.suggestion as AdaptiveSuggestion, ...current.filter((item) => item.id !== adaptive.suggestion?.id)].slice(0, 4));
+          appendAssistant(`${adaptive.suggestion.explanation}\n\nฉันแสดงตัวเลือก Adaptive ไว้ด้านล่างแล้ว คุณยืนยัน ปฏิเสธ หรือเลือกเวลาอื่นได้ในแชตนี้เลย`);
+          return;
+        }
+        if (adaptive?.suggestions) {
+          setInlineAdaptiveSuggestions(adaptive.suggestions.filter((item) => item.status === 'pending').slice(0, 4));
+          appendAssistant(adaptive.suggestions.length
+            ? `พบงานยืดหยุ่นที่ย้ายได้ ${adaptive.suggestions.length} รายการ ฉันแสดงตัวเลือกไว้ในแชตนี้แล้ว และจะยังไม่ย้ายงานจนกว่าคุณจะยืนยัน`
+            : 'ตรวจแล้ว แต่ยังไม่พบงานยืดหยุ่นที่ย้ายได้โดยไม่ชนตาราง กำหนดส่ง เวลานอน หรือภาระงานที่ตั้งไว้');
+          return;
+        }
+        if (adaptive?.dashboard) {
+          setAdaptiveInsightDashboard(adaptive.dashboard);
+          setInlineAdaptiveSuggestions(adaptive.dashboard.suggestions.filter((item) => item.status === 'pending').slice(0, 4));
+          const insight = adaptive.dashboard.insights[0]?.message;
+          appendAssistant(insight ?? `สัปดาห์นี้มีภาระงานรวม ${adaptive.dashboard.weeklyWorkloadMinutes.toLocaleString('th-TH')} นาที แต่ยังมีข้อมูลพฤติกรรมไม่พอสำหรับสรุปช่วงที่ทำงานได้ดีที่สุด`);
+          return;
+        }
+        if (adaptive?.history) {
+          appendAssistant(adaptive.history.reason || 'การย้ายครั้งล่าสุดผ่านการตรวจ conflict, deadline, เวลานอน และ workload ก่อนบันทึก');
+          return;
+        }
+        if (adaptive?.message) {
+          appendAssistant(adaptive.message);
+          return;
+        }
+      }
       const reply = await buildAssistantReply(uid, text, conversation, {
         conversationId,
         conversationState: nextConversationState,
@@ -754,24 +1162,130 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         latencyMs: reply.latencyMs,
         source: reply.source,
       }).catch(() => undefined);
-    } catch {
-      appendAssistant('ตอนนี้อ่านข้อมูลไม่ได้ ลองใหม่อีกครั้งนะ ถ้า Firebase หลุดเดี๋ยวเราค่อยไล่ดูต่อด้วยกัน');
+    } catch (error) {
+      appendAssistant(isAppCheckError(error)
+        ? appCheckErrorMessage(error)
+        : 'ตอนนี้ผู้ช่วยยังเชื่อมต่อข้อมูลไม่สำเร็จ แต่ข้อมูลเดิมไม่ได้หาย กรุณาลองใหม่อีกครั้ง');
     } finally {
       setBusy(false);
     }
   };
 
-  const confirmAction = async (targetMessageId: string, action: AssistantProposedAction) => {
-    if (busy || action.status !== 'pending') return;
+  const activateAdaptiveAi = async (retry = false) => {
+    if (adaptiveActivationInFlightRef.current || (busy && !retry) || !historyReady || adaptiveActivationStatus === 'loading') return;
+    adaptiveActivationInFlightRef.current = true;
+    const prompt = 'เปิด Adaptive AI และช่วยจัดงานค้างลงในเวลาว่างตั้งแต่ตอนนี้';
+    const nextIntent = classifyAssistantIntent(prompt, conversationState.lastIntent);
+    const nextConversationState = updateAssistantConversationState(conversationState, prompt, nextIntent);
+    setQuickAddOpen(false);
+    setQuickAddCategory(null);
+    setAdaptiveActivationError('');
+    setAdaptiveActivationStatus('loading');
+    setBusy(true);
+    if (!retry) {
+      setConversationState(nextConversationState);
+      appendUser(prompt, nextConversationState);
+    }
+    try {
+      const result = await adaptiveScheduling.activate();
+      if (!result.enabled) throw new Error('Adaptive AI was not enabled.');
+      const suggestions = result.suggestions.slice(0, 3);
+      setInlineAdaptiveSuggestions(suggestions.filter((item) => item.status === 'pending'));
+      if (!suggestions.length) {
+        const checked = result.diagnostics.eligibleActivities;
+        appendAssistant(
+          checked
+            ? `เปิด Adaptive AI แล้ว และตรวจงานยืดหยุ่น ${checked} งาน แต่ยังไม่พบช่วงใหม่ที่ผ่านเงื่อนไขทั้งหมด ตารางเดิมจึงไม่ถูกเปลี่ยน`
+            : 'เปิด Adaptive AI แล้ว แต่ยังไม่มีงานยืดหยุ่นที่พร้อมจัดใหม่ คุณพิมพ์กิจกรรมตามธรรมชาติได้เลย เช่น “อ่านหนังสือทบทวนบทเรียน” แล้วฉันจะหาช่วงว่างให้ยืนยัน',
+          undefined,
+          {suggestions: ['อ่านหนังสือทบทวนบทเรียน', 'ช่วยจัดทั้งสัปดาห์', 'งานไหนควรทำก่อน']},
+          undefined,
+          nextConversationState,
+        );
+      } else {
+        const scheduleLines = suggestions.map((suggestion, index) =>
+          `${index + 1}. ${suggestion.taskTitle} — ${formatDate(suggestion.suggestedStartAt, suggestion.generatedForTimeZone)}`,
+        );
+        appendAssistant(
+          `เปิด Adaptive AI แล้ว พบ ${suggestions.length} งานที่จัดลงช่วงว่างได้โดยไม่ชนตาราง กำหนดส่ง หรือเวลาพัก\n\n${scheduleLines.join('\n')}\n\nยืนยัน ปฏิเสธ หรือเลือกเวลาอื่นได้จากการ์ด Adaptive ในแชตนี้ ตารางจะยังไม่เปลี่ยนจนกว่าคุณจะยืนยัน`,
+          undefined,
+          {suggestions: ['ช่วยจัดทั้งสัปดาห์', 'ทำไมเลือกเวลานี้']},
+          undefined,
+          nextConversationState,
+        );
+      }
+      setAdaptiveActivationStatus('success');
+    } catch (error) {
+      setAdaptiveActivationError(
+        isAppCheckError(error)
+          ? appCheckErrorMessage(error)
+          : 'ยังเปิด Adaptive AI ไม่สำเร็จ ตารางเดิมไม่ได้ถูกเปลี่ยน คุณสามารถลองใหม่ได้ทันที',
+      );
+      setAdaptiveActivationStatus('error');
+    } finally {
+      adaptiveActivationInFlightRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const runInlineAdaptiveAction = async (
+    key: string,
+    action: () => Promise<unknown>,
+    title: string,
+    successMessage: string,
+  ) => {
+    if (inlineAdaptiveActionInFlightRef.current || busy) return;
+    inlineAdaptiveActionInFlightRef.current = true;
+    retryInlineAdaptiveActionRef.current = {action, key, successMessage, title};
+    setInlineAdaptiveBusyKey(key);
+    setInlineAdaptiveError('');
+    setInlineAdaptiveFeedbackMessage('กำลังตรวจตารางและข้อมูลล่าสุดก่อนบันทึก');
+    setInlineAdaptiveFeedbackStatus('loading');
+    setInlineAdaptiveFeedbackTitle(title);
     setBusy(true);
     try {
-      const result = await confirmAssistantAction(uid, action);
-      updateActionStatus(targetMessageId, 'confirmed');
-      appendAssistant(action.entity === 'memory' ? 'จำการตั้งค่านี้ไว้ในเครื่องแล้วนะ ฉันจะนำไปใช้ตอนช่วยวางแผนครั้งถัดไป' : 'บันทึกลง Firebase แล้วนะ เปิดหน้าที่เกี่ยวข้องต่อได้เลย');
-      if (action.entity !== 'memory') onNavigate(result.page);
-    } catch {
-      appendAssistant('ยังบันทึกไม่สำเร็จนะ ข้อมูลยังไม่ถูกเขียนลง Firebase เดี๋ยวลองใหม่หรือเช็กสิทธิ์ Firestore กัน');
+      await action();
+      const dashboard = await adaptiveScheduling.getDashboard();
+      setAdaptiveInsightDashboard(dashboard);
+      setInlineAdaptiveSuggestions(dashboard.suggestions.filter((item) => item.status === 'pending').slice(0, 4));
+      appendAssistant(successMessage);
+      setInlineAdaptiveFeedbackMessage(successMessage);
+      setInlineAdaptiveFeedbackStatus('success');
+    } catch (error) {
+      setInlineAdaptiveError(isAppCheckError(error) ? appCheckErrorMessage(error) : 'ดำเนินการกับคำแนะนำนี้ไม่สำเร็จ ตารางเดิมยังไม่ถูกเปลี่ยน กรุณาลองใหม่ได้ทันที');
+      setInlineAdaptiveFeedbackStatus('error');
     } finally {
+      inlineAdaptiveActionInFlightRef.current = false;
+      setInlineAdaptiveBusyKey('');
+      setBusy(false);
+    }
+  };
+
+  const confirmAction = async (targetMessageId: string, action: AssistantProposedAction) => {
+    if (confirmActionInFlightRef.current || busy || action.status !== 'pending') return;
+    confirmActionInFlightRef.current = true;
+    retryConfirmActionRef.current = {action, targetMessageId};
+    setConfirmationActionError('');
+    setConfirmationActionStatus('loading');
+    setBusy(true);
+    setSavingActionId(action.id);
+    try {
+      const result = await confirmAssistantAction(uid, action);
+      const stayInAssistant = action.entity === 'memory' || (action.entity === 'schedule' && action.payload.aiScheduled === true);
+      updateActionStatus(targetMessageId, 'confirmed', action);
+      appendAssistant(action.entity === 'memory'
+        ? 'จำการตั้งค่านี้ไว้ในเครื่องแล้วนะ ฉันจะนำไปใช้ตอนช่วยวางแผนครั้งถัดไป'
+        : stayInAssistant
+          ? 'บันทึกกิจกรรม Adaptive ลงตารางแล้ว และยังอยู่ในหน้าแชตนี้เพื่อให้คุณจัดรายการต่อได้เลย'
+          : 'บันทึกลง Firebase แล้วนะ เปิดหน้าที่เกี่ยวข้องต่อได้เลย');
+      setPendingNavigationPage(stayInAssistant ? '' : result.page);
+      setConfirmationActionStatus('success');
+    } catch (error) {
+      setConfirmationActionError(isAppCheckError(error) ? appCheckErrorMessage(error) : 'ยังบันทึกไม่สำเร็จ ข้อมูลเดิมยังไม่เปลี่ยน กรุณาลองอีกครั้งได้เลย');
+      setConfirmationActionStatus('error');
+    } finally {
+      confirmActionInFlightRef.current = false;
+      setSavingActionId('');
       setBusy(false);
     }
   };
@@ -920,6 +1434,56 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
   return (
     <UserShell active="smartlife_ai_assistant" edgeToEdge onNavigate={onNavigate} scroll={false}>
+      <AsyncActionOverlay
+        cancelLabel="ปิด"
+        errorMessage={adaptiveActivationError}
+        loadingMessage="กำลังเปิด Adaptive AI ตรวจงานค้าง และหาช่วงว่างจากเวลาปัจจุบัน"
+        onCancel={() => setAdaptiveActivationStatus('idle')}
+        onRequestClose={() => setAdaptiveActivationStatus('idle')}
+        onRetry={() => activateAdaptiveAi(true)}
+        onSuccessAnimationComplete={() => setAdaptiveActivationStatus('idle')}
+        slowMessage="กำลังตรวจตาราง กำหนดส่ง เวลานอน และภาระงานเพิ่มเติม…"
+        status={adaptiveActivationStatus}
+        successMessage="เปิดใช้งานแล้ว คำแนะนำที่พบถูกเตรียมไว้ให้ตรวจและยืนยัน"
+        title={adaptiveActivationStatus === 'success' ? 'Adaptive AI พร้อมใช้งาน' : adaptiveActivationStatus === 'error' ? 'เปิดใช้งานไม่สำเร็จ' : 'กำลังเตรียม Adaptive AI'}
+      />
+      <AsyncActionOverlay
+        cancelLabel="ปิด"
+        errorMessage={inlineAdaptiveError}
+        loadingMessage={inlineAdaptiveFeedbackMessage}
+        onCancel={() => setInlineAdaptiveFeedbackStatus('idle')}
+        onRequestClose={() => setInlineAdaptiveFeedbackStatus('idle')}
+        onRetry={() => {
+          const retry = retryInlineAdaptiveActionRef.current;
+          return retry ? runInlineAdaptiveAction(retry.key, retry.action, retry.title, retry.successMessage) : undefined;
+        }}
+        onSuccessAnimationComplete={() => setInlineAdaptiveFeedbackStatus('idle')}
+        slowMessage="กำลังตรวจ conflict กำหนดส่ง เวลาพัก และข้อมูลล่าสุดจาก Firebase…"
+        status={inlineAdaptiveFeedbackStatus}
+        successMessage={inlineAdaptiveFeedbackMessage}
+        title={inlineAdaptiveFeedbackTitle || 'Adaptive AI'}
+      />
+      <AsyncActionOverlay
+        cancelLabel="ปิด"
+        errorMessage={confirmationActionError}
+        loadingMessage="กำลังตรวจข้อมูลล่าสุดและบันทึกผ่าน SmartLife backend"
+        onCancel={() => setConfirmationActionStatus('idle')}
+        onRequestClose={() => setConfirmationActionStatus('idle')}
+        onRetry={() => {
+          const retry = retryConfirmActionRef.current;
+          return retry ? confirmAction(retry.targetMessageId, retry.action) : undefined;
+        }}
+        onSuccessAnimationComplete={() => {
+          setConfirmationActionStatus('idle');
+          const page = pendingNavigationPage;
+          setPendingNavigationPage('');
+          if (page) onNavigate(page);
+        }}
+        slowMessage="กำลังยืนยันสิทธิ์ ตรวจความซ้ำ และรอ Firebase ตอบกลับ…"
+        status={confirmationActionStatus}
+        successMessage="ตรวจสอบและบันทึกเรียบร้อยแล้ว"
+        title={confirmationActionStatus === 'success' ? 'บันทึกสำเร็จ' : confirmationActionStatus === 'error' ? 'บันทึกไม่สำเร็จ' : 'กำลังยืนยันรายการ'}
+      />
       {/* Refactored UI: keep the floating composer above the software keyboard. */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
@@ -979,7 +1543,14 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
           <View style={local.shortcutGrid}>
             {shortcuts.map(([icon, title, subtitle, target]) => (
-              <Pressable disabled={busy} key={title} onPress={() => sendMessage(shortcutPrompts[target] ?? title)} style={[local.shortcutCard, busy && local.disabled]}>
+              <Pressable disabled={busy} key={title} onPress={() => {
+                if (target === ADAPTIVE_AI_SHORTCUT) {
+                  setQuickAddOpen(true);
+                  setQuickAddCategory('adaptive');
+                  return;
+                }
+                void sendMessage(shortcutPrompts[target] ?? title);
+              }} style={[local.shortcutCard, target === ADAPTIVE_AI_SHORTCUT && local.shortcutCardAdaptive, busy && local.disabled]}>
                 <View style={local.shortcutIcon}><MaterialIcon color="#64835f" name={icon} size={17} /></View>
                 <View style={{flex: 1}}>
                   <Text style={local.shortcutTitle}>{title}</Text>
@@ -990,17 +1561,39 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           </View>
 
           {/* Added for AI Assistant: keep insights visible before and during a conversation. */}
-          <AssistantInsights data={weeklyInsights} onAsk={sendMessage} />
+          <AssistantInsights adaptiveDashboard={adaptiveInsightDashboard} data={weeklyInsights} onAsk={sendMessage} />
 
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} />
+              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} savingActionId={savingActionId} />
             ))}
+            <InlineAdaptivePanel
+              busyKey={inlineAdaptiveBusyKey}
+              onAccept={(suggestion) => void runInlineAdaptiveAction(
+                `accept-${suggestion.id}`,
+                () => adaptiveScheduling.accept(suggestion.id),
+                'กำลังยืนยันคำแนะนำ',
+                `ยืนยันเวลาใหม่ให้ “${suggestion.taskTitle}” แล้ว ตารางอัปเดตเรียบร้อยและยังย้อนกลับได้จากประวัติ`,
+              )}
+              onAlternative={(suggestion, startAt) => void runInlineAdaptiveAction(
+                `alternative-${suggestion.id}`,
+                () => adaptiveScheduling.chooseAlternative(suggestion.id, new Date(startAt)),
+                'กำลังตรวจเวลาอื่น',
+                `เปลี่ยนเวลาที่เสนอสำหรับ “${suggestion.taskTitle}” แล้ว ตรวจการ์ดและกดยืนยันได้ในแชตนี้`,
+              )}
+              onReject={(suggestion) => void runInlineAdaptiveAction(
+                `reject-${suggestion.id}`,
+                () => adaptiveScheduling.reject(suggestion.id),
+                'กำลังบันทึกการตัดสินใจ',
+                `ไม่ใช้เวลาที่เสนอสำหรับ “${suggestion.taskTitle}” และบันทึกผลไว้ให้ Adaptive หลีกเลี่ยงคำแนะนำแบบเดิมแล้ว`,
+              )}
+              suggestions={inlineAdaptiveSuggestions}
+            />
             {busy ? (
               <View style={local.thinking}>
                 <ActivityIndicator color="#668d65" />
-                <Text style={userStyles.muted}>กำลังดูข้อมูลจริงในระบบ...</Text>
+                <Text style={userStyles.muted}>{savingActionId ? 'กำลังตรวจสอบเวลาและบันทึกอย่างปลอดภัย...' : 'กำลังดูข้อมูลจริงในระบบ...'}</Text>
               </View>
             ) : null}
             <FocusSuggestions messages={visibleMessages} />
@@ -1038,7 +1631,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
               {selectedQuickAddCategory ? (
                 <>
                   {selectedQuickAddCategory.suggestions.map((item) => (
-                    <Pressable disabled={busy} key={item.title} onPress={() => sendMessage(item.prompt)} style={({pressed}) => [local.quickAddOption, pressed && local.pressed, busy && local.disabled]}>
+                    <Pressable disabled={busy} key={item.title} onPress={() => item.action === 'activate_adaptive' ? void activateAdaptiveAi() : void sendMessage(item.prompt)} style={({pressed}) => [local.quickAddOption, pressed && local.pressed, busy && local.disabled]}>
                       <View style={local.quickAddIcon}><MaterialIcon color="#5d8059" name={item.icon} size={19} /></View>
                       <View style={local.quickAddCopy}>
                         <Text style={local.quickAddOptionTitle}>{item.title}</Text>
@@ -1047,10 +1640,10 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                       <MaterialIcon color="#9aa595" name="arrow_forward_ios" size={14} />
                     </Pressable>
                   ))}
-                  <Pressable disabled={busy} onPress={() => selectedQuickAddCategory.id === 'ocr' ? openOcrShortcutEditor() : chooseQuickAdd(selectedQuickAddCategory.createPrompt)} style={({pressed}) => [local.quickAddCreate, pressed && local.pressed, busy && local.disabled]}>
+                  {selectedQuickAddCategory.id !== 'adaptive' ? <Pressable disabled={busy} onPress={() => selectedQuickAddCategory.id === 'ocr' ? openOcrShortcutEditor() : chooseQuickAdd(selectedQuickAddCategory.createPrompt)} style={({pressed}) => [local.quickAddCreate, pressed && local.pressed, busy && local.disabled]}>
                     <MaterialIcon color="#ffffff" name={selectedQuickAddCategory.id === 'ocr' ? 'settings' : 'add'} size={19} />
                     <Text style={local.quickAddCreateText}>{selectedQuickAddCategory.createLabel}</Text>
-                  </Pressable>
+                  </Pressable> : null}
                 </>
               ) : (
                 <>
@@ -1178,9 +1771,34 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 }
 
 const local = StyleSheet.create({
+  actionConfirmButton: {alignItems: 'center', backgroundColor: '#557d52', borderRadius: 14, boxShadow: '0 7px 16px rgba(72,111,68,.22)', flex: 1.35, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50, paddingHorizontal: 12},
+  actionConfirmText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 13},
   addShortcutButton: {alignItems: 'center', borderColor: '#cddac9', borderRadius: 14, borderStyle: 'dashed', borderWidth: 1, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 46},
   addShortcutText: {color: '#5d8059', fontFamily: 'Prompt_700Bold', fontSize: 12},
   actionCard: {alignSelf: 'stretch', marginTop: 8, padding: 14},
+  actionDurationChip: {backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 99, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 6},
+  actionDurationChipActive: {backgroundColor: '#668b62', borderColor: '#668b62'},
+  actionDurationChipText: {color: '#63715f', fontFamily: 'Prompt_600SemiBold', fontSize: 8},
+  actionDurationChipTextActive: {color: '#ffffff'},
+  actionDurationOptions: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8},
+  actionEditorDurationRow: {alignItems: 'flex-end', flexDirection: 'row', gap: 9},
+  actionEditorError: {color: '#a05e5e', fontFamily: 'Prompt_500Medium', fontSize: 10, lineHeight: 15, marginTop: 8},
+  actionEditorField: {flex: 1.35},
+  actionEditorFieldSmall: {flex: .8},
+  actionEditorHint: {color: '#73806f', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 8},
+  actionEditorHintBadge: {alignItems: 'center', backgroundColor: '#eaf3e7', borderRadius: 12, flexDirection: 'row', gap: 4, marginBottom: 1, paddingHorizontal: 8, paddingVertical: 8},
+  actionEditorHintBadgeText: {color: '#587454', fontFamily: 'Prompt_600SemiBold', fontSize: 8},
+  actionEditorInput: {backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 12, borderWidth: 1, color: '#2d3a31', fontFamily: 'Prompt_600SemiBold', fontSize: 11, minHeight: 42, paddingHorizontal: 10, paddingVertical: 8},
+  actionEditorLabel: {color: '#6f7c6b', fontFamily: 'Prompt_600SemiBold', fontSize: 9, marginBottom: 5},
+  actionEditorPanel: {backgroundColor: '#f5f9f2', borderColor: '#dce8d7', borderRadius: 16, borderWidth: 1, marginTop: 8, padding: 11},
+  actionPickerButton: {alignItems: 'center', backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 6, minHeight: 42, paddingHorizontal: 9, paddingVertical: 8},
+  actionPickerValue: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_600SemiBold', fontSize: 10},
+  actionEditorRow: {flexDirection: 'row', gap: 8, marginBottom: 9},
+  actionEditorToggle: {alignItems: 'center', backgroundColor: '#eef5eb', borderColor: '#d8e5d4', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 44, paddingHorizontal: 10},
+  actionEditorToggleActive: {backgroundColor: '#668b62', borderColor: '#668b62'},
+  actionEditorToggleText: {color: '#547151', flex: 1, fontFamily: 'Prompt_700Bold', fontSize: 10},
+  actionEditorToggleTextActive: {color: '#ffffff'},
+  actionEditorWrap: {marginTop: 10},
   actionHeader: {alignItems: 'center', flexDirection: 'row', gap: 10},
   actionIcon: {alignItems: 'center', backgroundColor: '#e8f1e5', borderRadius: 18, height: 36, justifyContent: 'center', width: 36},
   assistantBubble: {backgroundColor: '#ffffff', borderColor: '#e4eadf', borderTopLeftRadius: 8, borderWidth: 1, boxShadow: '0 5px 14px rgba(45,58,49,.08)'},
@@ -1232,6 +1850,33 @@ const local = StyleSheet.create({
   heroTitle: {color: '#ffffff', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, lineHeight: 26},
   input: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 14, maxHeight: 100, minHeight: 42, paddingHorizontal: 5, paddingVertical: 8},
   inputFade: {bottom: 0, height: 145, left: 0, position: 'absolute', right: 0},
+  inlineAcceptButton: {alignItems: 'center', backgroundColor: '#587f55', borderRadius: 13, flex: 1.35, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 45, paddingHorizontal: 10},
+  inlineAcceptText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  inlineAdaptiveActions: {flexDirection: 'row', gap: 8, marginTop: 12},
+  inlineAdaptiveArrow: {alignItems: 'center', backgroundColor: '#e6f0e2', borderRadius: 16, height: 32, justifyContent: 'center', width: 32},
+  inlineAdaptiveCard: {backgroundColor: 'rgba(255,255,255,.94)', borderColor: '#dfe9db', borderRadius: 20, borderWidth: 1, boxShadow: '0 6px 15px rgba(56,73,51,.08)', marginTop: 10, padding: 13},
+  inlineAdaptiveCategory: {backgroundColor: '#e9f3e5', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5},
+  inlineAdaptiveCategoryText: {color: '#557451', fontFamily: 'Prompt_700Bold', fontSize: 9},
+  inlineAdaptiveConfidence: {color: '#6f7f6c', fontFamily: 'Prompt_600SemiBold', fontSize: 9},
+  inlineAdaptiveCount: {alignItems: 'center', backgroundColor: '#e6f0e2', borderRadius: 15, height: 30, justifyContent: 'center', width: 30},
+  inlineAdaptiveCountText: {color: '#52734f', fontFamily: 'Prompt_800ExtraBold', fontSize: 11},
+  inlineAdaptiveHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},
+  inlineAdaptiveHeaderIcon: {alignItems: 'center', backgroundColor: '#5f845b', borderRadius: 16, height: 36, justifyContent: 'center', width: 36},
+  inlineAdaptiveHeading: {color: '#2e3c2a', fontFamily: 'Prompt_800ExtraBold', fontSize: 14},
+  inlineAdaptiveHint: {color: '#758272', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 1},
+  inlineAdaptiveLearning: {color: '#70806c', fontFamily: 'Prompt_500Medium', fontSize: 9, lineHeight: 14, marginTop: 7},
+  inlineAdaptivePanel: {borderColor: '#dbe6d6', borderRadius: 24, borderWidth: 1, boxShadow: '0 8px 22px rgba(47,64,43,.09)', marginTop: 4, padding: 12},
+  inlineAdaptiveReason: {backgroundColor: '#f2f7ef', borderRadius: 13, color: '#50604d', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 16, marginTop: 10, padding: 10},
+  inlineAdaptiveTimeLabel: {color: '#8a9586', fontFamily: 'Prompt_500Medium', fontSize: 8},
+  inlineAdaptiveTimeRow: {alignItems: 'center', backgroundColor: '#f7f9f5', borderRadius: 14, flexDirection: 'row', gap: 8, marginTop: 9, padding: 10},
+  inlineAdaptiveTimeValue: {color: '#354431', fontFamily: 'Prompt_700Bold', fontSize: 10, lineHeight: 15, marginTop: 2},
+  inlineAdaptiveTitle: {color: '#2d3a29', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginTop: 9},
+  inlineAdaptiveTitleRow: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
+  inlineAlternativeButton: {alignItems: 'center', backgroundColor: '#f3f6ef', borderColor: '#dce6d7', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 5, paddingHorizontal: 9, paddingVertical: 7},
+  inlineAlternativeList: {flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 9},
+  inlineAlternativeText: {color: '#557052', fontFamily: 'Prompt_600SemiBold', fontSize: 9},
+  inlineRejectButton: {alignItems: 'center', backgroundColor: '#edf1e9', borderRadius: 13, flex: 1, justifyContent: 'center', minHeight: 45, paddingHorizontal: 10},
+  inlineRejectText: {color: '#687363', fontFamily: 'Prompt_700Bold', fontSize: 10},
   historyDate: {color: '#9aa296', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 3},
   historyDelete: {alignItems: 'center', backgroundColor: '#f7eeee', borderRadius: 15, height: 32, justifyContent: 'center', width: 32},
   historyIcon: {alignItems: 'center', backgroundColor: '#eaf2e7', borderRadius: 15, height: 40, justifyContent: 'center', width: 40},
@@ -1284,6 +1929,7 @@ const local = StyleSheet.create({
   // Refactored UI: a single seamless surface fills the entire screen without an outer frame.
   shell: {backgroundColor: '#f4f7f4', flex: 1},
   shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 24, flexDirection: 'row', gap: 9, minHeight: 74, padding: 12, width: '48.5%'},
+  shortcutCardAdaptive: {backgroundColor: '#eef6ea', borderColor: '#bfd2b9', borderWidth: 1},
   shortcutGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 9},
   shortcutEditorCard: {backgroundColor: '#f7faf5', borderColor: '#e2e9de', borderRadius: 16, borderWidth: 1, gap: 8, padding: 11},
   shortcutEditorHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
@@ -1295,6 +1941,9 @@ const local = StyleSheet.create({
   shortcutSubtitle: {color: '#8a9585', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 2},
   shortcutTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
   statusConfirmed: {backgroundColor: '#e8f1e5'},
+  statusIcon: {alignItems: 'center', borderRadius: 15, height: 27, justifyContent: 'center', width: 27},
+  statusIconConfirmed: {backgroundColor: '#5d8359'},
+  statusIconRejected: {backgroundColor: '#9a6969'},
   statusPill: {alignItems: 'center', alignSelf: 'flex-start', borderRadius: 99, flexDirection: 'row', gap: 6, marginTop: 12, paddingHorizontal: 10, paddingVertical: 6},
   statusRejected: {backgroundColor: '#f4e9e9'},
   statusText: {fontFamily: 'Prompt_700Bold', fontSize: 12},

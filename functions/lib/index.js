@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = void 0;
+exports.processLineBankNotification = exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
 exports.addReceiptReview = addReceiptReview;
 const vision_1 = require("@google-cloud/vision");
 const app_1 = require("firebase-admin/app");
@@ -13,13 +13,22 @@ const params_1 = require("firebase-functions/params");
 const iapp_document_1 = require("./document-ocr/iapp-document");
 const deterministic_receipt_1 = require("./receipt-parsers/deterministic-receipt");
 const gemini_document_timestamp_1 = require("./receipt-parsers/gemini-document-timestamp");
+const gemini_receipt_1 = require("./receipt-parsers/gemini-receipt");
 const iapp_receipt_1 = require("./receipt-parsers/iapp-receipt");
 const receipt_timestamp_resolution_1 = require("./receipt-parsers/receipt-timestamp-resolution");
 const university_router_1 = require("./schedule-parsers/university-router");
 const gemini_fallback_1 = require("./schedule-parsers/gemini-fallback");
+const gemini_course_exam_review_1 = require("./schedule-parsers/gemini-course-exam-review");
 const vision_course_table_1 = require("./schedule-parsers/vision-course-table");
 const vision_exam_table_1 = require("./schedule-parsers/vision-exam-table");
 const vision_grid_table_1 = require("./schedule-parsers/vision-grid-table");
+var line_import_1 = require("./line-import");
+Object.defineProperty(exports, "cleanupExpiredLinePendingReviews", { enumerable: true, get: function () { return line_import_1.cleanupExpiredLinePendingReviews; } });
+Object.defineProperty(exports, "confirmLineTransaction", { enumerable: true, get: function () { return line_import_1.confirmLineTransaction; } });
+Object.defineProperty(exports, "enqueueLinePendingReview", { enumerable: true, get: function () { return line_import_1.enqueueLinePendingReview; } });
+Object.defineProperty(exports, "rejectLinePendingReview", { enumerable: true, get: function () { return line_import_1.rejectLinePendingReview; } });
+Object.defineProperty(exports, "reportLineListenerStatus", { enumerable: true, get: function () { return line_import_1.reportLineListenerStatus; } });
+Object.defineProperty(exports, "updateLineConsent", { enumerable: true, get: function () { return line_import_1.updateLineConsent; } });
 if (!(0, app_1.getApps)().length)
     (0, app_1.initializeApp)();
 const db = (0, firestore_1.getFirestore)();
@@ -65,6 +74,7 @@ ANSWER RELEVANCE AND COMPLETENESS
 - Cover every explicit part of a multi-part request. Use a separate short section or numbered item for each part so none is silently ignored.
 - If the user asks what to do first, choose one specific saved task, subject, or action as the first priority and explain the evidence in one sentence. Then give the next 1-3 steps. Never answer a priority question with only a capabilities message, login instruction, generic productivity advice, or a list that avoids making a choice.
 - When records are insufficient to choose between saved tasks, say exactly what is missing, then still give a useful conditional rule and one immediate action the user can take now.
+- Treat an unexplained number or identifier as ambiguous. For example, in "ช่วยวางแผน 1101913", do not guess whether 1101913 is a course code, date, money amount, room, or task ID. Ask one concise question about what the number represents and what outcome the user wants.
 - The latest user message has priority over earlier conversation. Use earlier turns only to fill omitted context. If the latest turn adds a duration, amount, category, deadline, or constraint, revise the plan and visibly incorporate it.
 - A stored financial scenario is inactive unless the latest message clearly continues it. Never answer a schedule, task, exam, OCR, receipt, general-advice, or new unrelated question with numbers from an older financial scenario.
 - Do not repeat a previous answer verbatim or nearly verbatim. A repeated or rephrased question is a request to improve, clarify, or recalculate the answer.
@@ -646,7 +656,23 @@ async function parseSchedule(text, annotation, apiKey, imageDataUrl) {
     let reviewedSemesterEnd = null;
     let reviewedSemesterStart = null;
     let usedTemporalReview = false;
+    let reviewedCourseCount = 0;
+    let reviewedExamCount = 0;
     if (apiKey && imageDataUrl && enrichedEntries.length) {
+        try {
+            const review = await (0, gemini_course_exam_review_1.reviewScheduleCoursesAndExamsWithGemini)({
+                apiKey,
+                entries: enrichedEntries,
+                imageDataUrl,
+                rawText: text,
+            });
+            enrichedEntries = review.entries;
+            reviewedCourseCount = review.appliedCourseCount;
+            reviewedExamCount = review.appliedExamCount;
+        }
+        catch (error) {
+            console.warn("[Schedule OCR] Gemini course/exam review failed; keeping deterministic fields.", error);
+        }
         try {
             const review = await (0, gemini_fallback_1.reviewScheduleTemporalFieldsWithGemini)({
                 apiKey,
@@ -691,7 +717,10 @@ async function parseSchedule(text, annotation, apiKey, imageDataUrl) {
         parserConfidence: routed.confidence,
         parserSource: routed.strategyId,
         usedHighResolutionVision: false,
-        usedLlm: usedTemporalReview,
+        usedCourseExamReview: reviewedCourseCount > 0 || reviewedExamCount > 0,
+        reviewedCourseCount,
+        reviewedExamCount,
+        usedLlm: usedTemporalReview || reviewedCourseCount > 0 || reviewedExamCount > 0,
         usedTemporalReview,
     };
 }
@@ -754,8 +783,13 @@ function mergeLowConfidenceIappReceipt(iappParsed, fallback) {
         fallback.items.length) {
         merged.items = fallback.items;
     }
-    if (!merged.category && fallback.category)
-        merged.category = fallback.category;
+    // iApp deliberately uses "Others" as a neutral placeholder. It must not
+    // hide the richer merchant/item categorisation produced from the OCR text.
+    const providerCategory = String(merged.category ?? '').trim();
+    const fallbackCategory = String(fallback.category ?? '').trim();
+    if ((!providerCategory || /^others?$/i.test(providerCategory)) && fallbackCategory) {
+        merged.category = fallbackCategory;
+    }
     if (!merged.reference && fallback.reference)
         merged.reference = fallback.reference;
     return {
@@ -948,13 +982,84 @@ exports.analyzeScan = (0, https_1.onCall)({
                     },
                     type: "receipt",
                 };
-                const evidenceText = rawText || iapp.rawOcr;
+                // Timestamp digits are small and are frequently confused by a
+                // single OCR provider (for example 2569 -> 2016). Fuse iApp's two
+                // text sources with Google Vision before deterministic/Gemini review.
+                let receiptVisionText = "";
+                try {
+                    const receiptVisionResult = await ensureVisionResult();
+                    receiptVisionText = receiptVisionResult.fullTextAnnotation?.text?.trim() ?? "";
+                    if (provider === "iapp-document")
+                        provider = "iapp-document+google-vision";
+                    providerConfidence = {
+                        ...providerConfidence,
+                        googleVision: averageVisionConfidence(receiptVisionResult.fullTextAnnotation, receiptVisionText),
+                        timestampFusion: true,
+                    };
+                    rawProviderResult = {
+                        ...rawProviderResult,
+                        googleVision: {
+                            characterCount: receiptVisionText.length,
+                            usedForTimestamp: true,
+                        },
+                    };
+                }
+                catch (error) {
+                    providerError = [providerError, "Google Vision timestamp review unavailable"]
+                        .filter(Boolean).join("; ");
+                    console.warn("[Receipt OCR] Google Vision timestamp review failed; keeping iApp and Gemini.", error);
+                }
+                const receiptEvidenceSources = [rawText, iapp.rawOcr, receiptVisionText]
+                    .map((value) => value.trim())
+                    .filter(Boolean)
+                    .filter((value, index, values) => values.indexOf(value) === index);
+                const evidenceText = receiptEvidenceSources.join("\n\n");
+                rawText = evidenceText || rawText;
                 const fallback = parseReceiptFallback(evidenceText);
                 rawParsed = {
                     ...mergeLowConfidenceIappReceipt(iapp.parsed, fallback),
                     provider,
                 };
+                if (/^others?$/i.test(String(rawParsed.category ?? "")) &&
+                    /^(?:bank_slip|e_wallet)$/i.test(String(rawParsed.documentType ?? ""))) {
+                    rawParsed.category = "Transfers";
+                }
                 rawParsed = await applyGeminiDocumentTimestamp(rawParsed, evidenceText || rawText, geminiOcrApiKey.value(), await ensureImageDataUrl());
+                // Keep deterministic/iApp totals and timestamps authoritative, then
+                // use Gemini image review for semantics and explicit item discounts.
+                try {
+                    const receiptImageDataUrl = await ensureImageDataUrl();
+                    if (receiptImageDataUrl) {
+                        const semanticReceipt = await (0, gemini_receipt_1.extractReceiptWithGemini)(evidenceText, geminiOcrApiKey.value(), receiptImageDataUrl);
+                        if (/^others?$/i.test(String(rawParsed.category ?? "")) &&
+                            !/^others?$/i.test(semanticReceipt.category)) {
+                            rawParsed.category = semanticReceipt.category;
+                        }
+                        if (!rawParsed.documentType)
+                            rawParsed.documentType = semanticReceipt.documentType;
+                        const currentItems = Array.isArray(rawParsed.items) ? rawParsed.items : [];
+                        const semanticItems = semanticReceipt.items;
+                        const printedTotal = [
+                            rawParsed.paidAmount,
+                            rawParsed.totalAmount,
+                            rawParsed.total,
+                            rawParsed.amount,
+                        ].map(finiteAmount).find((value) => value !== null) ?? null;
+                        const semanticNet = Number(semanticItems.reduce((sum, item) => sum + item.totalPrice, 0).toFixed(2));
+                        const semanticMatchesTotal = printedTotal === null ||
+                            Math.abs(semanticNet - printedTotal) <= Math.max(2, printedTotal * 0.08);
+                        const semanticAddsDiscounts = semanticItems.some((item) => item.discount !== null && item.discount > 0);
+                        if (semanticItems.length &&
+                            semanticMatchesTotal &&
+                            (!currentItems.length || semanticAddsDiscounts || semanticItems.length > currentItems.length)) {
+                            rawParsed.items = semanticItems;
+                            rawParsed.itemReviewSource = "gemini-image-ocr-review";
+                        }
+                    }
+                }
+                catch (error) {
+                    console.warn("[Receipt OCR] Gemini semantic/item review failed.", error);
+                }
             }
             catch (error) {
                 const receiptError = error instanceof iapp_receipt_1.IappReceiptError ?
@@ -974,20 +1079,44 @@ exports.analyzeScan = (0, https_1.onCall)({
             }
         }
         else {
-            rawParsed = await parseSchedule(rawText, provider === "google-vision-fallback" ?
-                (await ensureVisionResult()).fullTextAnnotation :
-                undefined, geminiOcrApiKey.value(), await ensureImageDataUrl());
+            // Schedule documents need both OCR text and spatial coordinates.
+            // iApp contributes broad text recovery, while Google Vision preserves
+            // the timetable/course/exam row and column relationships.
+            const scheduleVisionResult = await ensureVisionResult();
+            const visionText = scheduleVisionResult.fullTextAnnotation?.text?.trim() ?? "";
+            const iappText = rawText.trim();
+            const fusedScheduleText = [
+                iappText ? `--- iApp OCR ---\n${iappText}` : "",
+                visionText && visionText !== iappText ? `--- Google Vision OCR ---\n${visionText}` : "",
+            ].filter(Boolean).join("\n\n");
+            if (provider === "iapp-document")
+                provider = "iapp-document+google-vision";
+            providerConfidence = {
+                ...providerConfidence,
+                googleVision: averageVisionConfidence(scheduleVisionResult.fullTextAnnotation, visionText),
+                scheduleFusion: true,
+            };
+            rawProviderResult = {
+                ...rawProviderResult,
+                googleVision: {
+                    characterCount: visionText.length,
+                    usedSpatialAnnotation: true,
+                },
+            };
+            if (visionText) {
+                ocrConfidence = Math.max(ocrConfidence, averageVisionConfidence(scheduleVisionResult.fullTextAnnotation, visionText));
+            }
+            rawText = fusedScheduleText || rawText;
+            rawParsed = await parseSchedule(rawText, scheduleVisionResult.fullTextAnnotation, geminiOcrApiKey.value(), await ensureImageDataUrl());
             const entries = Array.isArray(rawParsed.entries) ? rawParsed.entries : [];
-            if (!entries.length && provider === "iapp-document") {
-                const visionText = await ensureVisionText();
+            if (!entries.length && iappText && visionText) {
                 if (visionText) {
-                    console.warn("[Schedule OCR] iApp text produced no entries; retrying with Google Vision.");
+                    console.warn("[Schedule OCR] Fused text produced no entries; retrying with Vision text only.");
                     provider = "google-vision-fallback";
-                    providerError = "iApp Document OCR text could not be parsed as a schedule";
+                    providerError = "Combined iApp and Vision OCR text could not be parsed as a schedule";
                     rawText = visionText;
-                    const result = await ensureVisionResult();
-                    ocrConfidence = averageVisionConfidence(result.fullTextAnnotation, rawText);
-                    rawParsed = await parseSchedule(rawText, result.fullTextAnnotation, geminiOcrApiKey.value(), await ensureImageDataUrl());
+                    ocrConfidence = averageVisionConfidence(scheduleVisionResult.fullTextAnnotation, rawText);
+                    rawParsed = await parseSchedule(rawText, scheduleVisionResult.fullTextAnnotation, geminiOcrApiKey.value(), await ensureImageDataUrl());
                 }
             }
         }
@@ -1064,10 +1193,8 @@ function reviewedReceiptItems(value) {
         if (!name) {
             throw new https_1.HttpsError("invalid-argument", `Receipt item ${index + 1} needs a name.`);
         }
-        const quantity = reviewedReceiptNumber(item.quantity, "quantity", 100000);
-        if (quantity <= 0) {
-            throw new https_1.HttpsError("invalid-argument", "Receipt item quantity must be positive.");
-        }
+        const reviewedQuantity = reviewedReceiptNumber(item.quantity, "quantity", 100000);
+        const quantity = reviewedQuantity > 0 ? reviewedQuantity : 1;
         return {
             discountAmount: reviewedReceiptNumber(item.discountAmount, "discountAmount", 100000000),
             // A discount can be represented by OCR as its own negative line item.
@@ -1440,6 +1567,10 @@ exports.smartLifeAssistantReply = (0, https_1.onCall)({
     const responseModes = new Set(["brainstorm", "coach", "compare", "direct", "explain", "plan", "summarize"]);
     const requestedResponseMode = assistantString(request.data?.responseMode, 20);
     const responseMode = responseModes.has(requestedResponseMode) ? requestedResponseMode : "direct";
+    const clientDynamicContext = request.data?.clientDynamicContext &&
+        typeof request.data.clientDynamicContext === "object" ?
+        request.data.clientDynamicContext :
+        null;
     const history = Array.isArray(request.data?.history) ?
         request.data.history
             .slice(-12)
@@ -1648,36 +1779,64 @@ exports.smartLifeAssistantReply = (0, https_1.onCall)({
             recentTransactions: transactions.slice(0, 30),
         },
         dataAvailability,
+        dynamic: clientDynamicContext,
         notes,
         ocrResults,
         schedules,
         tasks,
     };
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": geminiApiKey.value(),
-        },
-        body: JSON.stringify({
-            generation_config: {
-                max_output_tokens: 3000,
-                thinking_level: "low",
+    const configuredModel = assistantString(process.env.GEMINI_ASSISTANT_MODEL, 80);
+    const modelCandidates = [...new Set([
+            configuredModel,
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+        ].filter(Boolean))];
+    let response = null;
+    let payload = {};
+    let selectedModel = modelCandidates[0];
+    for (const [index, model] of modelCandidates.entries()) {
+        selectedModel = model;
+        response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": geminiApiKey.value(),
             },
-            input: `SMARTLIFE_USER_DATA:\n${JSON.stringify(smartLifeUserData)}\n\nSTRUCTURED_CONVERSATION_STATE:\n${JSON.stringify(structuredConversationState)}\n\nRECENT_CONVERSATION:\n${JSON.stringify(history)}\n\nRESPONSE_MODE_HINT:\n${responseMode}\n\nUSER_MESSAGE:\n${message}`,
-            model: process.env.GEMINI_ASSISTANT_MODEL ?? "gemini-3.6-flash",
-            response_format: {
-                mime_type: "application/json",
-                schema: SMARTLIFE_ASSISTANT_RESPONSE_SCHEMA,
-                type: "text",
-            },
-            store: false,
-            system_instruction: SMARTLIFE_ASSISTANT_SYSTEM_PROMPT,
-        }),
-    });
-    const payload = await response.json();
+            body: JSON.stringify({
+                generation_config: {
+                    max_output_tokens: 3000,
+                    thinking_level: "low",
+                },
+                input: `SMARTLIFE_USER_DATA:\n${JSON.stringify(smartLifeUserData)}\n\nSTRUCTURED_CONVERSATION_STATE:\n${JSON.stringify(structuredConversationState)}\n\nRECENT_CONVERSATION:\n${JSON.stringify(history)}\n\nRESPONSE_MODE_HINT:\n${responseMode}\n\nUSER_MESSAGE:\n${message}`,
+                model,
+                response_format: {
+                    mime_type: "application/json",
+                    schema: SMARTLIFE_ASSISTANT_RESPONSE_SCHEMA,
+                    type: "text",
+                },
+                store: false,
+                system_instruction: SMARTLIFE_ASSISTANT_SYSTEM_PROMPT,
+            }),
+        });
+        payload = await response.json();
+        if (response.ok || response.status !== 404 || index === modelCandidates.length - 1)
+            break;
+        console.warn("SmartLife Assistant model unavailable; trying fallback.", {
+            model,
+            status: response.status,
+            uid,
+        });
+    }
+    if (!response) {
+        throw new https_1.HttpsError("unavailable", "SmartLife AI could not start a Gemini request.", {
+            reason: "gemini-service",
+        });
+    }
     if (!response.ok) {
         console.error("SmartLife Assistant Gemini request failed.", {
+            detail: assistantString(payload.error?.message, 240),
+            model: selectedModel,
             status: response.status,
             uid,
         });
@@ -1689,6 +1848,12 @@ exports.smartLifeAssistantReply = (0, https_1.onCall)({
         if (response.status === 401 || response.status === 403) {
             throw new https_1.HttpsError("failed-precondition", "Gemini credentials are not configured correctly.", {
                 reason: "gemini-credentials",
+            });
+        }
+        if (response.status === 404) {
+            throw new https_1.HttpsError("unavailable", "No configured Gemini model is currently available.", {
+                reason: "gemini-model",
+                status: response.status,
             });
         }
         throw new https_1.HttpsError("unavailable", "SmartLife AI is temporarily unavailable.", {
@@ -1921,5 +2086,24 @@ exports.fanOutAnnouncement = (0, firestore_2.onDocumentCreated)({ document: "ann
         });
         await batch.commit();
     }));
+});
+exports.processLineBankNotification = (0, https_1.onCall)({ region }, async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid)
+        throw new https_1.HttpsError("unauthenticated", "Please sign in before importing a bank notification.");
+    const text = requireString(request.data?.text, "text");
+    if (request.data?.parsed) {
+        const docRef = db.collection("users").doc(uid).collection("bankNotifications").doc();
+        await docRef.set({
+            ...request.data.parsed,
+            rawText: text.slice(0, 5000),
+            ownerId: uid,
+            status: "pending",
+            createdAt: firestore_1.FieldValue.serverTimestamp(),
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+        return { success: true, docId: docRef.id };
+    }
+    return { success: true, parsed: null };
 });
 //# sourceMappingURL=index.js.map

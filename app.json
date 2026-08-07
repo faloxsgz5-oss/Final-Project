@@ -13,6 +13,7 @@
     },
     "android": {
       "package": "com.smartlife.student",
+      "versionCode": 2,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
@@ -23,7 +24,8 @@
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -36,10 +38,24 @@
       "@react-native-firebase/app",
       "@react-native-firebase/app-check",
       [
+        "expo-notifications",
+        {
+          "color": "#5F875F",
+          "defaultChannel": "adaptive-scheduling"
+        }
+      ],
+      [
         "@react-native-voice/voice",
         {
           "microphonePermission": "อนุญาตให้ SmartLife ใช้ไมโครโฟนเพื่อพิมพ์ข้อความจากเสียง",
           "speechRecognitionPermission": "อนุญาตให้ SmartLife แปลงเสียงพูดเป็นข้อความ"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#6F8F6D",
+          "defaultChannel": "smartlife-deadlines"
         }
       ],
       [

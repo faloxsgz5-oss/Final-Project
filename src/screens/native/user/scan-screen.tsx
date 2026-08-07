@@ -351,6 +351,13 @@ function receiptMoney(value: number | null) {
       }).format(value);
 }
 
+function receiptPriceBeforeDiscount(item: ReceiptItem) {
+  if (item.totalPrice === null) return null;
+  return item.discount !== null
+    ? Number((item.totalPrice + item.discount).toFixed(2))
+    : item.totalPrice;
+}
+
 // Refactored UI: finance scans use a focused receipt upload and review flow.
 function ReceiptScanDashboard({
   confirmAndSave,
@@ -644,13 +651,18 @@ function ReceiptScanDashboard({
                         ) : null}
                         {item.discount !== null ? (
                           <Text style={receiptStyles.productDiscount}>
-                            {`\u0e25\u0e14 \u0e3f${receiptMoney(item.discount)}`}
+                            {`ก่อนลด ฿${receiptMoney(receiptPriceBeforeDiscount(item))} · ส่วนลด ฿${receiptMoney(item.discount)}`}
                           </Text>
                         ) : null}
                       </View>
-                      <Text style={receiptStyles.productPrice}>
-                        ฿{receiptMoney(item.totalPrice)}
-                      </Text>
+                      <View style={{ alignItems: "flex-end" }}>
+                        <Text style={receiptStyles.productPrice}>
+                          ฿{receiptMoney(item.totalPrice)}
+                        </Text>
+                        {item.discount !== null ? (
+                          <Text style={receiptStyles.productDiscount}>ราคาคงเหลือ</Text>
+                        ) : null}
+                      </View>
                     </View>
                   ))}
                 </View>
@@ -1251,7 +1263,11 @@ export default function ScanScreen({
           itemIndex === index
             ? {
                 ...item,
-                [key]: key === "name" ? value : receiptInputNumber(value),
+                [key]: key === "name"
+                  ? value
+                  : key === "quantity" && !value.trim()
+                    ? 1
+                    : receiptInputNumber(value),
               }
             : item,
         ),
@@ -1383,7 +1399,11 @@ export default function ScanScreen({
       });
       setTimeout(() => {
         handleClearData();
-        onNavigate(saved.destination);
+        onNavigate(
+          result.scanType === "receipt"
+            ? "smartlife_scan_schedule"
+            : saved.destination,
+        );
       }, 1050);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1740,7 +1760,7 @@ export default function ScanScreen({
                             <View style={localStyles.receiptItemDiscountRow}>
                               <MaterialIcon color={C.sage} name="sell" size={13} />
                               <Text style={localStyles.receiptItemDiscountText}>
-                                {`\u0e25\u0e14 \u0e3f${receiptMoney(item.discount)} \u00b7 \u0e23\u0e32\u0e04\u0e32\u0e17\u0e35\u0e48\u0e41\u0e2a\u0e14\u0e07\u0e40\u0e1b\u0e47\u0e19\u0e23\u0e32\u0e04\u0e32\u0e2a\u0e38\u0e17\u0e18\u0e34\u0e41\u0e25\u0e49\u0e27`}
+                                {`ราคาก่อนลด ฿${receiptMoney(receiptPriceBeforeDiscount(item))} · ส่วนลด ฿${receiptMoney(item.discount)} · คงเหลือ ฿${receiptMoney(item.totalPrice)}`}
                               </Text>
                             </View>
                           ) : null}
@@ -1918,20 +1938,33 @@ export default function ScanScreen({
                               value={textValue(entry.endTime, "")}
                             />
                           </View>
-                          <SmallInput
-                            label="สอบกลางภาค"
-                            onChangeText={(value) =>
-                              updateEntry(index, "midtermExam", value)
-                            }
-                            value={textValue(entry.midtermExam, "")}
-                          />
-                          <SmallInput
-                            label="สอบประจำภาค"
-                            onChangeText={(value) =>
-                              updateEntry(index, "finalExam", value)
-                            }
-                            value={textValue(entry.finalExam, "")}
-                          />
+                          {textValue(entry.midtermExam, "").trim() ||
+                          textValue(entry.finalExam, "").trim() ? (
+                            <>
+                              <View style={localStyles.examSectionHeader}>
+                                <View style={localStyles.examSectionIcon}><MaterialIcon color={C.sage} name="assignment" size={16} /></View>
+                                <View style={{flex: 1}}><Text style={localStyles.examSectionTitle}>กำหนดการสอบ</Text><Text style={localStyles.examSectionSub}>แสดงเฉพาะวันสอบที่ตรวจพบจากภาพและ OCR</Text></View>
+                              </View>
+                              {textValue(entry.midtermExam, "").trim() ? (
+                                <SmallInput
+                                  label="สอบกลางภาค"
+                                  onChangeText={(value) =>
+                                    updateEntry(index, "midtermExam", value)
+                                  }
+                                  value={textValue(entry.midtermExam, "")}
+                                />
+                              ) : null}
+                              {textValue(entry.finalExam, "").trim() ? (
+                                <SmallInput
+                                  label="สอบปลายภาค"
+                                  onChangeText={(value) =>
+                                    updateEntry(index, "finalExam", value)
+                                  }
+                                  value={textValue(entry.finalExam, "")}
+                                />
+                              ) : null}
+                            </>
+                          ) : null}
                         </View>
                       </View>
                     ))
@@ -2871,6 +2904,10 @@ const localStyles = StyleSheet.create({
   },
   semesterSub: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1 },
   semesterTitle: { color: C.pine, fontFamily: F.b, fontSize: 12 },
+  examSectionHeader: {alignItems: 'center', backgroundColor: '#f2f6ef', borderRadius: 12, flexDirection: 'row', gap: 8, marginTop: 7, padding: 9},
+  examSectionIcon: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
+  examSectionSub: {color: C.muted, fontFamily: F.r, fontSize: 7, marginTop: 1},
+  examSectionTitle: {color: C.pine, fontFamily: F.b, fontSize: 10},
   termOption: {
     alignItems: "center",
     borderRadius: 10,

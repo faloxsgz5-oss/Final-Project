@@ -39,8 +39,8 @@ function examCountdownPlan(days: number) {
 }
 
 export function isReceiptImageLookupRequest(message: string) {
-  return /(สลิป|ใบเสร็จ|receipt|payment slip)/i.test(message) &&
-    /(ล่าสุด|รูป|ภาพ|ocr|อ่าน|ดู|วันที่|เวลา|จำนวนเงิน|ร้านค้า)/i.test(message);
+  return /(บิล|ใบเสร็จ|สลิป|ocr|receipt|payment slip)/i.test(message) &&
+    /(สรุป|ยอด|รวม|ocr|ล่าสุด|ดึง|อ่าน|สแกน|ทำรายการ|บันทึก)/i.test(message);
 }
 
 export function selfContainedAssistantFallback(message: string) {

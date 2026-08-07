@@ -131,6 +131,10 @@ function readWordTable(annotation: unknown) {
   const configuredWidth = (annotation as VisionAnnotation | null)?.pages?.[0]?.width;
   const width = Number(configuredWidth ?? Math.max(...words.map((word) => word.right)));
   const tableLines = lines.filter((line) => line.cy > title.cy);
+  const groupColumnX = tableLines
+    .flatMap((line) => line.words)
+    .filter((word) => GROUP_HEADER.test(word.text))
+    .sort((first, second) => first.cy - second.cy)[0]?.left ?? width * .7;
   const anchors = tableLines.flatMap((line) => {
     const leftText = normal(line.words.filter((word) => word.cx < width * .19).map((word) => word.text).join(" "));
     const codes = courseCodes(leftText);
@@ -140,7 +144,7 @@ function readWordTable(annotation: unknown) {
   return anchors.flatMap((anchor, index) => {
     const nextTop = anchors[index + 1]?.line.top ?? Number.POSITIVE_INFINITY;
     const rowWords = words.filter((word) => word.cy >= anchor.line.top - 2 && word.cy < nextTop)
-      .filter((word) => word.cx >= width * .14 && word.cx < width * .7);
+      .filter((word) => word.cx >= width * .14 && word.right < groupColumnX - 4);
     const nameLines = groupWordLines(rowWords)
       .map((line) => normal(line.text))
       .map((line) => line.replace(COURSE_MATCH, " ").replace(/^\s*[-,]\s*\d{1,3}\s*/, "").trim())

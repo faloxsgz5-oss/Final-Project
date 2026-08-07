@@ -12,6 +12,7 @@ export function isSavingsPlanningRequest(message: string) {
 
 export function chooseAssistantResponseMode(message: string): AssistantResponseMode {
   const text = message.normalize('NFC').trim();
+  if (/^(?:เรื่อง)?\s*(?:การเงิน|เงิน|การออม|ออมเงิน|การเรียน|เรียน|เวลา|การนอน|นอน|อ่านก่อนสอบ|อ่านหนังสือ|สอบ|งาน|ช่วยวางแผน)\s*(?:ครับ|ค่ะ|คับ)?$/i.test(text)) return 'brainstorm';
   if (/(เปรียบเทียบ|ต่างกัน|ข้อดีข้อเสีย|แบบไหนดีกว่า|เลือกแบบไหน|versus|\bvs\.?\b)/i.test(text)) return 'compare';
   if (/(สรุป|ย่อ|ใจความ|ประเด็นสำคัญ|ทวนให้)/i.test(text)) return 'summarize';
   if (/(ไอเดีย|หลายแบบ|หลายวิธี|มีวิธี.*บ้าง|ทางเลือก|brainstorm|คิด.*ให้หน่อย)/i.test(text)) return 'brainstorm';

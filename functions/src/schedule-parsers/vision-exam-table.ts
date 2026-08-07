@@ -107,6 +107,10 @@ function textInColumn(words: PositionedWord[]) {
   const lines = groupLines(words).map((line) => normalizeWhitespace(line.words.map((word) => word.text).join(" "))).filter(Boolean);
   const value = normalizeWhitespace(lines.join(" "));
   if (!value || /^[\s.()|,;:\-\u2013\u2014]+$/.test(value)) return null;
+  // A real exam cell in this document format contains a four-digit printed
+  // year. Reject room fragments and neighbouring timetable labels such as
+  // "14 กัน 15", which otherwise look like an exam after OCR flattening.
+  if (!/\b(?:19|20|24|25|26)\d{2}\b/.test(value)) return null;
   return value;
 }
 

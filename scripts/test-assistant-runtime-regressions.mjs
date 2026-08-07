@@ -30,6 +30,14 @@ check('permission errors are not reported as expired sessions', () => {
   assert.equal(classifyAssistantError({code: 'firestore/permission-denied'}), 'permission');
   assert.equal(classifyAssistantError({code: 'functions/unauthenticated'}), 'authentication');
   assert.equal(classifyAssistantError({code: 'functions/unavailable'}), 'network');
+  assert.equal(classifyAssistantError({
+    code: 'functions/unavailable',
+    details: {reason: 'gemini-model', status: 404},
+  }), 'gemini');
+  assert.equal(classifyAssistantError({
+    code: 'functions/unavailable',
+    details: {reason: 'gemini-service'},
+  }), 'gemini');
   assert.equal(classifyAssistantError({code: 'functions/internal'}), 'server');
   assert.equal(classifyAssistantError({code: 'functions/unauthenticated', message: 'Firebase App Check token is missing'}), 'app_check');
 });

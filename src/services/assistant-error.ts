@@ -3,7 +3,8 @@ import type {AssistantErrorKind} from '../types/assistant';
 function errorText(error: unknown) {
   const code = String((error as {code?: unknown})?.code ?? '').toLowerCase();
   const message = String((error as {message?: unknown})?.message ?? '').toLowerCase();
-  return `${code} ${message}`;
+  const details = JSON.stringify((error as {details?: unknown})?.details ?? '').toLowerCase();
+  return `${code} ${message} ${details}`;
 }
 
 export function classifyAssistantError(error: unknown): AssistantErrorKind {
@@ -15,9 +16,9 @@ export function classifyAssistantError(error: unknown): AssistantErrorKind {
   }
   if (/invalid-argument|missing required|is required|failed-precondition/.test(text)) return 'missing_input';
   if (/resource-exhausted|quota|http.?429|rate.?limit/.test(text)) return 'quota';
+  if (/gemini-service|gemini-model|model-not-found|gemini|empty response|model response/.test(text)) return 'gemini';
   if (/network|unavailable|deadline-exceeded|timeout|fetch failed|offline/.test(text)) return 'network';
   if (/data-loss|invalid (?:database|model|json|response)|malformed|parse/.test(text)) return 'invalid_data';
-  if (/gemini|empty response|model response/.test(text)) return 'gemini';
   if (/internal|http.?5\d\d|server error|functions\/internal/.test(text)) return 'server';
   if (/firestore|firebase|functions\//.test(text)) return 'firebase';
   return 'unknown';

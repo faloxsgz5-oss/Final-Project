@@ -41,6 +41,7 @@ copied manually. Server secrets never leave Firebase Secret Manager.
 - Notes and personal finance tracking
 - Cloud Vision OCR for receipts and class schedules
 - AI schedule extraction and assistant features
+- AI Adaptive Scheduling with deterministic conflict checks, behavior patterns, explainable suggestions, and Undo
 - Firebase Storage, Firestore, Cloud Functions, rules, and indexes
 - Thailand date and time formatting (`Asia/Bangkok`)
 
@@ -157,11 +158,19 @@ npx -y firebase-tools@latest login
 npx -y firebase-tools@latest use smartlife-budget
 ```
 
-Deploy rules, indexes, Storage rules, and Cloud Functions:
+Deploy the Adaptive Scheduling rules, indexes, and named Cloud Functions without touching the separately maintained LINE functions:
 
 ```bash
-npx -y firebase-tools@latest deploy --only firestore:rules,firestore:indexes,storage,functions --project smartlife-budget
+npm run deploy:adaptive-backend
 ```
+
+Deploy Storage rules separately only when `storage.rules` changes:
+
+```bash
+npx -y firebase-tools@latest deploy --only storage --project smartlife-budget
+```
+
+Avoid an unscoped `--only functions` deployment from this source tree. The shared project contains LINE integration functions that are deployed from another source tree, and Firebase CLI may otherwise ask to delete them.
 
 Do not deploy backend changes without coordinating with the team because these resources are shared by every developer.
 
@@ -203,9 +212,11 @@ Open a Pull Request into `master`. Avoid committing directly to `master`, and do
 
 ## Additional documentation
 
+- [คู่มือติดตั้งสำหรับเพื่อนแบบคำสั่งเดียว](docs/TEAM_INSTALL_TH.md)
 - [Firebase setup](docs/FIREBASE_SETUP.md)
 - [Google Calendar setup](docs/google-calendar-setup.md)
 - [Screen map](docs/SCREEN_MAP.md)
+- [AI Adaptive Scheduling architecture, schema, tests, and deployment](docs/ADAPTIVE_SCHEDULING.md)
 
 ## Repository
 

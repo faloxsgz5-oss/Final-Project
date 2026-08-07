@@ -100,11 +100,14 @@ export function normalizeIappReceiptResponse(value: unknown): IappReceiptExtract
     const name = text(item.itemName);
     const totalPrice = number(item.itemTotalCost);
     if (!name || totalPrice === null) return [];
+    const parsedQuantity = number(item.itemUnit);
     return [{
       discount: null,
       itemCode: text(item.itemCode),
       name,
-      quantity: number(item.itemUnit) ?? 1,
+      quantity: parsedQuantity !== null && parsedQuantity > 0
+        ? parsedQuantity
+        : 1,
       totalPrice,
       unitPrice: number(item.itemUnitCost),
     }];

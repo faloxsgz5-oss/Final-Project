@@ -10,6 +10,16 @@ $ProjectId = 'smartlife-budget'
 $AndroidFirebaseAppId = '1:302211453614:android:985bc020cd94b78e2d133f'
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$EnvironmentPath = Join-Path $RepositoryRoot '.env.local'
+$PreservedDebugToken = $null
+
+if (Test-Path $EnvironmentPath) {
+  $ExistingEnvironmentText = [System.IO.File]::ReadAllText($EnvironmentPath)
+  $ExistingTokenMatch = [regex]::Match($ExistingEnvironmentText, '(?m)^EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=([0-9a-fA-F-]{36})\s*$')
+  if ($ExistingTokenMatch.Success) {
+    $PreservedDebugToken = $ExistingTokenMatch.Groups[1].Value
+  }
+}
 
 function Write-Step([string]$Message) {
   Write-Host "`n[SmartLife] $Message" -ForegroundColor Green
@@ -54,6 +64,16 @@ Write-Step "Connecting the app to the shared smartlife-budget Firebase project"
 Copy-Item (Join-Path $RepositoryRoot '.env.example') (Join-Path $RepositoryRoot '.env.local') -Force
 Copy-Item (Join-Path $RepositoryRoot 'config\google-services.team.json') (Join-Path $RepositoryRoot 'google-services.json') -Force
 
+if ($PreservedDebugToken) {
+  $RestoredEnvironmentText = [System.IO.File]::ReadAllText($EnvironmentPath)
+  $RestoredEnvironmentText = [regex]::Replace(
+    $RestoredEnvironmentText,
+    '(?m)^EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=.*$',
+    "EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=$PreservedDebugToken"
+  )
+  [System.IO.File]::WriteAllText($EnvironmentPath, $RestoredEnvironmentText, $Utf8NoBom)
+}
+
 if (-not $SkipInstall) {
   Write-Step "Installing application packages"
   Invoke-Checked $Npm @('ci') 'Application dependency installation failed.'
@@ -74,21 +94,23 @@ if (-not $SkipFirebaseLogin) {
     Invoke-Checked $Npx @('-y', 'firebase-tools@latest', 'login') 'Firebase login failed.'
   }
 
-  $EnvironmentPath = Join-Path $RepositoryRoot '.env.local'
   $EnvironmentText = [System.IO.File]::ReadAllText($EnvironmentPath)
-  $ExistingTokenMatch = [regex]::Match($EnvironmentText, '(?m)^EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=([0-9a-fA-F-]{36})\s*$')
-  $DebugToken = if ($ExistingTokenMatch.Success) { $ExistingTokenMatch.Groups[1].Value } else { [guid]::NewGuid().ToString() }
+  $DebugToken = if ($PreservedDebugToken) { $PreservedDebugToken } else { [guid]::NewGuid().ToString() }
   $DisplayName = "SmartLife-$($env:COMPUTERNAME)-$($env:USERNAME)"
 
-  Write-Step "Registering this computer with Firebase App Check"
-  Invoke-Checked $Npx @(
-    '-y', 'firebase-tools@latest',
-    'appcheck:debugtokens:create', $DebugToken,
-    '--app', $AndroidFirebaseAppId,
-    '--display-name', $DisplayName,
-    '--force',
-    '--project', $ProjectId
-  ) 'App Check registration failed. Ask the project owner to grant this Google account Firebase App Check access.'
+  if (-not $PreservedDebugToken) {
+    Write-Step "Registering this computer with Firebase App Check"
+    Invoke-Checked $Npx @(
+      '-y', 'firebase-tools@latest',
+      'appcheck:debugtokens:create', $DebugToken,
+      '--app', $AndroidFirebaseAppId,
+      '--display-name', $DisplayName,
+      '--force',
+      '--project', $ProjectId
+    ) 'App Check registration failed. Ask the project owner to grant this Google account Firebase App Check access.'
+  } else {
+    Write-Step "Reusing this computer's existing Firebase App Check registration"
+  }
 
   if ($EnvironmentText -match '(?m)^EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=.*$') {
     $EnvironmentText = [regex]::Replace($EnvironmentText, '(?m)^EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=.*$', "EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN=$DebugToken")

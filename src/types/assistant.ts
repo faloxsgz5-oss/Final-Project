@@ -5,6 +5,7 @@ export type AssistantReplySource = 'deterministic' | 'fallback' | 'gemini';
 export type AssistantErrorKind =
   | 'app_check'
   | 'authentication'
+  | 'config'
   | 'firebase'
   | 'gemini'
   | 'invalid_data'
@@ -59,7 +60,15 @@ export type AssistantConversationStatePatch = Partial<Pick<
 >>;
 
 export type SchedulePayload = {
+  aiReason?: string;
+  aiScheduled?: boolean;
+  allowAiReschedule?: boolean;
+  category?: string;
+  deadline?: string | null;
   endAt?: string;
+  estimatedDurationMinutes?: number;
+  generatedForTimeZone?: string;
+  isFlexible?: boolean;
   location?: string;
   reminderMinutesBefore?: number;
   startAt: string;
