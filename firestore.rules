@@ -90,12 +90,22 @@ service cloud.firestore {
 
     function validActivity(data, userId) {
       return data.keys().hasAll(['ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'title', 'type', 'startAt', 'endAt',
+          'location', 'color', 'status', 'source',
+          'attendees', 'category', 'note', 'priority', 'reminder',
+          'createdAt', 'updatedAt'
+        ])
         && data.ownerId == userId
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
         && data.type in ['activity', 'task', 'appointment']
         && data.startAt is timestamp && data.endAt is timestamp && data.startAt <= data.endAt
         && data.location is string && data.location.size() <= 120
+        && (!('attendees' in data) || (data.attendees is string && data.attendees.size() <= 300))
+        && (!('category' in data) || (data.category is string && data.category.size() <= 80))
+        && (!('note' in data) || (data.note is string && data.note.size() <= 5000))
+        && (!('priority' in data) || data.priority in ['low', 'normal', 'high', 'urgent'])
+        && (!('reminder' in data) || (data.reminder is string && data.reminder.size() <= 120))
         && validColor(data.color)
         && data.status in ['planned', 'in-progress', 'completed', 'cancelled']
         && data.source in ['manual', 'ai']
