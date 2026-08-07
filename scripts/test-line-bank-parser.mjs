@@ -21,6 +21,15 @@ const cases = [
     type: 'expense',
   },
   {
+    bank: 'kbank',
+    expectedAmount: 10,
+    expectedBalance: 1116.56,
+    expectedDay: 7,
+    expectedMonth: 7,
+    message: 'K PLUS\nรายการเงินเข้า\nบัญชี xxx-x-x1494-x จำนวนเงิน 10.00 บาท วันที่ 7 ส.ค. 69 10:49 น. ยอดเงินคงเหลือ 1,116.56 บาท',
+    type: 'income',
+  },
+  {
     bank: 'bbl',
     message: 'Bangkok Bank เงินเข้าบัญชี 2,000.00 บาท จาก บริษัท ตัวอย่าง วันที่ 31/07/2026 เวลา 11:00',
     type: 'income',
@@ -55,6 +64,12 @@ for (const item of cases) {
   assert.equal(parsed.bank, item.bank, `${item.bank}: bank detection`);
   assert.equal(parsed.type, item.type, `${item.bank}: transaction type`);
   assert.ok(parsed.amount > 0, `${item.bank}: amount`);
+  if (typeof item.expectedAmount === 'number') {
+    assert.equal(parsed.amount, item.expectedAmount, `${item.bank}: exact amount`);
+  }
+  if (typeof item.expectedBalance === 'number') {
+    assert.equal(parsed.balanceAfterReported, item.expectedBalance, `${item.bank}: balance`);
+  }
   const parsedDate = new Date(parsed.occurredAt);
   assert.equal(parsedDate.getFullYear(), 2026, `${item.bank}: year`);
   assert.equal(parsedDate.getMonth(), item.expectedMonth ?? 6, `${item.bank}: month`);
@@ -66,6 +81,12 @@ const expensePhrase = parseLineMessageLocally(
   capturedAt,
 );
 assert.equal(expensePhrase?.type, 'expense', 'expense phrase must win over recipient wording');
+
+const kbankLinePreviewWithoutAmount = parseLineMessageLocally(
+  'KBank Live แจ้งเตือนรายการเงินเข้า',
+  capturedAt,
+);
+assert.equal(kbankLinePreviewWithoutAmount, null, 'KBank LINE preview without amount must not create a transaction');
 
 const firstSender = normalizeLineText('KBank รับเงิน 500.00 บาท จาก นาย ก');
 const secondSender = normalizeLineText('KBank รับเงิน 500.00 บาท จาก นาย ข');

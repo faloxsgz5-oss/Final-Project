@@ -50,6 +50,27 @@ type NativeLineListenerModule = {
   setListenerEnabledAsync(enabled: boolean, userId: string): Promise<void>;
 };
 
+const BANK_PACKAGE_HINTS: Record<string, string> = {
+  'com.kasikorn.retail.mbanking.wap': 'K PLUS',
+  'com.kasikornbank.kplus': 'K PLUS',
+  'com.scb.phone': 'SCB',
+  'ktbcs.netbank': 'Krungthai',
+  'com.ktb.customer.qr': 'Krungthai',
+  'com.bbl.mobilebanking': 'Bangkok Bank',
+  'com.krungsri.kma': 'Krungsri',
+  'com.ttbbank.ttbtouch': 'ttb',
+  'com.tmbbank.tmbtouch': 'ttb',
+};
+
+function addBankHintFromSourcePackage(rawText: string, sourcePackage?: string) {
+  const hint = sourcePackage ? BANK_PACKAGE_HINTS[sourcePackage] : '';
+  if (!hint) return rawText;
+  if (/\b(?:KBank|K\s*PLUS|SCB|Krungthai|Bangkok\s*Bank|Krungsri|ttb|BBL|KTB)\b|กสิกร|กรุงไทย|กรุงศรี|กรุงเทพ|ไทยพาณิชย์/i.test(rawText)) {
+    return rawText;
+  }
+  return `${hint}\n${rawText}`;
+}
+
 type ConfirmInput = {
   accountLast4: string | null;
   amount: number;
@@ -350,7 +371,10 @@ async function performLineAutoImportSync(uid: string) {
   let autoSavedCount = 0;
   let pendingCount = 0;
   for (const item of queued) {
-    const rawText = [item.title, item.text].filter(Boolean).join('\n').trim();
+    const rawText = addBankHintFromSourcePackage(
+      [item.title, item.text].filter(Boolean).join('\n').trim(),
+      item.sourcePackage,
+    );
     if (!rawText || !isPotentialFinancialLineMessage(rawText)) {
       await native.acknowledgeNotificationsAsync([item.id]);
       continue;

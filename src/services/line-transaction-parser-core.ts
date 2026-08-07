@@ -167,8 +167,14 @@ function extractAmount(text: string, template: BankTemplate | null) {
     if (amount !== null) return amount;
   }
 
+  const explicitAmount = amountFromPattern(
+    text,
+    /(?:จำนวนเงิน|ยอดรายการ|amount)\s*[:：]?\s*(?:฿|THB)?\s*([๐-๙\d][๐-๙\d,]*(?:\.[๐-๙\d]{1,2})?)/i,
+  );
+  if (explicitAmount !== null) return explicitAmount;
+
   const keywordPatterns = [
-    /(?:จำนวนเงิน|ยอดรายการ|ยอดเงิน(?:เข้า|ออก)?|เงิน(?:เข้า|ออก)|รับเงิน|โอน(?:เข้า|ออก)?|ชำระ(?:เงิน)?|หักบัญชี(?:จาก)?|หักจากบัญชี|amount)[^\d๐-๙]{0,28}(?:฿|THB)?\s*([๐-๙\d][๐-๙\d,]*(?:\.[๐-๙\d]{1,2})?)/i,
+    /(?:ยอดเงิน(?:เข้า|ออก)?|เงิน(?:เข้า|ออก)|รับเงิน|โอน(?:เข้า|ออก)?|ชำระ(?:เงิน)?|หักบัญชี(?:จาก)?|หักจากบัญชี)[^\d๐-๙]{0,28}(?:฿|THB)?\s*([๐-๙\d][๐-๙\d,]*(?:\.[๐-๙\d]{1,2})?)/i,
     /(?:฿|THB)\s*([๐-๙\d][๐-๙\d,]*(?:\.[๐-๙\d]{1,2})?)/i,
   ];
   for (const pattern of keywordPatterns) {
