@@ -31,14 +31,30 @@ export type Schedule = OwnedDocument & {
 };
 
 export type Activity = OwnedDocument & {
+  actualDurationMinutes?: number | null;
+  actualEnd?: Timestamp | null;
+  actualStart?: Timestamp | null;
+  aiConfidence?: number | null;
+  aiReason?: string | null;
+  aiScheduled?: boolean;
+  allowAiReschedule?: boolean;
   attendees?: string;
   category?: string;
   color: string;
+  deadline?: Timestamp | null;
   endAt: Timestamp;
+  estimatedDurationMinutes?: number;
+  googleCalendarId?: string;
+  googleEventId?: string;
+  googleSyncStatus?: 'failed' | 'not_required' | 'pending' | 'synced';
+  isFlexible?: boolean;
+  isLocked?: boolean;
   location: string;
   note?: string;
+  originalScheduledStart?: Timestamp | null;
   priority?: string;
   reminder?: string;
+  scheduleVersion?: number;
   source: 'manual' | 'ai';
   startAt: Timestamp;
   status: ActivityStatus;

@@ -1,0 +1,46 @@
+{
+  "scope": "Firestore rules and callable ownership boundaries for AI Adaptive Scheduling",
+  "auditedAt": "2026-08-04",
+  "score": 96,
+  "result": "pass",
+  "controls": [
+    "All adaptive paths are nested below users/{uid} and reads enforce request.auth.uid equality.",
+    "Behavior events, patterns, suggestions, history, insights, preferences, and push tokens are writable only through trusted Admin SDK functions.",
+    "Raw device push tokens cannot be read through the Firestore client.",
+    "Activity create and update validate a strict field allowlist, types, sizes, ownership, timestamps, flexibility invariants, and server-calculated fields.",
+    "Callable handlers ignore frontend user IDs and derive ownership from verified Firebase Authentication.",
+    "Schedule acceptance uses optimistic version/time checks and a Firestore transaction before any state change.",
+    "App Check is enforced on all adaptive callable functions.",
+    "Rules end with a recursive default deny."
+  ],
+  "devilsAdvocateTests": [
+    "Unauthenticated read of another user's suggestion",
+    "Authenticated cross-user read and write",
+    "Client-forged AI confidence/reason/scheduled fields",
+    "Client-forged scheduleVersion",
+    "Flexible appointment and participant activity",
+    "Direct pattern, behavior, suggestion, history, insight, settings, and push-token writes",
+    "Stale suggestion accepted after another-device edit",
+    "Conflicting suggestion causing a partial transaction",
+    "Adaptive movement of a Google Calendar event"
+  ],
+  "findings": [
+    {
+      "severity": "informational",
+      "status": "accepted",
+      "title": "Owners can manually edit or delete their own activity records",
+      "reason": "This is required product behavior. AI-calculated fields remain protected and manual changes invalidate stale suggestions through time/version checks."
+    },
+    {
+      "severity": "informational",
+      "status": "accepted",
+      "title": "Admin custom claims can read owner data",
+      "reason": "This matches the existing support/admin access model; clients cannot grant themselves the signed custom claim."
+    }
+  ],
+  "verification": {
+    "firebaseDryRun": "passed",
+    "firestoreEmulatorRules": "passed",
+    "transactionEmulator": "passed"
+  }
+}

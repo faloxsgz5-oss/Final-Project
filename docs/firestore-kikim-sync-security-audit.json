@@ -1,0 +1,18 @@
+{
+  "score": 4,
+  "summary": "The merged rules use default-deny, UID ownership, trusted custom claims for administrators, server-only writes for Adaptive Scheduling and LINE pending-review data, strict schemas for core user data, and immutable ownership/timestamps. Emulator denial tests and Firebase rules compilation passed. Two bounded nested-list validation gaps remain for a future hardening pass.",
+  "findings": [
+    {
+      "check": "Deep Array Inspection",
+      "severity": "minor",
+      "issue": "Transaction items and profile consentHistory are type-checked as lists and have size limits, but the rules cannot currently validate every nested element's schema and string lengths.",
+      "recommendation": "Keep server-side generation for these arrays and add a compact, fixed nested schema or move variable audit entries into owner-scoped subcollections before broad production rollout."
+    },
+    {
+      "check": "Business Logic vs. Rules",
+      "severity": "minor",
+      "issue": "The legacy bankNotifications client collection is intentionally denied by default and is no longer routed in the app; the active LINE import flow uses server-controlled pendingReview and callable functions instead.",
+      "recommendation": "Remove the unused legacy line-bank service after the new LINE import flow has completed device acceptance testing."
+    }
+  ]
+}

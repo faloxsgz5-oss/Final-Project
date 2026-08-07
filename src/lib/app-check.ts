@@ -23,6 +23,29 @@ export class AppCheckUnavailableError extends Error {
   }
 }
 
+function appCheckErrorText(error: unknown) {
+  if (error && typeof error === 'object') {
+    const candidate = error as {code?: unknown; message?: unknown};
+    return `${String(candidate.code ?? '')} ${String(candidate.message ?? '')}`.trim();
+  }
+  return String(error ?? '');
+}
+
+export function isAppCheckError(error: unknown) {
+  if (error instanceof AppCheckUnavailableError) return true;
+  return /(app.?check|token-error|too many attempts|play integrity|debug token)/i.test(appCheckErrorText(error));
+}
+
+export function appCheckErrorMessage(error: unknown) {
+  if (error instanceof AppCheckUnavailableError) {
+    return 'Development Build ตัวนี้ยังไม่มี Firebase App Check กรุณาติดตั้งบิลด์ล่าสุดแล้วเปิดแอปใหม่';
+  }
+  if (/too many attempts|token-error/i.test(appCheckErrorText(error))) {
+    return 'ระบบยืนยันแอปถูกจำกัดชั่วคราวจากการขอโทเคนซ้ำ กรุณารอสักครู่แล้วลองใหม่';
+  }
+  return 'ยังยืนยัน Development Build กับ Firebase ไม่สำเร็จ กรุณาปิดและเปิดแอปใหม่แล้วลองอีกครั้ง';
+}
+
 async function initializeAndroidAppCheck() {
   if (!webAppCheckInstance) {
     const [

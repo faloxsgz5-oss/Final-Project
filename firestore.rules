@@ -5,6 +5,8 @@ service cloud.firestore {
     // SmartLife data model:
     // users/{uid}
     // users/{uid}/{schedules|activities|notes|transactions|pendingReview|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
+    // users/{uid}/{schedulingBehaviorEvents|schedulingPatterns|schedulingSuggestions|scheduleChangeHistory|productivityInsights|pushTokens}/{documentId}
+    // users/{uid}/settings/adaptiveScheduling
     // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
     // Admin access is derived only from the trusted `admin` custom claim.
@@ -91,21 +93,41 @@ service cloud.firestore {
     function validActivity(data, userId) {
       return data.keys().hasAll(['ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
-          'ownerId', 'title', 'type', 'startAt', 'endAt',
-          'location', 'color', 'status', 'source',
-          'attendees', 'category', 'note', 'priority', 'reminder',
+          'ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source',
+          'note', 'reminder', 'category', 'priority', 'attendees',
+          'actualDurationMinutes', 'actualEnd', 'actualStart', 'aiConfidence', 'aiReason', 'aiScheduled',
+          'allowAiReschedule', 'deadline', 'estimatedDurationMinutes', 'googleCalendarId', 'googleEventId',
+          'googleSyncStatus', 'isFlexible', 'isLocked', 'originalScheduledStart', 'scheduleVersion',
           'createdAt', 'updatedAt'
         ])
         && data.ownerId == userId
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
         && data.type in ['activity', 'task', 'appointment']
-        && data.startAt is timestamp && data.endAt is timestamp && data.startAt <= data.endAt
+        && data.startAt is timestamp && data.endAt is timestamp && data.startAt < data.endAt
         && data.location is string && data.location.size() <= 120
-        && (!('attendees' in data) || (data.attendees is string && data.attendees.size() <= 300))
-        && (!('category' in data) || (data.category is string && data.category.size() <= 80))
         && (!('note' in data) || (data.note is string && data.note.size() <= 5000))
-        && (!('priority' in data) || data.priority in ['low', 'normal', 'high', 'urgent'])
-        && (!('reminder' in data) || (data.reminder is string && data.reminder.size() <= 120))
+        && (!('reminder' in data) || (data.reminder is string && data.reminder.size() <= 160))
+        && (!('category' in data) || (data.category is string && data.category.size() <= 80))
+        && (!('priority' in data) || (data.priority is string && data.priority.size() <= 24))
+        && (!('attendees' in data) || (data.attendees is string && data.attendees.size() <= 500))
+        && (!('actualDurationMinutes' in data) || data.actualDurationMinutes == null || (data.actualDurationMinutes is number && data.actualDurationMinutes >= 0 && data.actualDurationMinutes <= 1440))
+        && (!('actualEnd' in data) || data.actualEnd == null || data.actualEnd is timestamp)
+        && (!('actualStart' in data) || data.actualStart == null || data.actualStart is timestamp)
+        && (!('aiConfidence' in data) || data.aiConfidence == null || (data.aiConfidence is number && data.aiConfidence >= 0 && data.aiConfidence <= 1))
+        && (!('aiReason' in data) || data.aiReason == null || (data.aiReason is string && data.aiReason.size() <= 600))
+        && (!('aiScheduled' in data) || data.aiScheduled is bool)
+        && (!('allowAiReschedule' in data) || data.allowAiReschedule is bool)
+        && (!('deadline' in data) || data.deadline == null || data.deadline is timestamp)
+        && (!('estimatedDurationMinutes' in data) || (data.estimatedDurationMinutes is int && data.estimatedDurationMinutes >= 15 && data.estimatedDurationMinutes <= 720))
+        && (!('googleCalendarId' in data) || (data.googleCalendarId is string && data.googleCalendarId.size() <= 128))
+        && (!('googleEventId' in data) || (data.googleEventId is string && data.googleEventId.size() <= 512))
+        && (!('googleSyncStatus' in data) || data.googleSyncStatus in ['failed', 'not_required', 'pending', 'synced'])
+        && (!('isFlexible' in data) || data.isFlexible is bool)
+        && (!('isLocked' in data) || data.isLocked is bool)
+        && (!('originalScheduledStart' in data) || data.originalScheduledStart == null || data.originalScheduledStart is timestamp)
+        && (!('scheduleVersion' in data) || (data.scheduleVersion is int && data.scheduleVersion >= 0))
+        && (!('isFlexible' in data) || data.isFlexible == false || (data.type != 'appointment' && (!('attendees' in data) || data.attendees == '')))
+        && (!('allowAiReschedule' in data) || data.allowAiReschedule == false || (data.isFlexible == true && data.type != 'appointment' && (!('attendees' in data) || data.attendees == '')))
         && validColor(data.color)
         && data.status in ['planned', 'in-progress', 'completed', 'cancelled']
         && data.source in ['manual', 'ai']
@@ -182,6 +204,25 @@ service cloud.firestore {
         && data.message is string && data.message.size() >= 1 && data.message.size() <= 5000
         && data.status == 'new'
         && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validActivityClientCreate(data) {
+      return (!('actualDurationMinutes' in data) || data.actualDurationMinutes == null)
+        && (!('actualEnd' in data) || data.actualEnd == null)
+        && (!('actualStart' in data) || data.actualStart == null)
+        && (!('aiConfidence' in data) || data.aiConfidence == null)
+        && (!('aiReason' in data) || data.aiReason == null)
+        && (!('aiScheduled' in data) || data.aiScheduled == false)
+        && (!('googleSyncStatus' in data) || data.googleSyncStatus == 'not_required')
+        && (!('scheduleVersion' in data) || data.scheduleVersion == 0);
+    }
+
+    function validActivityClientUpdate(data) {
+      return data.diff(resource.data).affectedKeys().hasOnly([
+        'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source',
+        'note', 'reminder', 'category', 'priority', 'attendees', 'deadline',
+        'estimatedDurationMinutes', 'isFlexible', 'isLocked', 'allowAiReschedule', 'updatedAt'
+      ]);
     }
 
     function validAssistantConversation(data, userId) {
@@ -272,9 +313,48 @@ service cloud.firestore {
 
       match /activities/{activityId} {
         allow read: if isOwner(userId) || isAdmin();
-        allow create: if isOwner(userId) && userExists(userId) && validActivity(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
-        allow update: if isOwner(userId) && validActivity(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow create: if isOwner(userId) && userExists(userId) && validActivity(request.resource.data, userId) && validActivityClientCreate(request.resource.data) && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validActivity(request.resource.data, userId) && validActivityClientUpdate(request.resource.data) && hasValidUpdateMeta(request.resource.data, userId);
         allow delete: if isOwner(userId);
+      }
+
+      // Adaptive scheduling calculations and mutations are performed only by
+      // authenticated callable/scheduled functions using the Admin SDK. The
+      // client can read only the data below its own UID.
+      match /settings/{settingId} {
+        allow read: if (isOwner(userId) || isAdmin()) && settingId == 'adaptiveScheduling';
+        allow write: if false;
+      }
+
+      match /schedulingBehaviorEvents/{eventId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      match /schedulingPatterns/{patternId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      match /schedulingSuggestions/{suggestionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      match /scheduleChangeHistory/{historyId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      match /productivityInsights/{insightId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      match /pushTokens/{tokenId} {
+        // Raw device tokens are implementation credentials; even the client
+        // registers them through an authenticated callable and never reads them.
+        allow read, write: if false;
       }
 
       match /notes/{noteId} {
