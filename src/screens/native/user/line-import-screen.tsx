@@ -89,6 +89,23 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
+function firebaseLoadErrorText(error: unknown) {
+  const code = typeof error === 'object' && error && 'code' in error
+    ? String((error as {code?: unknown}).code)
+    : '';
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (code.includes('permission-denied') || /permission|insufficient/i.test(message)) {
+    return 'Firebase ปฏิเสธสิทธิ์อ่านรายการ กรุณาตรวจว่าเข้าสู่ระบบบัญชีเดิม และ deploy firestore.rules ล่าสุดแล้ว';
+  }
+  if (code.includes('failed-precondition') || /index/i.test(message)) {
+    return 'Firebase ต้องการ index สำหรับรายการรอตรวจ กรุณา deploy firestore.indexes.json ล่าสุดแล้วลองใหม่';
+  }
+  if (/timeout/i.test(message)) {
+    return 'โหลดรายการจาก Firebase นานเกินไป กรุณาตรวจอินเทอร์เน็ตหรือกดโหลดใหม่';
+  }
+  return message || 'โหลดรายการจาก Firebase ไม่สำเร็จ กรุณาลองใหม่';
+}
+
 function normalizeLineConsent(
   consent: LineConsentProfile,
   nativeState: NativeLineListenerState,
@@ -418,12 +435,12 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       if (!active || initialLoaded) return;
       initialLoaded = true;
       setLoading(false);
-      setLoadError('โหลดรายการจาก Firebase นานเกินไป กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่');
-    }, 12_000);
+      setLoadError('โหลดรายการจาก Firebase นานเกินไป กรุณาตรวจอินเทอร์เน็ตหรือกดโหลดใหม่');
+    }, 8_000);
     syncLineAutoImport(uid).catch((error) => {
       console.warn('[LINE Import] Sync before pending review failed', error);
     });
-    withTimeout(linePendingReviews.list(uid), 7_000, 'Firebase list timeout').then((value) => {
+    withTimeout(linePendingReviews.list(uid), 5_000, 'Firebase list timeout').then((value) => {
       if (!active) return;
       initialLoaded = true;
       clearTimeout(timeout);
@@ -433,6 +450,10 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
     }).catch((error) => {
       if (!active || initialLoaded) return;
       console.warn('[LINE Import] Pending review one-shot load failed', error);
+      initialLoaded = true;
+      clearTimeout(timeout);
+      setLoadError(firebaseLoadErrorText(error));
+      setLoading(false);
     });
     const unsubscribe = linePendingReviews.watch(uid, (value) => {
       if (!active) return;
@@ -446,7 +467,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       initialLoaded = true;
       clearTimeout(timeout);
       console.warn('[LINE Import] Pending review watch failed', error);
-      setLoadError(error.message || 'โหลดรายการจาก Firebase ไม่สำเร็จ');
+      setLoadError(firebaseLoadErrorText(error));
       setLoading(false);
     });
     return () => {

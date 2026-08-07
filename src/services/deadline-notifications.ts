@@ -103,7 +103,6 @@ async function configureNotifications() {
       lightColor: '#6F8F6D',
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       name: 'SmartLife งานและเดดไลน์',
-      sound: 'default',
       vibrationPattern: [0, 250, 250, 250],
     });
   }
@@ -201,7 +200,7 @@ async function showImmediateOverdue(uid: string, overdueTasks: WithId<Activity>[
         color: '#D9675F',
         data: {activityId: task.id, kind: 'overdue', url: '/user/smartlife_calendar_day'},
         priority: Notifications.AndroidNotificationPriority.MAX,
-        sound: 'default',
+        sound: true,
         title: `ค้างส่ง: ${task.title}`,
       },
       identifier: notificationId(uid, task.id, 'overdue'),
@@ -240,7 +239,7 @@ export async function syncDeadlineNotifications(uid: string) {
       color: plan.kind === 'overdue' ? '#D9675F' : '#6F8F6D',
       data: {kind: plan.kind, url: '/user/smartlife_calendar_day'},
       priority: Notifications.AndroidNotificationPriority.MAX,
-      sound: 'default',
+      sound: true,
       title: plan.title,
     },
     identifier: plan.id,
