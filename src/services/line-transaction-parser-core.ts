@@ -110,6 +110,29 @@ export function toArabicDigits(value: string) {
   return value.replace(/[๐-๙]/g, (digit) => THAI_DIGITS[digit] ?? digit);
 }
 
+const THAILAND_OFFSET_MS = 7 * 60 * 60 * 1000;
+const THAI_DATE_WORD = '\u0e27\u0e31\u0e19\u0e17\u0e35\u0e48';
+const THAI_TIME_WORD = '\u0e40\u0e27\u0e25\u0e32';
+const THAI_WHEN_WORD = '\u0e40\u0e21\u0e37\u0e48\u0e2d';
+const THAI_N_WORD = '\u0e19';
+const THAI_MONTH_ALIASES: Array<{month: number; aliases: string[]}> = [
+  {month: 0, aliases: ['\u0e21.\u0e04.', '\u0e21\u0e01\u0e23\u0e32\u0e04\u0e21']},
+  {month: 1, aliases: ['\u0e01.\u0e1e.', '\u0e01\u0e38\u0e21\u0e20\u0e32\u0e1e\u0e31\u0e19\u0e18\u0e4c']},
+  {month: 2, aliases: ['\u0e21\u0e35.\u0e04.', '\u0e21\u0e35\u0e19\u0e32\u0e04\u0e21']},
+  {month: 3, aliases: ['\u0e40\u0e21.\u0e22.', '\u0e40\u0e21\u0e29\u0e32\u0e22\u0e19']},
+  {month: 4, aliases: ['\u0e1e.\u0e04.', '\u0e1e\u0e24\u0e29\u0e20\u0e32\u0e04\u0e21']},
+  {month: 5, aliases: ['\u0e21\u0e34.\u0e22.', '\u0e21\u0e34\u0e16\u0e38\u0e19\u0e32\u0e22\u0e19']},
+  {month: 6, aliases: ['\u0e01.\u0e04.', '\u0e01\u0e23\u0e01\u0e0e\u0e32\u0e04\u0e21']},
+  {month: 7, aliases: ['\u0e2a.\u0e04.', '\u0e2a\u0e34\u0e07\u0e2b\u0e32\u0e04\u0e21']},
+  {month: 8, aliases: ['\u0e01.\u0e22.', '\u0e01\u0e31\u0e19\u0e22\u0e32\u0e22\u0e19']},
+  {month: 9, aliases: ['\u0e15.\u0e04.', '\u0e15\u0e38\u0e25\u0e32\u0e04\u0e21']},
+  {month: 10, aliases: ['\u0e1e.\u0e22.', '\u0e1e\u0e24\u0e28\u0e08\u0e34\u0e01\u0e32\u0e22\u0e19']},
+  {month: 11, aliases: ['\u0e18.\u0e04.', '\u0e18\u0e31\u0e19\u0e27\u0e32\u0e04\u0e21']},
+];
+const THAI_MONTH_LOOKUP = new Map(
+  THAI_MONTH_ALIASES.flatMap(({month, aliases}) => aliases.map((alias) => [alias.toLocaleLowerCase('th-TH'), month] as const)),
+);
+
 export function normalizeLineText(value: string) {
   return toArabicDigits(value)
     .normalize('NFKC')
@@ -219,16 +242,67 @@ function yearToGregorian(rawYear: number) {
   return rawYear;
 }
 
+function bangkokParts(date: Date) {
+  const shifted = new Date(date.getTime() + THAILAND_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+  };
+}
+
 function validDate(year: number, month: number, day: number, hour: number, minute: number) {
-  const date = new Date(year, month, day, hour, minute, 0, 0);
+  const date = new Date(Date.UTC(year, month, day, hour, minute, 0, 0) - THAILAND_OFFSET_MS);
+  const parts = bangkokParts(date);
   if (
-    date.getFullYear() !== year ||
-    date.getMonth() !== month ||
-    date.getDate() !== day ||
-    date.getHours() !== hour ||
-    date.getMinutes() !== minute
+    parts.year !== year ||
+    parts.month !== month ||
+    parts.day !== day ||
+    parts.hour !== hour ||
+    parts.minute !== minute
   ) return null;
   return date;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseTimeParts(hourText: string | undefined, minuteText: string | undefined) {
+  if (!hourText || !minuteText) return null;
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return {hour, minute};
+}
+
+function extractTimeParts(text: string, capturedAt: Date) {
+  const captured = bangkokParts(capturedAt);
+  const colonMatches = [...text.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)];
+  const lastColonMatch = colonMatches.at(-1);
+  const colonTime = parseTimeParts(lastColonMatch?.[1], lastColonMatch?.[2]);
+  if (colonTime) return {...colonTime, explicitTime: true};
+
+  const dotTimePattern = /([01]?\d|2[0-3])\.([0-5]\d)/g;
+  for (const match of text.matchAll(dotTimePattern)) {
+    const index = match.index ?? 0;
+    const context = text.slice(Math.max(0, index - 18), Math.min(text.length, index + match[0].length + 8));
+    const looksLikeTime = new RegExp(`${THAI_TIME_WORD}|${THAI_DATE_WORD}|${THAI_WHEN_WORD}|\\s${THAI_N_WORD}\\.?`, 'i').test(context);
+    if (!looksLikeTime) continue;
+    const parsed = parseTimeParts(match[1], match[2]);
+    if (parsed) return {...parsed, explicitTime: true};
+  }
+
+  return {hour: captured.hour, minute: captured.minute, explicitTime: false};
+}
+
+function thaiMonthPattern() {
+  return [...THAI_MONTH_LOOKUP.keys()]
+    .sort((first, second) => second.length - first.length)
+    .map(escapeRegex)
+    .join('|');
 }
 
 function extractOccurredAt(text: string, capturedAt: Date) {
@@ -274,6 +348,59 @@ function extractOccurredAt(text: string, capturedAt: Date) {
 
   const fallback = new Date(capturedAt);
   fallback.setHours(hour, minute, 0, 0);
+  return {date: fallback, explicitDate: false};
+}
+
+function extractOccurredAtPrecise(text: string, capturedAt: Date) {
+  const arabic = toArabicDigits(text).normalize('NFKC');
+  const timeParts = extractTimeParts(arabic, capturedAt);
+  const optionalDatePrefix = `(?:${THAI_WHEN_WORD}\\s*)?(?:${THAI_DATE_WORD}\\s*)?`;
+  const optionalInlineTime = `(?:\\s*(?:${THAI_TIME_WORD}\\s*)?([01]?\\d|2[0-3])[:.]([0-5]\\d)(?:\\s*${THAI_N_WORD}\\.?)?)?`;
+
+  const numericDate = arabic.match(new RegExp(`${optionalDatePrefix}(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{2,4})${optionalInlineTime}`, 'i'));
+  if (numericDate) {
+    const inlineTime = parseTimeParts(numericDate[4], numericDate[5]);
+    const parsed = validDate(
+      yearToGregorian(Number(numericDate[3])),
+      Number(numericDate[2]) - 1,
+      Number(numericDate[1]),
+      inlineTime?.hour ?? timeParts.hour,
+      inlineTime?.minute ?? timeParts.minute,
+    );
+    if (parsed) return {date: parsed, explicitDate: true};
+  }
+
+  const isoDate = arabic.match(new RegExp(`\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})\\b${optionalInlineTime}`, 'i'));
+  if (isoDate) {
+    const inlineTime = parseTimeParts(isoDate[4], isoDate[5]);
+    const parsed = validDate(
+      yearToGregorian(Number(isoDate[1])),
+      Number(isoDate[2]) - 1,
+      Number(isoDate[3]),
+      inlineTime?.hour ?? timeParts.hour,
+      inlineTime?.minute ?? timeParts.minute,
+    );
+    if (parsed) return {date: parsed, explicitDate: true};
+  }
+
+  const thaiDate = arabic.match(new RegExp(`${optionalDatePrefix}(\\d{1,2})\\s*(${thaiMonthPattern()})\\s*(\\d{2,4})${optionalInlineTime}`, 'i'));
+  if (thaiDate) {
+    const month = THAI_MONTH_LOOKUP.get(thaiDate[2].toLocaleLowerCase('th-TH'));
+    const inlineTime = parseTimeParts(thaiDate[4], thaiDate[5]);
+    const parsed = typeof month === 'number'
+      ? validDate(
+        yearToGregorian(Number(thaiDate[3])),
+        month,
+        Number(thaiDate[1]),
+        inlineTime?.hour ?? timeParts.hour,
+        inlineTime?.minute ?? timeParts.minute,
+      )
+      : null;
+    if (parsed) return {date: parsed, explicitDate: true};
+  }
+
+  const captured = bangkokParts(capturedAt);
+  const fallback = validDate(captured.year, captured.month, captured.day, timeParts.hour, timeParts.minute) ?? new Date(capturedAt);
   return {date: fallback, explicitDate: false};
 }
 
@@ -332,7 +459,7 @@ export function parseLineMessageLocally(rawText: string, capturedAt = new Date()
   const typeResult = detectType(text);
   const amount = extractAmount(text, template);
   if (amount === null) return null;
-  const occurred = extractOccurredAt(text, capturedAt);
+  const occurred = extractOccurredAtPrecise(text, capturedAt);
   const balanceAfterReported = extractBalance(text);
   const accountLast4 = extractAccountLast4(text);
   const bankLabel = template?.label ?? 'ธนาคาร';
