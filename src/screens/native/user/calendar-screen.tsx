@@ -20,7 +20,7 @@ import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
 import {MaterialIcon, UserTabBar} from './user-ui';
 
 type Page = 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month';
-type PlannerTab = 'calendar' | 'notes';
+type PlannerTab = 'adaptive' | 'calendar' | 'notes';
 type ViewMode = 'day' | 'week' | 'month' | 'year';
 type EventItem = Record<string, unknown> & {
   id?: string;
@@ -287,7 +287,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
           </View>
           <Text style={styles.largeTitle}>ปฏิทิน</Text>
 
-          {planner ? <View style={styles.plannerTabs}><Pressable onPress={() => planner.onTabChange('calendar')} style={[styles.plannerTab, planner.activeTab === 'calendar' && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === 'calendar' && styles.plannerTabTextActive]}>ปฏิทิน</Text></Pressable><Pressable onPress={() => planner.onTabChange('notes')} style={[styles.plannerTab, planner.activeTab === 'notes' && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === 'notes' && styles.plannerTabTextActive]}>โน้ต</Text></Pressable></View> : null}
+          {planner ? <View accessibilityRole="tablist" style={styles.plannerTabs}>{([['calendar', 'ตาราง'], ['notes', 'โน้ต'], ['adaptive', 'Adaptive']] as [PlannerTab, string][]).map(([key, label]) => <Pressable accessibilityRole="tab" accessibilityState={{selected: planner.activeTab === key}} key={key} onPress={() => planner.onTabChange(key)} style={[styles.plannerTab, planner.activeTab === key && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === key && styles.plannerTabTextActive]}>{label}</Text></Pressable>)}</View> : null}
 
           <GoogleCalendarSyncCard onSynced={load} uid={uid} />
 
