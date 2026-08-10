@@ -40,16 +40,16 @@ type Props = {
 };
 
 const C = {
-  accent: '#ff3b30',
-  accentSoft: '#fff0ef',
-  background: '#f2f2f7',
-  blue: '#007aff',
+  accent: '#5f835f',
+  accentSoft: '#dfe7dc',
+  background: '#f4f5ef',
+  blue: '#9297bb',
   card: '#ffffff',
-  green: '#5f835f',
-  label: '#111111',
-  line: '#e5e5ea',
-  secondary: '#6c6c70',
-  tertiary: '#aeaeb2',
+  green: '#6f8f6d',
+  label: '#2c341b',
+  line: '#dfe7dc',
+  secondary: '#8b9085',
+  tertiary: '#b7bdb3',
 };
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
 
