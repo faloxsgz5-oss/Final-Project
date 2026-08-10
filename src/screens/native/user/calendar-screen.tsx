@@ -211,7 +211,9 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     backgroundColor: 'transparent',
     monthTextColor: C.label,
     textMonthFontFamily: F.b,
-    textMonthFontSize: 0,
+    // Android's native text renderer rejects fontSize: 0. Keep the built-in
+    // CalendarList month label visually hidden without crashing month mode.
+    textMonthFontSize: 1,
     textSectionTitleColor: C.secondary,
     textDayHeaderFontFamily: F.s,
     textDayHeaderFontSize: 10,
