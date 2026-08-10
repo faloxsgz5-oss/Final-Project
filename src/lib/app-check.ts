@@ -10,9 +10,12 @@ import {isDemoMode} from '@/lib/demo-mode';
 import {firebaseApp} from '@/lib/firebase';
 
 const APP_CHECK_TOKEN_LIFETIME_MS = 50 * 60 * 1000;
+const APP_CHECK_RETRY_COOLDOWN_MS = 60 * 1000;
 
 let appCheckReadyPromise: Promise<void> | null = null;
 let webAppCheckInstance: AppCheck | null = null;
+let appCheckRetryAfter = 0;
+let appCheckLastError: unknown = null;
 
 export class AppCheckUnavailableError extends Error {
   readonly code = 'app-check/native-module-missing';
@@ -60,7 +63,12 @@ async function initializeAndroidAppCheck() {
       import('@react-native-firebase/app-check'),
     ]);
 
-    const debugToken = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN?.trim();
+    // Expo exposes an empty string for a declared-but-empty environment
+    // variable. RN Firebase treats that as an explicit debug secret and sends
+    // it to App Check, which responds with `debug_token cannot be empty`.
+    // Normalize it to undefined so the Android SDK can create and persist its
+    // own debug secret for this emulator instead.
+    const debugToken = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN?.trim() || undefined;
     // Android emulators and locally installed development clients cannot pass
     // Play Integrity. Use Firebase's debug provider only in development; a
     // release build always keeps Play Integrity enabled.
@@ -112,13 +120,27 @@ export function ensureAppCheckReady() {
     return Promise.reject(new AppCheckUnavailableError());
   }
 
+  // App Check throttles clients that repeatedly request a token after a
+  // provider/configuration error. Reuse the most recent error briefly instead
+  // of letting several screens and services hammer the endpoint at once.
+  if (!appCheckReadyPromise && appCheckLastError && Date.now() < appCheckRetryAfter) {
+    return Promise.reject(appCheckLastError);
+  }
+
   if (!appCheckReadyPromise) {
-    appCheckReadyPromise = initializeAndroidAppCheck().catch((error) => {
-      // A throttled or transient Play Integrity failure must be retryable on
-      // the next user request instead of poisoning the app for the session.
-      appCheckReadyPromise = null;
-      throw error;
-    });
+    appCheckReadyPromise = initializeAndroidAppCheck()
+      .then(() => {
+        appCheckLastError = null;
+        appCheckRetryAfter = 0;
+      })
+      .catch((error) => {
+        // Keep failures retryable, but only after a short cooldown so App
+        // Check has time to clear its server-side throttling window.
+        appCheckLastError = error;
+        appCheckRetryAfter = Date.now() + APP_CHECK_RETRY_COOLDOWN_MS;
+        appCheckReadyPromise = null;
+        throw error;
+      });
   }
   return appCheckReadyPromise;
 }
