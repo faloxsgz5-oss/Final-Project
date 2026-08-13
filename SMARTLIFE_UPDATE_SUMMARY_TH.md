@@ -159,8 +159,10 @@ C:\Users\konpo\Downloads\Final-Project\SmartLife-latest-fixed.apk
 - ทดสอบ Adaptive Scheduling บน MuMu แล้วสามารถโหลดคำแนะนำ ภาระงาน 7 วัน
   รูปแบบที่เรียนรู้ และ Productivity Insights ได้
 
-งานถูกส่งขึ้น branch แยก `codex/merge-kim-updates-into-friend` ใน repo ของเพื่อน
-เพื่อให้ทีมตรวจ diff และ merge โดยไม่เขียนทับ branch หลักโดยตรง
+งานถูกส่งขึ้น branch แยก `codex/merge-kim-updates-into-friend` ใน repo KIM
+`konpong2006-pixel/Final-Project-KIKIM` เพื่อให้เพื่อนเพิ่ม remote `kim` ตรวจ diff
+และ merge โดยไม่เขียนทับ branch หลักโดยตรง บัญชี KIM ไม่มีสิทธิ์ push เข้า repo เพื่อน
+จึงใช้วิธีส่ง branch ผ่าน repo KIM แทน
 
 ## สรุปภาพรวม
 

@@ -5,23 +5,24 @@
 ## สรุป branch ที่ต้องใช้
 
 - repo เพื่อน: `https://github.com/faloxsgz5-oss/Final-Project.git`
-- repo เพื่อนมี branch ส่งมอบแล้ว: `codex/merge-kim-updates-into-friend`
-- สำเนาสำรองใน repo KIM: `https://github.com/konpong2006-pixel/Final-Project-KIKIM.git`
-- ตรวจ commit ล่าสุดด้วย `git log -1 --oneline origin/codex/merge-kim-updates-into-friend`
+- repo KIM ที่เก็บ branch ส่งมอบ: `https://github.com/konpong2006-pixel/Final-Project-KIKIM.git`
+- branch ส่งมอบ: `codex/merge-kim-updates-into-friend`
+- ตรวจ commit ล่าสุดด้วย `git log -1 --oneline kim/codex/merge-kim-updates-into-friend`
 
 > อัปเดต 13 สิงหาคม 2026: branch งานของเพื่อน `agent/sync-complete-smartlife-system`
 > มี commit ใหม่ที่แก้ไฟล์เดียวกันหลายจุด จึงไม่ควรเลือก `ours` หรือ `theirs` ทั้งชุด
 > ให้ merge บน branch ใหม่และตรวจ conflict เป็นรายฟีเจอร์ตามขั้นตอนด้านล่าง
 
-## วิธีที่ง่ายที่สุด: clone แล้ว checkout branch ส่งมอบจาก repo เพื่อน
+## วิธีที่ง่ายที่สุด: clone แล้ว checkout branch ส่งมอบจาก repo KIM
 
 เปิด CMD หรือ PowerShell แล้วรัน:
 
 ```powershell
 git clone https://github.com/faloxsgz5-oss/Final-Project.git
 cd Final-Project
-git fetch origin
-git switch -c test-kim-merged origin/codex/merge-kim-updates-into-friend
+git remote add kim https://github.com/konpong2006-pixel/Final-Project-KIKIM.git
+git fetch kim codex/merge-kim-updates-into-friend
+git switch -c test-kim-merged kim/codex/merge-kim-updates-into-friend
 npm install
 npm --prefix functions install
 npm run typecheck
@@ -39,7 +40,9 @@ npm run test:line-import
 git switch agent/sync-complete-smartlife-system
 git pull --ff-only origin agent/sync-complete-smartlife-system
 git switch -c merge-kim-updates
-git merge --no-ff origin/codex/merge-kim-updates-into-friend
+git remote get-url kim 2>$null; if ($LASTEXITCODE -ne 0) { git remote add kim https://github.com/konpong2006-pixel/Final-Project-KIKIM.git }
+git fetch kim codex/merge-kim-updates-into-friend
+git merge --no-ff kim/codex/merge-kim-updates-into-friend
 npm run typecheck
 npm --prefix functions run build
 npm run test:line-import
