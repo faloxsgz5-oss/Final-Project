@@ -29,6 +29,7 @@ import {reviewScheduleCoursesAndExamsWithGemini} from "./schedule-parsers/gemini
 import {buildCourseTableLookup, mergeCourseTableNames} from "./schedule-parsers/vision-course-table";
 import {mergeExamFields, parseOptionalExamTable} from "./schedule-parsers/vision-exam-table";
 import {parseSpatialScheduleGrid} from "./schedule-parsers/vision-grid-table";
+import {createAdaptiveSchedulingFunctions} from "./adaptive-scheduling/functions";
 
 export {
   cleanupExpiredLinePendingReviews,
@@ -48,6 +49,29 @@ const region = "asia-southeast1";
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
 const geminiOcrApiKey = defineSecret("GEMINI_OCR_API_KEY");
 const iappApiKey = defineSecret("IAPP_API_KEY");
+
+export const {
+  acceptSchedulingSuggestion,
+  activateAdaptiveScheduling,
+  calculateSchedulingPatterns,
+  chooseAlternativeSchedulingTime,
+  createAdaptiveActivity,
+  deleteSchedulingBehaviorHistory,
+  deleteSchedulingPattern,
+  generateAdaptiveSuggestion,
+  getAdaptiveSchedulingDashboard,
+  lockAdaptiveScheduleItem,
+  processNaturalLanguageScheduleCommand,
+  rebalanceUserDay,
+  rebalanceUserWeek,
+  recordSchedulingBehavior,
+  registerAdaptivePushToken,
+  rejectSchedulingSuggestion,
+  scheduledAdaptivePatternRecalculation,
+  scheduledAutomaticAdaptiveScheduling,
+  undoScheduleChange,
+  updateAdaptiveSchedulingPreferences,
+} = createAdaptiveSchedulingFunctions({db, geminiApiKey, region});
 
 const SMARTLIFE_ASSISTANT_SYSTEM_PROMPT = `You are SmartLife AI, an intelligent and empathetic personal assistant embedded in the SmartLife mobile application.
 

@@ -1,6 +1,7 @@
 "use strict";
+var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.processLineBankNotification = exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
+exports.processLineBankNotification = exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.updateAdaptiveSchedulingPreferences = exports.undoScheduleChange = exports.scheduledAutomaticAdaptiveScheduling = exports.scheduledAdaptivePatternRecalculation = exports.rejectSchedulingSuggestion = exports.registerAdaptivePushToken = exports.recordSchedulingBehavior = exports.rebalanceUserWeek = exports.rebalanceUserDay = exports.processNaturalLanguageScheduleCommand = exports.lockAdaptiveScheduleItem = exports.getAdaptiveSchedulingDashboard = exports.generateAdaptiveSuggestion = exports.deleteSchedulingPattern = exports.deleteSchedulingBehaviorHistory = exports.createAdaptiveActivity = exports.chooseAlternativeSchedulingTime = exports.calculateSchedulingPatterns = exports.activateAdaptiveScheduling = exports.acceptSchedulingSuggestion = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
 exports.addReceiptReview = addReceiptReview;
 const vision_1 = require("@google-cloud/vision");
 const app_1 = require("firebase-admin/app");
@@ -22,6 +23,7 @@ const gemini_course_exam_review_1 = require("./schedule-parsers/gemini-course-ex
 const vision_course_table_1 = require("./schedule-parsers/vision-course-table");
 const vision_exam_table_1 = require("./schedule-parsers/vision-exam-table");
 const vision_grid_table_1 = require("./schedule-parsers/vision-grid-table");
+const functions_1 = require("./adaptive-scheduling/functions");
 var line_import_1 = require("./line-import");
 Object.defineProperty(exports, "cleanupExpiredLinePendingReviews", { enumerable: true, get: function () { return line_import_1.cleanupExpiredLinePendingReviews; } });
 Object.defineProperty(exports, "confirmLineTransaction", { enumerable: true, get: function () { return line_import_1.confirmLineTransaction; } });
@@ -38,6 +40,7 @@ const region = "asia-southeast1";
 const geminiApiKey = (0, params_1.defineSecret)("GEMINI_API_KEY");
 const geminiOcrApiKey = (0, params_1.defineSecret)("GEMINI_OCR_API_KEY");
 const iappApiKey = (0, params_1.defineSecret)("IAPP_API_KEY");
+_a = (0, functions_1.createAdaptiveSchedulingFunctions)({ db, geminiApiKey, region }), exports.acceptSchedulingSuggestion = _a.acceptSchedulingSuggestion, exports.activateAdaptiveScheduling = _a.activateAdaptiveScheduling, exports.calculateSchedulingPatterns = _a.calculateSchedulingPatterns, exports.chooseAlternativeSchedulingTime = _a.chooseAlternativeSchedulingTime, exports.createAdaptiveActivity = _a.createAdaptiveActivity, exports.deleteSchedulingBehaviorHistory = _a.deleteSchedulingBehaviorHistory, exports.deleteSchedulingPattern = _a.deleteSchedulingPattern, exports.generateAdaptiveSuggestion = _a.generateAdaptiveSuggestion, exports.getAdaptiveSchedulingDashboard = _a.getAdaptiveSchedulingDashboard, exports.lockAdaptiveScheduleItem = _a.lockAdaptiveScheduleItem, exports.processNaturalLanguageScheduleCommand = _a.processNaturalLanguageScheduleCommand, exports.rebalanceUserDay = _a.rebalanceUserDay, exports.rebalanceUserWeek = _a.rebalanceUserWeek, exports.recordSchedulingBehavior = _a.recordSchedulingBehavior, exports.registerAdaptivePushToken = _a.registerAdaptivePushToken, exports.rejectSchedulingSuggestion = _a.rejectSchedulingSuggestion, exports.scheduledAdaptivePatternRecalculation = _a.scheduledAdaptivePatternRecalculation, exports.scheduledAutomaticAdaptiveScheduling = _a.scheduledAutomaticAdaptiveScheduling, exports.undoScheduleChange = _a.undoScheduleChange, exports.updateAdaptiveSchedulingPreferences = _a.updateAdaptiveSchedulingPreferences;
 const SMARTLIFE_ASSISTANT_SYSTEM_PROMPT = `You are SmartLife AI, an intelligent and empathetic personal assistant embedded in the SmartLife mobile application.
 
 SCOPE

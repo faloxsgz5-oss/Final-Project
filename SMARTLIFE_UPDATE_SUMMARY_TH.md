@@ -144,6 +144,26 @@ C:\Users\konpo\Downloads\Final-Project\SmartLife-latest-fixed.apk
 - remote ที่เป็นของเพื่อนคือ `origin`
 - remote ที่เป็นของผู้ใช้คือ `personal`
 
+## 15. อัปเดตส่งมอบล่าสุดสำหรับรวมกับงานเพื่อน
+
+- กู้แท็บ `Adaptive` ให้กลับมาแสดงในหน้า Planner
+- ปรับปฏิทินให้ใช้งานคล้ายปฏิทิน iPhone โดยยังคงชุดสีเดิมของ SmartLife
+- แก้ Android crash เมื่อเปิดมุมมองรายเดือนของปฏิทิน
+- แก้การบันทึกกิจกรรมที่ติด `Missing or insufficient permissions`
+- แกะวันที่และเวลาจริงจากข้อความแจ้งเตือนธนาคาร ไม่ใช้เวลาเดียวกันทุกรายการ
+- รองรับรูปแบบแจ้งเตือน K PLUS/KBank อย่างปลอดภัย และไม่เดาจำนวนเงินจากข้อความ LINE ที่ไม่มีจำนวนเงิน
+- ป้องกันหน้ารายการนำเข้าการเงินค้างที่ `กำลังโหลดรายการจาก Firebase`
+- แก้ Firebase App Check สำหรับ Adaptive Scheduling บน Android development build/MuMu
+  โดยไม่ส่ง debug token หรือ secret ขึ้น Git
+- เพิ่ม cooldown เมื่อขอ App Check token ล้มเหลว ป้องกัน Firebase จำกัดการเรียกจากการลองซ้ำถี่เกินไป
+- ทดสอบ Adaptive Scheduling บน MuMu แล้วสามารถโหลดคำแนะนำ ภาระงาน 7 วัน
+  รูปแบบที่เรียนรู้ และ Productivity Insights ได้
+
+งานถูกส่งขึ้น branch แยก `codex/merge-kim-updates-into-friend` ใน repo KIM
+`konpong2006-pixel/Final-Project-KIKIM` เพื่อให้เพื่อนเพิ่ม remote `kim` ตรวจ diff
+และ merge โดยไม่เขียนทับ branch หลักโดยตรง บัญชี KIM ไม่มีสิทธิ์ push เข้า repo เพื่อน
+จึงใช้วิธีส่ง branch ผ่าน repo KIM แทน
+
 ## สรุปภาพรวม
 
 จากโปรเจกต์เดิม ได้มีการต่อยอด SmartLife ให้มีความสามารถหลักเพิ่มขึ้น ได้แก่ AI Assistant, AI Dynamic, ระบบวิเคราะห์งานและ Burnout, ระบบการเงิน, ระบบนำเข้าธุรกรรมจาก LINE ธนาคาร, ระบบแจ้งเตือนงาน, Smart Scan OCR และการเชื่อม Firebase จริง ทำให้แอปมีความใกล้เคียงกับการใช้งานจริงมากขึ้น

@@ -1,8 +1,8 @@
 import {useState} from 'react';
 
 import CalendarScreen from './calendar-screen';
-import NotesScreen from './notes-screen';
 import AdaptiveSchedulingScreen from './adaptive-scheduling-screen';
+import NotesScreen from './notes-screen';
 import type {UserNavigate} from './user-ui';
 
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';

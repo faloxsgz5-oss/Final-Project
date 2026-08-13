@@ -1,148 +1,437 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Animated, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View} from 'react-native';
-import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
-import {LinearGradient} from 'expo-linear-gradient';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import {CalendarList, CalendarProvider, LocaleConfig, WeekCalendar, type DateData} from 'react-native-calendars';
 
+import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
 import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
-import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+import {MaterialIcon, UserTabBar} from './user-ui';
 
 type Page = 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month';
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
-type Props = {onNavigate: (page: string) => void; page: Page; planner?: {activeTab: PlannerTab; onTabChange: (tab: PlannerTab) => void}; uid: string};
 type ViewMode = 'day' | 'week' | 'month' | 'year';
-type EventItem = Record<string, unknown> & {id?: string; title?: string; color?: string; entityType?: 'activity' | 'schedule'; location?: string; courseCode?: string; seriesId?: string; type?: string};
+type EventItem = Record<string, unknown> & {
+  id?: string;
+  title?: string;
+  color?: string;
+  entityType?: 'activity' | 'schedule';
+  location?: string;
+  courseCode?: string;
+  seriesId?: string;
+  type?: string;
+};
+type Props = {
+  onNavigate: (page: string) => void;
+  page: Page;
+  planner?: {activeTab: PlannerTab; onTabChange: (tab: PlannerTab) => void};
+  uid: string;
+};
 
-const C = {pine: '#2c341b', sage: '#6f8f6d', dark: '#5f835f', soft: '#dfe7dc', mist: '#f4f5ef', muted: '#8b9085', note: '#bb9293', finance: '#9297bb'};
+const C = {
+  accent: '#5f835f',
+  accentSoft: '#dfe7dc',
+  background: '#f4f5ef',
+  blue: '#9297bb',
+  card: '#ffffff',
+  green: '#6f8f6d',
+  label: '#2c341b',
+  line: '#dfe7dc',
+  secondary: '#8b9085',
+  tertiary: '#b7bdb3',
+};
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
-LocaleConfig.locales.th = {monthNames: ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'], monthNamesShort: ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'], dayNames: ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'], dayNamesShort: ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'], today: 'วันนี้'};
+
+LocaleConfig.locales.th = {
+  monthNames: ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'],
+  monthNamesShort: ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'],
+  dayNames: ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'],
+  dayNamesShort: ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'],
+  today: 'วันนี้',
+};
 LocaleConfig.defaultLocale = 'th';
 
 function pad(value: number) { return String(value).padStart(2, '0'); }
-function todayKey() { const parts = new Intl.DateTimeFormat('en-US', {year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Bangkok'}).formatToParts(new Date()); const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''; return `${get('year')}-${get('month')}-${get('day')}`; }
-function toDate(value: unknown) { if (value && typeof value === 'object' && 'toDate' in value && typeof (value as {toDate?: unknown}).toDate === 'function') return (value as {toDate: () => Date}).toDate(); const date = new Date(String(value ?? '')); return Number.isNaN(date.getTime()) ? new Date() : date; }
-function dateKey(value: unknown) { const parts = new Intl.DateTimeFormat('en-US', {year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Bangkok'}).formatToParts(toDate(value)); const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''; return `${get('year')}-${get('month')}-${get('day')}`; }
+function toDate(value: unknown) {
+  if (value && typeof value === 'object' && 'toDate' in value && typeof (value as {toDate?: unknown}).toDate === 'function') return (value as {toDate: () => Date}).toDate();
+  const date = new Date(String(value ?? ''));
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+function bangkokParts(value: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).formatToParts(value);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return {year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute')};
+}
+function todayKey() { const part = bangkokParts(new Date()); return `${part.year}-${part.month}-${part.day}`; }
+function dateKey(value: unknown) { const part = bangkokParts(toDate(value)); return `${part.year}-${part.month}-${part.day}`; }
 function formatTime(value: unknown) { return new Intl.DateTimeFormat('th-TH', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(toDate(value)); }
-function formatSelected(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
-function rangeFor(value: string, mode: ViewMode) { const [year, month, day] = value.split('-').map(Number); if (mode === 'year') return {from: new Date(Date.UTC(year, 0, 1) - 7 * 3600000), to: new Date(Date.UTC(year + 1, 0, 1) - 7 * 3600000)}; if (mode === 'month') return {from: new Date(Date.UTC(year, month - 1, 1) - 7 * 3600000), to: new Date(Date.UTC(year, month, 1) - 7 * 3600000)}; if (mode === 'day') { const from = new Date(Date.UTC(year, month - 1, day) - 7 * 3600000); return {from, to: new Date(from.getTime() + 86400000)}; } const base = new Date(Date.UTC(year, month - 1, day, 12)); const weekday = base.getUTCDay(); const mondayOffset = weekday === 0 ? -6 : 1 - weekday; const monday = new Date(Date.UTC(year, month - 1, day + mondayOffset) - 7 * 3600000); return {from: monday, to: new Date(monday.getTime() + 7 * 86400000)}; }
-function shift(value: string, mode: ViewMode, direction: number) { const [year, month, day] = value.split('-').map(Number); const date = new Date(Date.UTC(year, month - 1, day, 12)); if (mode === 'year') date.setUTCFullYear(date.getUTCFullYear() + direction); else if (mode === 'month') date.setUTCMonth(date.getUTCMonth() + direction); else date.setUTCDate(date.getUTCDate() + (mode === 'week' ? 7 : 1) * direction); return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`; }
-function offsetDate(value: string, amount: number) { const [year, month, day] = value.split('-').map(Number); const date = new Date(Date.UTC(year, month - 1, day + amount, 12)); return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`; }
+function formatLongDate(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
+function formatMonth(value: string) { return new Intl.DateTimeFormat('th-TH', {month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
 function shortDay(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'short', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
-function miniMonthDays(year: number, month: number) { const first = new Date(Date.UTC(year, month, 1, 12)); const leading = (first.getUTCDay() + 6) % 7; const count = new Date(Date.UTC(year, month + 1, 0, 12)).getUTCDate(); return [...Array(leading).fill(null), ...Array.from({length: count}, (_, index) => `${year}-${pad(month + 1)}-${pad(index + 1)}`)]; }
-function minutesInBangkok(value: Date) { const parts = new Intl.DateTimeFormat('en-US', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).formatToParts(value); const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0); return get('hour') * 60 + get('minute'); }
 function eventTitle(item: EventItem) { return typeof item.title === 'string' && item.title.trim() ? item.title : 'กิจกรรม'; }
+function textEvent(value: unknown, fallback: string) { return typeof value === 'string' && value.trim() ? value : fallback; }
+function offsetDate(value: string, amount: number) {
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + amount, 12));
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+function shift(value: string, mode: ViewMode, direction: number) {
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  if (mode === 'year') date.setUTCFullYear(date.getUTCFullYear() + direction);
+  else if (mode === 'month') date.setUTCMonth(date.getUTCMonth() + direction);
+  else date.setUTCDate(date.getUTCDate() + (mode === 'week' ? 7 : 1) * direction);
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+function rangeFor(value: string, mode: ViewMode) {
+  const [year, month, day] = value.split('-').map(Number);
+  if (mode === 'year') return {from: new Date(Date.UTC(year, 0, 1) - 7 * 3600000), to: new Date(Date.UTC(year + 1, 0, 1) - 7 * 3600000)};
+  if (mode === 'month') return {from: new Date(Date.UTC(year, month - 1, 1) - 7 * 3600000), to: new Date(Date.UTC(year, month, 1) - 7 * 3600000)};
+  if (mode === 'day') {
+    const from = new Date(Date.UTC(year, month - 1, day) - 7 * 3600000);
+    return {from, to: new Date(from.getTime() + 86400000)};
+  }
+  const base = new Date(Date.UTC(year, month - 1, day, 12));
+  const weekday = base.getUTCDay();
+  const mondayOffset = weekday === 0 ? -6 : 1 - weekday;
+  const monday = new Date(Date.UTC(year, month - 1, day + mondayOffset) - 7 * 3600000);
+  return {from: monday, to: new Date(monday.getTime() + 7 * 86400000)};
+}
+function miniMonthDays(year: number, month: number) {
+  const first = new Date(Date.UTC(year, month, 1, 12));
+  const leading = (first.getUTCDay() + 6) % 7;
+  const count = new Date(Date.UTC(year, month + 1, 0, 12)).getUTCDate();
+  return [...Array(leading).fill(null), ...Array.from({length: count}, (_, index) => `${year}-${pad(month + 1)}-${pad(index + 1)}`)];
+}
 
 export default function CalendarScreen({onNavigate, page, planner, uid}: Props) {
-  const {width} = useWindowDimensions(); const calendarWidth = Math.min(Math.max(width - 40, 310), 680); const [today] = useState(todayKey);
-  const [mode, setMode] = useState<ViewMode>(page === 'smartlife_calendar_month' ? 'month' : page === 'smartlife_calendar_week' ? 'week' : 'day'); const [selectedDate, setSelectedDate] = useState(today); const [visibleDate, setVisibleDate] = useState(today); const [events, setEvents] = useState<EventItem[]>([]); const [loading, setLoading] = useState(true); const [refreshing, setRefreshing] = useState(false); const [detailsOpen, setDetailsOpen] = useState(false); const [now, setNow] = useState(() => new Date());
-  const [transition] = useState(() => new Animated.Value(1)); const [sheet] = useState(() => new Animated.Value(360));
+  const {width} = useWindowDimensions();
+  const calendarWidth = Math.min(Math.max(width - 32, 310), 680);
+  const [today] = useState(todayKey);
+  const [mode, setMode] = useState<ViewMode>(page === 'smartlife_calendar_month' ? 'month' : page === 'smartlife_calendar_week' ? 'week' : 'day');
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [visibleDate, setVisibleDate] = useState(today);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
-  const load = useCallback(async () => { setLoading(true); try { const {from, to} = rangeFor(visibleDate, mode); const [classItems, activityItems] = await Promise.all([schedules.between(uid, from, to), activities.between(uid, from, to)]); const classes = classItems.map((item) => ({...item, entityType: 'schedule' as const})); const activitiesWithType = activityItems.map((item) => ({...item, entityType: 'activity' as const})); setEvents([...classes, ...activitiesWithType].sort((a, b) => toDate(a.startAt).getTime() - toDate(b.startAt).getTime())); } finally { setLoading(false); } }, [mode, uid, visibleDate]);
-  useEffect(() => { load().catch(() => {setEvents([]); setLoading(false);}); }, [load]);
-  useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(timer); }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const {from, to} = rangeFor(visibleDate, mode);
+      const [classItems, activityItems] = await Promise.all([schedules.between(uid, from, to), activities.between(uid, from, to)]);
+      setEvents([
+        ...classItems.map((item) => ({...item, entityType: 'schedule' as const})),
+        ...activityItems.map((item) => ({...item, entityType: 'activity' as const})),
+      ].sort((a, b) => toDate(a.startAt).getTime() - toDate(b.startAt).getTime()));
+    } finally {
+      setLoading(false);
+    }
+  }, [mode, uid, visibleDate]);
+
+  useEffect(() => { load().catch(() => { setEvents([]); setLoading(false); }); }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
-  const grouped = useMemo(() => events.reduce<Record<string, EventItem[]>>((result, item) => { const key = dateKey(item.startAt); (result[key] ??= []).push(item); return result; }, {}), [events]);
+  const grouped = useMemo(() => events.reduce<Record<string, EventItem[]>>((result, item) => {
+    const key = dateKey(item.startAt);
+    (result[key] ??= []).push(item);
+    return result;
+  }, {}), [events]);
   const selectedEvents = grouped[selectedDate] ?? [];
-  const dayStrip = useMemo(() => [-2, -1, 0, 1, 2].map((offset) => offsetDate(visibleDate, offset)), [visibleDate]);
-  const yearMonths = useMemo(() => { const year = Number(visibleDate.slice(0, 4)); return Array.from({length: 12}, (_, month) => ({month, days: miniMonthDays(year, month)})); }, [visibleDate]);
+  const dayStrip = useMemo(() => [-3, -2, -1, 0, 1, 2, 3].map((offset) => offsetDate(selectedDate, offset)), [selectedDate]);
+  const yearMonths = useMemo(() => {
+    const year = Number(visibleDate.slice(0, 4));
+    return Array.from({length: 12}, (_, month) => ({month, days: miniMonthDays(year, month)}));
+  }, [visibleDate]);
 
-  const switchMode = (next: ViewMode) => { if (next === mode) return; transition.setValue(0); setMode(next); setVisibleDate(selectedDate); Animated.spring(transition, {toValue: 1, useNativeDriver: true, damping: 16, stiffness: 170}).start(); };
-  const openDay = (value: string) => { setSelectedDate(value); setVisibleDate(value); setDetailsOpen(true); sheet.setValue(360); Animated.spring(sheet, {toValue: 0, useNativeDriver: true, damping: 18, stiffness: 180}).start(); };
-  const closeDetails = () => Animated.timing(sheet, {toValue: 360, duration: 180, useNativeDriver: true}).start(() => setDetailsOpen(false));
-  const navigate = (direction: number) => { const next = shift(visibleDate, mode, direction); setVisibleDate(next); setSelectedDate(next); transition.setValue(.45); Animated.timing(transition, {toValue: 1, duration: 220, useNativeDriver: true}).start(); };
-  const goToday = () => { setSelectedDate(today); setVisibleDate(today); transition.setValue(.45); Animated.timing(transition, {toValue: 1, duration: 220, useNativeDriver: true}).start(); };
+  const openDay = (value: string, showDetails = false) => {
+    setSelectedDate(value);
+    setVisibleDate(value);
+    if (showDetails) setDetailsOpen(true);
+  };
+  const navigate = (direction: number) => {
+    const next = shift(visibleDate, mode, direction);
+    setVisibleDate(next);
+    setSelectedDate(next);
+  };
+  const goToday = () => { setSelectedDate(today); setVisibleDate(today); };
+
   const deleteEvent = useCallback((event: EventItem) => {
     if (!event.id || !event.entityType) return;
     if (event.entityType === 'schedule') {
-      const courseCode = typeof event.courseCode === 'string' && event.courseCode.trim()
-        ? event.courseCode.replace(/\s+/g, '').toUpperCase()
-        : eventTitle(event);
+      const courseCode = typeof event.courseCode === 'string' && event.courseCode.trim() ? event.courseCode.replace(/\s+/g, '').toUpperCase() : eventTitle(event);
       const seriesId = typeof event.seriesId === 'string' && event.seriesId.trim() ? event.seriesId : undefined;
-      Alert.alert(
-        'Delete Course Series?',
-        `Are you sure you want to delete ALL schedules for ${courseCode}?`,
-        [
-          {text: 'Cancel', style: 'cancel'},
-          {
-            text: 'Delete All',
-            style: 'destructive',
-            onPress: () => {
-              setEvents((current) => current.filter((item) => seriesId
-                ? item.seriesId !== seriesId
-                : item.courseCode?.replace(/\s+/g, '').toUpperCase() !== courseCode));
-              deleteCourseSeries(uid, courseCode, seriesId).catch((error) => {
-                console.error('[Calendar] Delete course series failed', {
-                  courseCode,
-                  message: error instanceof Error ? error.message : String(error),
-                  seriesId,
-                });
-                load().catch(() => undefined);
-                Alert.alert('Delete failed', 'The course schedules were restored. Please check your internet connection and try again.');
-              });
-            },
-          },
-        ],
-      );
+      Alert.alert('ลบวิชานี้ทั้งหมดหรือไม่?', `ตารางทั้งหมดของ ${courseCode} จะถูกลบออก`, [
+        {text: 'ยกเลิก', style: 'cancel'},
+        {text: 'ลบทั้งหมด', style: 'destructive', onPress: () => {
+          setEvents((current) => current.filter((item) => seriesId ? item.seriesId !== seriesId : item.courseCode?.replace(/\s+/g, '').toUpperCase() !== courseCode));
+          deleteCourseSeries(uid, courseCode, seriesId).catch(() => { load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'); });
+        }},
+      ]);
       return;
     }
-    Alert.alert('ลบรายการนี้หรือไม่?', `${eventTitle(event)} จะถูกลบออกจาก Firebase อย่างถาวร`, [
+    Alert.alert('ลบกิจกรรมนี้หรือไม่?', eventTitle(event), [
       {text: 'ยกเลิก', style: 'cancel'},
-      {
-        text: 'ลบถาวร',
-        style: 'destructive',
-        onPress: () => {
-          const deleted = event;
-          setEvents((current) => current.filter((item) => item.id !== deleted.id));
-          const operation = activities.remove(uid, deleted.id as string);
-          operation.catch((error) => {
-            console.error('[Calendar] Delete failed', {id: deleted.id, message: error instanceof Error ? error.message : String(error)});
-            load().catch(() => undefined);
-            Alert.alert('ลบไม่สำเร็จ', 'รายการถูกนำกลับมาแล้ว กรุณาตรวจสอบอินเทอร์เน็ตและลองใหม่');
-          });
-        },
-      },
+      {text: 'ลบ', style: 'destructive', onPress: () => {
+        setEvents((current) => current.filter((item) => item.id !== event.id));
+        activities.remove(uid, event.id as string).catch(() => { load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'); });
+      }},
     ]);
   }, [load, uid]);
 
-  const DayCell = ({date, state}: {date?: DateData; state?: string}) => { if (!date) return null; const key = date.dateString; const selected = key === selectedDate; const isToday = key === today; const dayEvents = grouped[key] ?? []; return <Pressable accessibilityLabel={`${isToday ? 'วันนี้ ' : ''}${formatSelected(key)} มี ${dayEvents.length} กิจกรรม`} accessibilityRole="button" accessibilityState={{selected}} onPress={() => openDay(key)} style={({pressed}) => [styles.dayCell, isToday && styles.todayCell, selected && styles.selectedCell, pressed && styles.dayPressed]}><Text style={[styles.dayNumber, state === 'disabled' && styles.disabledDay, isToday && styles.todayNumber, selected && styles.selectedNumber]}>{date.day}</Text><View style={styles.dots}>{dayEvents.slice(0, 3).map((event, index) => <View key={`${String(event.id)}-${index}`} style={[styles.dot, {backgroundColor: typeof event.color === 'string' ? event.color : index % 2 ? C.note : C.sage}]} />)}</View></Pressable>; };
-
-  const calendarTheme = {calendarBackground: 'transparent', backgroundColor: 'transparent', monthTextColor: C.pine, textMonthFontFamily: F.b, textMonthFontSize: 16, textSectionTitleColor: C.muted, textDayHeaderFontFamily: F.s, textDayHeaderFontSize: 10, arrowColor: C.dark, todayTextColor: C.sage, selectedDayBackgroundColor: C.sage};
-  const hourHeight = 52;
-  const renderCalendarBody = () => {
-    if (mode === 'month') return <CalendarList calendarHeight={360} calendarWidth={calendarWidth} current={visibleDate} dayComponent={DayCell} firstDay={1} futureScrollRange={24} horizontal key={`month-${visibleDate.slice(0, 7)}`} onVisibleMonthsChange={(months) => { if (months[0]?.dateString) setVisibleDate(months[0].dateString); }} pagingEnabled pastScrollRange={24} showScrollIndicator={false} staticHeader theme={calendarTheme} />;
-    if (mode === 'week') return <CalendarProvider date={visibleDate} onDateChanged={(value, source) => { setVisibleDate(value); if (source === 'dayPress') setSelectedDate(value); }}><WeekCalendar allowShadow={false} calendarWidth={calendarWidth} current={visibleDate} dayComponent={DayCell} firstDay={1} markedDates={{}} testID="smartlife-week-calendar" theme={calendarTheme} /></CalendarProvider>;
-    if (mode === 'year') return <View style={styles.yearGrid}>{yearMonths.map(({month, days}) => <View key={month} style={styles.miniMonth}><Pressable accessibilityLabel={`เปิดเดือน ${LocaleConfig.locales.th.monthNames[month]}`} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); switchMode('month'); }}><Text style={styles.miniMonthTitle}>{LocaleConfig.locales.th.monthNamesShort[month]}</Text></Pressable><View style={styles.miniWeek}>{LocaleConfig.locales.th.dayNamesShort.map((name: string) => <Text key={`${month}-${name}`} style={styles.miniWeekText}>{name.slice(0, 1)}</Text>)}</View><View style={styles.miniDays}>{days.map((key, index) => key ? <Pressable accessibilityLabel={`${formatSelected(key)} มี ${grouped[key]?.length ?? 0} กิจกรรม`} accessibilityRole="button" key={key} onPress={() => openDay(key)} style={[styles.miniDay, key === today && styles.miniToday, key === selectedDate && styles.miniSelected]}><Text style={[styles.miniDayText, key === selectedDate && styles.miniSelectedText]}>{Number(key.slice(-2))}</Text>{(grouped[key]?.length ?? 0) > 0 ? <View style={[styles.miniDot, key === selectedDate && styles.dayStripDotActive]} /> : null}</Pressable> : <View key={`empty-${month}-${index}`} style={styles.miniDay} />)}</View></View>)}</View>;
-    return <View style={styles.dayView}><View style={styles.dayStrip}>{dayStrip.map((key) => { const active = key === selectedDate; const isToday = key === today; return <Pressable accessibilityLabel={`${isToday ? 'วันนี้ ' : ''}${formatSelected(key)}`} accessibilityRole="button" accessibilityState={{selected: active}} key={key} onPress={() => {setSelectedDate(key); setVisibleDate(key);}} style={({pressed}) => [styles.dayStripItem, active && styles.dayStripActive, pressed && styles.dayPressed]}><Text style={[styles.dayStripName, active && styles.dayStripTextActive]}>{shortDay(key)}</Text><Text style={[styles.dayStripNumber, active && styles.dayStripTextActive]}>{Number(key.slice(-2))}</Text>{(grouped[key]?.length ?? 0) > 0 ? <View style={[styles.dayStripDot, active && styles.dayStripDotActive]} /> : null}</Pressable>; })}</View><View style={styles.dayHero}><View style={styles.dayHeroIcon}><MaterialIcon color={C.dark} name="today" size={24} /></View><View style={{flex: 1}}><Text style={styles.dayHeroLabel}>{selectedDate === today ? 'วันนี้' : 'วันที่เลือก'}</Text><Text numberOfLines={1} style={styles.dayHeroTitle}>{formatSelected(selectedDate)}</Text></View><View style={styles.dayHeroCount}><Text style={styles.dayHeroCountText}>{selectedEvents.length}</Text></View></View><View style={[styles.timeGrid, {height: 24 * hourHeight}]}>{Array.from({length: 24}, (_, hour) => <View key={hour} style={[styles.hourRow, {height: hourHeight, top: hour * hourHeight}]}><Text style={styles.hourLabel}>{pad(hour)}:00</Text><View style={styles.hourLine} /></View>)}{selectedEvents.map((event, index) => { const start = minutesInBangkok(toDate(event.startAt)); const end = Math.max(start + 30, minutesInBangkok(toDate(event.endAt))); const top = start * hourHeight / 60; const height = Math.max(30, Math.min(24 * hourHeight - top, (end - start) * hourHeight / 60)); const color = typeof event.color === 'string' ? event.color : C.sage; return <Pressable accessibilityLabel={`${eventTitle(event)} ${formatTime(event.startAt)} ถึง ${formatTime(event.endAt)}`} accessibilityRole="button" key={String(event.id ?? index)} onPress={() => openDay(selectedDate)} style={({pressed}) => [styles.timeEvent, {backgroundColor: `${color}24`, borderLeftColor: color, height, top}, pressed && styles.pressed]}><Text numberOfLines={1} style={styles.timeEventTitle}>{eventTitle(event)}</Text><Text numberOfLines={1} style={styles.timeEventMeta}>{formatTime(event.startAt)} - {formatTime(event.endAt)}</Text></Pressable>; })}{selectedDate === today ? <View accessibilityLabel={`เวลาปัจจุบัน ${formatTime(now)}`} style={[styles.nowLine, {top: minutesInBangkok(now) * hourHeight / 60}]}><View style={styles.nowDot} /><Text style={styles.nowText}>{formatTime(now)}</Text></View> : null}</View></View>;
+  const DayCell = ({date, state}: {date?: DateData; state?: string}) => {
+    if (!date) return null;
+    const key = date.dateString;
+    const selected = key === selectedDate;
+    const isToday = key === today;
+    const dayEvents = grouped[key] ?? [];
+    return (
+      <Pressable accessibilityLabel={`${formatLongDate(key)} มี ${dayEvents.length} รายการ`} accessibilityRole="button" accessibilityState={{selected}} onPress={() => openDay(key)} style={({pressed}) => [styles.dayCell, pressed && styles.pressed]}>
+        <View style={[styles.dayCircle, isToday && styles.todayCircle, selected && !isToday && styles.selectedCircle]}>
+          <Text style={[styles.dayNumber, state === 'disabled' && styles.disabledDay, isToday && styles.todayNumber, selected && !isToday && styles.selectedNumber]}>{date.day}</Text>
+        </View>
+        <View style={styles.dots}>{dayEvents.slice(0, 3).map((event, index) => <View key={`${String(event.id)}-${index}`} style={[styles.dot, {backgroundColor: typeof event.color === 'string' ? event.color : index % 2 ? C.blue : C.green}]} />)}</View>
+      </Pressable>
+    );
   };
 
-  return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop /><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
-    <View style={styles.header}><View><Text style={styles.eyebrow}>SmartLife Schedule</Text><Text style={styles.title}>ปฏิทินของฉัน</Text></View><Pressable accessibilityLabel="นำเข้าตารางเรียน" onPress={() => onNavigate('smartlife_scan_schedule')} style={styles.importButton}><MaterialIcon color="#fff" name="document_scanner" size={20} /></Pressable></View>
-    {planner ? <View accessibilityRole="tablist" style={styles.plannerTabs}><Pressable accessibilityRole="tab" accessibilityState={{selected: planner.activeTab === 'calendar'}} onPress={() => planner.onTabChange('calendar')} style={[styles.plannerTab, planner.activeTab === 'calendar' && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === 'calendar' && styles.plannerTabTextActive]}>ตาราง</Text></Pressable><Pressable accessibilityRole="tab" accessibilityState={{selected: planner.activeTab === 'notes'}} onPress={() => planner.onTabChange('notes')} style={[styles.plannerTab, planner.activeTab === 'notes' && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === 'notes' && styles.plannerTabTextActive]}>โน้ต</Text></Pressable><Pressable accessibilityRole="tab" accessibilityState={{selected: planner.activeTab === 'adaptive'}} onPress={() => planner.onTabChange('adaptive')} style={[styles.plannerTab, planner.activeTab === 'adaptive' && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === 'adaptive' && styles.plannerTabTextActive]}>Adaptive</Text></Pressable></View> : null}
-    <GoogleCalendarSyncCard onSynced={load} uid={uid} />
-    <View accessibilityLabel="เลือกมุมมองปฏิทิน" accessibilityRole="tablist" style={styles.toggle}>{(['day', 'week', 'month', 'year'] as ViewMode[]).map((item) => <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => switchMode(item)} style={[styles.toggleItem, mode === item && styles.toggleActive]}><Text style={[styles.modeLetter, mode === item && styles.toggleTextActive]}>{item === 'day' ? 'D' : item === 'week' ? 'W' : item === 'month' ? 'M' : 'Y'}</Text><Text style={[styles.toggleText, mode === item && styles.toggleTextActive]}>{item === 'day' ? 'วัน' : item === 'week' ? 'สัปดาห์' : item === 'month' ? 'เดือน' : 'ปี'}</Text></Pressable>)}</View>
-    <View style={styles.navigation}><Pressable accessibilityLabel="ช่วงก่อนหน้า" onPress={() => navigate(-1)} style={styles.navButton}><MaterialIcon color={C.dark} name="chevron_left" size={23} /></Pressable><View style={styles.navCenter}><Text style={styles.navTitle}>{mode === 'year' ? `พ.ศ. ${Number(visibleDate.slice(0, 4)) + 543}` : mode === 'month' ? new Intl.DateTimeFormat('th-TH', {month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${visibleDate}T12:00:00+07:00`)) : formatSelected(visibleDate)}</Text><Pressable accessibilityLabel="กลับไปวันนี้" onPress={goToday} style={styles.todayButton}><MaterialIcon color={C.dark} name="my_location" size={13} /><Text style={styles.todayButtonText}>วันนี้</Text></Pressable></View><Pressable accessibilityLabel="ช่วงถัดไป" onPress={() => navigate(1)} style={styles.navButton}><MaterialIcon color={C.dark} name="chevron_right" size={23} /></Pressable></View>
-    <Animated.View style={[styles.calendarCard, {opacity: transition, transform: [{translateY: transition.interpolate({inputRange: [0, 1], outputRange: [10, 0]})}]}]}>
-      {renderCalendarBody()}
-      {loading ? <View style={styles.calendarLoading}><ActivityIndicator color={C.sage} /><Text style={styles.loadingText}>กำลังโหลดกิจกรรม</Text></View> : null}
-    </Animated.View>
-    <View style={styles.summaryHead}><View><Text style={styles.sectionTitle}>กิจกรรมวันที่เลือก</Text><Text style={styles.sectionSub}>{formatSelected(selectedDate)}</Text></View><View style={styles.countBadge}><Text style={styles.countText}>{selectedEvents.length}</Text></View></View>
-    <View style={styles.eventList}>{selectedEvents.length ? selectedEvents.map((event, index) => <Pressable accessibilityLabel={`${eventTitle(event)} เวลา ${formatTime(event.startAt)}`} key={String(event.id ?? index)} onPress={() => openDay(selectedDate)} style={({pressed}) => [styles.event, pressed && styles.pressed]}><View style={[styles.eventAccent, {backgroundColor: typeof event.color === 'string' ? event.color : C.sage}]} /><View style={styles.timeBox}><Text style={styles.time}>{formatTime(event.startAt)}</Text><Text style={styles.timeEnd}>{formatTime(event.endAt)}</Text></View><View style={{flex: 1}}><Text style={styles.eventTitle}>{eventTitle(event)}</Text><View style={styles.meta}><MaterialIcon color={C.muted} name="location_on" size={13} /><Text numberOfLines={1} style={styles.metaText}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text></View></View><MaterialIcon color={C.muted} name="chevron_right" size={21} /></Pressable>) : <View style={styles.empty}><MaterialIcon color="#a1aaa0" name="event_available" size={34} /><Text style={styles.emptyTitle}>วันนี้ยังไม่มีกิจกรรม</Text><Text style={styles.emptySub}>เพิ่มกิจกรรมหรือใช้ Smart Importer ได้เลย</Text></View>}</View>
-    <Pressable accessibilityLabel="เพิ่มกิจกรรมใหม่" onPress={() => onNavigate('smartlife_add_activity')} style={({pressed}) => [styles.add, pressed && styles.pressed]}><LinearGradient colors={['#789a75', '#4c7148']} style={styles.addGradient}><MaterialIcon color="#fff" name="add" size={20} /><Text style={styles.addText}>เพิ่มกิจกรรม</Text></LinearGradient></Pressable>
-  </ScrollView><UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_calendar_day'} onNavigate={onNavigate} />
-  <Modal accessibilityViewIsModal animationType="fade" onRequestClose={closeDetails} transparent visible={detailsOpen}><Pressable accessibilityLabel="ปิดรายละเอียดวันที่" onPress={closeDetails} style={styles.overlay}><Animated.View onStartShouldSetResponder={() => true} style={[styles.sheet, {transform: [{translateY: sheet}]}]}><View style={styles.handle} /><View style={styles.sheetHead}><View><Text style={styles.sheetTitle}>{formatSelected(selectedDate)}</Text><Text style={styles.sheetSub}>{selectedEvents.length} กิจกรรม</Text></View><Pressable accessibilityLabel="ปิด" onPress={closeDetails} style={styles.close}><MaterialIcon name="close" size={20} /></Pressable></View><ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <View key={String(event.id ?? index)} style={styles.sheetEvent}><View style={[styles.sheetIcon, {backgroundColor: `${typeof event.color === 'string' ? event.color : C.sage}20`}]}><MaterialIcon color={typeof event.color === 'string' ? event.color : C.sage} name="event" size={20} /></View><View style={{flex: 1}}><Text style={styles.sheetEventTitle}>{eventTitle(event)}</Text><Text style={styles.sheetEventDetail}>{formatTime(event.startAt)} - {formatTime(event.endAt)}</Text><Text style={styles.sheetEventDetail}>{textEvent(event.location, textEvent(event.courseCode, 'ไม่ระบุสถานที่'))}</Text></View><Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} accessibilityRole="button" onPress={() => deleteEvent(event)} style={({pressed}) => [styles.sheetDelete, pressed && styles.pressed]}><MaterialIcon color="#b65f61" name="delete_outline" size={20} /></Pressable></View>) : <View style={styles.sheetEmpty}><Text style={styles.emptyTitle}>ไม่มีรายละเอียดในวันนี้</Text></View>}</ScrollView><Pressable onPress={() => {closeDetails(); onNavigate('smartlife_add_activity');}} style={styles.sheetAdd}><MaterialIcon color="#fff" name="add" size={19} /><Text style={styles.sheetAddText}>เพิ่มกิจกรรมในวันนี้</Text></Pressable></Animated.View></Pressable></Modal>
-  </View></ResponsiveSafeArea>;
+  const calendarTheme = {
+    calendarBackground: 'transparent',
+    backgroundColor: 'transparent',
+    monthTextColor: C.label,
+    textMonthFontFamily: F.b,
+    // Android's native text renderer rejects fontSize: 0. Keep the built-in
+    // CalendarList month label visually hidden without crashing month mode.
+    textMonthFontSize: 1,
+    textSectionTitleColor: C.secondary,
+    textDayHeaderFontFamily: F.s,
+    textDayHeaderFontSize: 10,
+    arrowColor: C.accent,
+  };
+
+  const renderCalendarBody = () => {
+    if (mode === 'month') return (
+      <CalendarList
+        calendarHeight={340}
+        calendarWidth={calendarWidth}
+        current={visibleDate}
+        dayComponent={DayCell}
+        firstDay={1}
+        futureScrollRange={24}
+        horizontal
+        key={`month-${visibleDate.slice(0, 7)}`}
+        onVisibleMonthsChange={(months) => { if (months[0]?.dateString) setVisibleDate(months[0].dateString); }}
+        pagingEnabled
+        pastScrollRange={24}
+        showScrollIndicator={false}
+        staticHeader
+        theme={calendarTheme}
+      />
+    );
+    if (mode === 'week') return (
+      <CalendarProvider date={visibleDate} onDateChanged={(value) => openDay(value)}>
+        <WeekCalendar allowShadow={false} calendarWidth={calendarWidth} current={visibleDate} dayComponent={DayCell} firstDay={1} markedDates={{}} theme={calendarTheme} />
+      </CalendarProvider>
+    );
+    if (mode === 'year') return (
+      <View style={styles.yearGrid}>{yearMonths.map(({month, days}) => (
+        <Pressable key={month} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); setMode('month'); }} style={styles.miniMonth}>
+          <Text style={styles.miniMonthTitle}>{LocaleConfig.locales.th.monthNames[month]}</Text>
+          <View style={styles.miniDays}>{days.map((key, index) => key ? (
+            <View key={key} style={[styles.miniDay, key === today && styles.miniToday]}><Text style={[styles.miniDayText, key === today && styles.miniTodayText]}>{Number(key.slice(-2))}</Text>{grouped[key]?.length ? <View style={styles.miniDot} /> : null}</View>
+          ) : <View key={`empty-${month}-${index}`} style={styles.miniDay} />)}</View>
+        </Pressable>
+      ))}</View>
+    );
+    return (
+      <View style={styles.dayView}>
+        <View style={styles.dayStrip}>{dayStrip.map((key) => {
+          const active = key === selectedDate;
+          const isToday = key === today;
+          return (
+            <Pressable key={key} onPress={() => openDay(key)} style={({pressed}) => [styles.dayStripItem, pressed && styles.pressed]}>
+              <Text style={[styles.dayStripName, isToday && styles.redText]}>{shortDay(key)}</Text>
+              <View style={[styles.dayStripCircle, active && styles.dayStripActive, isToday && styles.todayCircle]}><Text style={[styles.dayStripNumber, active && styles.dayStripNumberActive, isToday && styles.todayNumber]}>{Number(key.slice(-2))}</Text></View>
+              {grouped[key]?.length ? <View style={[styles.dayStripDot, active && styles.dayStripDotActive]} /> : null}
+            </Pressable>
+          );
+        })}</View>
+        <AgendaList events={selectedEvents} onOpen={() => setDetailsOpen(true)} />
+      </View>
+    );
+  };
+
+  const periodTitle = mode === 'year' ? `พ.ศ. ${Number(visibleDate.slice(0, 4)) + 543}` : mode === 'month' ? formatMonth(visibleDate) : formatLongDate(visibleDate);
+
+  return (
+    <ResponsiveSafeArea style={styles.safe}>
+      <View style={styles.screen}>
+        <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.accent} />} showsVerticalScrollIndicator={false}>
+          <View style={styles.topBar}>
+            <Pressable onPress={goToday}><Text style={styles.todayLink}>วันนี้</Text></Pressable>
+            <View style={styles.topActions}>
+              <Pressable accessibilityLabel="นำเข้าตารางเรียน" onPress={() => onNavigate('smartlife_scan_schedule')} style={styles.circleButton}><MaterialIcon color={C.accent} name="document_scanner" size={20} /></Pressable>
+              <Pressable accessibilityLabel="เพิ่มกิจกรรม" onPress={() => onNavigate('smartlife_add_activity')} style={styles.circleButton}><MaterialIcon color={C.accent} name="add" size={24} /></Pressable>
+            </View>
+          </View>
+          <Text style={styles.largeTitle}>ปฏิทิน</Text>
+
+          {planner ? <View accessibilityRole="tablist" style={styles.plannerTabs}>{([['calendar', 'ตาราง'], ['notes', 'โน้ต'], ['adaptive', 'Adaptive']] as [PlannerTab, string][]).map(([key, label]) => <Pressable accessibilityRole="tab" accessibilityState={{selected: planner.activeTab === key}} key={key} onPress={() => planner.onTabChange(key)} style={[styles.plannerTab, planner.activeTab === key && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === key && styles.plannerTabTextActive]}>{label}</Text></Pressable>)}</View> : null}
+
+          <GoogleCalendarSyncCard onSynced={load} uid={uid} />
+
+          <View accessibilityRole="tablist" style={styles.segment}>{(['day', 'week', 'month', 'year'] as ViewMode[]).map((item) => (
+            <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => { setMode(item); setVisibleDate(selectedDate); }} style={[styles.segmentItem, mode === item && styles.segmentActive]}>
+              <Text style={[styles.segmentText, mode === item && styles.segmentTextActive]}>{item === 'day' ? 'วัน' : item === 'week' ? 'สัปดาห์' : item === 'month' ? 'เดือน' : 'ปี'}</Text>
+            </Pressable>
+          ))}</View>
+
+          <View style={styles.periodHeader}>
+            <Pressable accessibilityLabel="ช่วงก่อนหน้า" onPress={() => navigate(-1)} style={styles.chevron}><MaterialIcon color={C.accent} name="chevron_left" size={26} /></Pressable>
+            <Text numberOfLines={1} style={styles.periodTitle}>{periodTitle}</Text>
+            <Pressable accessibilityLabel="ช่วงถัดไป" onPress={() => navigate(1)} style={styles.chevron}><MaterialIcon color={C.accent} name="chevron_right" size={26} /></Pressable>
+          </View>
+
+          <View style={styles.calendarCard}>
+            {renderCalendarBody()}
+            {loading ? <View style={styles.calendarLoading}><ActivityIndicator color={C.accent} /><Text style={styles.loadingText}>กำลังโหลดปฏิทิน…</Text></View> : null}
+          </View>
+
+          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList events={selectedEvents} onOpen={() => setDetailsOpen(true)} /></View> : null}
+        </ScrollView>
+
+        <UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_calendar_day'} onNavigate={onNavigate} />
+
+        <Modal animationType="slide" onRequestClose={() => setDetailsOpen(false)} transparent visible={detailsOpen}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.handle} />
+              <View style={styles.sheetHead}><View><Text style={styles.sheetTitle}>{formatLongDate(selectedDate)}</Text><Text style={styles.sheetSub}>{selectedEvents.length} รายการ</Text></View><Pressable onPress={() => setDetailsOpen(false)} style={styles.close}><MaterialIcon color={C.secondary} name="close" size={20} /></Pressable></View>
+              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow event={event} key={String(event.id ?? index)} onDelete={() => deleteEvent(event)} />) : <EmptyAgenda />}</ScrollView>
+              <Pressable onPress={() => { setDetailsOpen(false); onNavigate('smartlife_add_activity'); }} style={styles.sheetAdd}><MaterialIcon color="#fff" name="add" size={20} /><Text style={styles.sheetAddText}>เพิ่มกิจกรรม</Text></Pressable>
+            </View>
+          </View>
+        </Modal>
+      </View>
+    </ResponsiveSafeArea>
+  );
 }
 
-function textEvent(value: unknown, fallback: string) { return typeof value === 'string' && value.trim() ? value : fallback; }
-const shadow = {shadowColor: C.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 20};
+function AgendaList({events, onOpen}: {events: EventItem[]; onOpen: () => void}) {
+  if (!events.length) return <EmptyAgenda />;
+  return <View style={styles.eventList}>{events.map((event, index) => <EventRow event={event} key={String(event.id ?? index)} onPress={onOpen} />)}</View>;
+}
+
+function EventRow({event, onDelete, onPress}: {event: EventItem; onDelete?: () => void; onPress?: () => void}) {
+  const color = typeof event.color === 'string' ? event.color : event.entityType === 'schedule' ? C.green : C.blue;
+  return (
+    <Pressable disabled={!onPress} onPress={onPress} style={({pressed}) => [styles.eventRow, pressed && styles.pressed]}>
+      <View style={[styles.eventColor, {backgroundColor: color}]} />
+      <View style={styles.eventTime}><Text style={styles.eventStart}>{formatTime(event.startAt)}</Text><Text style={styles.eventEnd}>{formatTime(event.endAt)}</Text></View>
+      <View style={styles.eventCopy}><Text numberOfLines={1} style={styles.eventTitle}>{eventTitle(event)}</Text><Text numberOfLines={1} style={styles.eventMeta}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text></View>
+      {onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={onDelete} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : <MaterialIcon color={C.tertiary} name="chevron_right" size={20} />}
+    </Pressable>
+  );
+}
+
+function EmptyAgenda() {
+  return <View style={styles.empty}><View style={styles.emptyIcon}><MaterialIcon color={C.tertiary} name="event_available" size={28} /></View><Text style={styles.emptyTitle}>ไม่มีกิจกรรม</Text><Text style={styles.emptySub}>เวลาว่างของคุณจะแสดงอยู่ตรงนี้</Text></View>;
+}
+
 const styles = StyleSheet.create({
-  plannerTab: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 9},
-  plannerTabActive: {backgroundColor: '#fff'},
-  plannerTabText: {color: C.muted, fontFamily: F.s, fontSize: 11},
-  plannerTabTextActive: {color: C.dark},
-  plannerTabs: {...shadow, backgroundColor: '#e5ece1', borderRadius: 16, flexDirection: 'row', marginTop: 15, padding: 4},
-  sheetDelete: {alignItems: 'center', backgroundColor: '#faecea', borderRadius: 15, height: 38, justifyContent: 'center', width: 38},
-  add: {...shadow, borderRadius: 15, marginTop: 14, overflow: 'hidden'}, addGradient: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 49}, addText: {color: '#fff', fontFamily: F.b, fontSize: 12}, calendarCard: {...shadow, alignSelf: 'center', backgroundColor: 'rgba(255,255,255,.96)', borderColor: 'rgba(255,255,255,.9)', borderRadius: 20, borderWidth: 1, minHeight: 115, overflow: 'hidden', width: '100%'}, calendarLoading: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.82)', flexDirection: 'row', gap: 8, justifyContent: 'center', ...StyleSheet.absoluteFill}, close: {alignItems: 'center', backgroundColor: '#eef2e9', borderRadius: 17, height: 34, justifyContent: 'center', width: 34}, content: {alignSelf: 'center', maxWidth: 720, padding: 20, paddingBottom: 28, width: '100%'}, countBadge: {alignItems: 'center', backgroundColor: C.soft, borderRadius: 16, height: 32, justifyContent: 'center', width: 32}, countText: {color: C.dark, fontFamily: F.b, fontSize: 11}, dayCell: {alignItems: 'center', borderColor: 'transparent', borderRadius: 13, borderWidth: 1.5, height: 42, justifyContent: 'center', width: 38}, dayHero: {alignItems: 'center', backgroundColor: '#f2f6ef', borderRadius: 15, flexDirection: 'row', gap: 10, margin: 12, padding: 12}, dayHeroCount: {alignItems: 'center', backgroundColor: C.dark, borderRadius: 16, height: 32, justifyContent: 'center', width: 32}, dayHeroCountText: {color: '#fff', fontFamily: F.b, fontSize: 11}, dayHeroIcon: {alignItems: 'center', backgroundColor: C.soft, borderRadius: 15, height: 42, justifyContent: 'center', width: 42}, dayHeroLabel: {color: C.sage, fontFamily: F.s, fontSize: 8}, dayHeroTitle: {color: C.pine, fontFamily: F.b, fontSize: 11}, dayNumber: {color: C.pine, fontFamily: F.m, fontSize: 11}, dayPressed: {opacity: .65, transform: [{scale: .94}]}, dayStrip: {flexDirection: 'row', gap: 5, justifyContent: 'space-between', padding: 10}, dayStripActive: {backgroundColor: C.sage}, dayStripDot: {backgroundColor: C.note, borderRadius: 3, height: 5, marginTop: 3, width: 5}, dayStripDotActive: {backgroundColor: '#fff'}, dayStripItem: {alignItems: 'center', backgroundColor: '#f3f6f0', borderRadius: 14, flex: 1, minHeight: 62, paddingVertical: 7}, dayStripName: {color: C.muted, fontFamily: F.s, fontSize: 8}, dayStripNumber: {color: C.pine, fontFamily: F.b, fontSize: 15, marginTop: 2}, dayStripTextActive: {color: '#fff'}, dayView: {width: '100%'}, disabledDay: {color: '#c7cdc4'}, dot: {borderRadius: 3, height: 5, width: 5}, dots: {bottom: 4, flexDirection: 'row', gap: 2, position: 'absolute'}, empty: {alignItems: 'center', gap: 5, paddingVertical: 28}, emptySub: {color: C.muted, fontFamily: F.r, fontSize: 9}, emptyTitle: {color: C.pine, fontFamily: F.s, fontSize: 11}, event: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.96)', borderRadius: 15, flexDirection: 'row', marginTop: 9, minHeight: 69, overflow: 'hidden', padding: 11}, eventAccent: {height: '100%', left: 0, position: 'absolute', width: 5}, eventList: {...shadow, backgroundColor: 'rgba(255,255,255,.58)', borderRadius: 18, padding: 6}, eventTitle: {color: C.pine, fontFamily: F.s, fontSize: 11}, eyeRow: {alignItems: 'center', flexDirection: 'row'}, eyebrow: {color: C.sage, fontFamily: F.s, fontSize: 9}, handle: {alignSelf: 'center', backgroundColor: '#d1d6cd', borderRadius: 3, height: 5, marginBottom: 15, width: 44}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, hourLabel: {color: C.muted, fontFamily: F.m, fontSize: 8, textAlign: 'right', width: 42}, hourLine: {backgroundColor: '#e4e9e0', flex: 1, height: 1, marginLeft: 8}, hourRow: {alignItems: 'flex-start', flexDirection: 'row', left: 8, position: 'absolute', right: 8}, importButton: {...shadow, alignItems: 'center', backgroundColor: C.sage, borderRadius: 17, height: 45, justifyContent: 'center', width: 45}, loadingText: {color: C.muted, fontFamily: F.r, fontSize: 9}, meta: {alignItems: 'center', flexDirection: 'row', gap: 3, marginTop: 4}, metaText: {color: C.muted, flex: 1, fontFamily: F.r, fontSize: 8}, miniDay: {alignItems: 'center', height: 23, justifyContent: 'center', position: 'relative', width: '14.285%'}, miniDays: {flexDirection: 'row', flexWrap: 'wrap'}, miniDayText: {color: C.pine, fontFamily: F.m, fontSize: 7}, miniDot: {backgroundColor: C.note, borderRadius: 2, bottom: 1, height: 3, position: 'absolute', width: 3}, miniMonth: {backgroundColor: '#f5f7f2', borderRadius: 14, padding: 8, width: '48.5%'}, miniMonthTitle: {color: C.dark, fontFamily: F.b, fontSize: 11, marginBottom: 5}, miniSelected: {backgroundColor: C.sage, borderRadius: 7}, miniSelectedText: {color: '#fff'}, miniToday: {borderColor: C.sage, borderRadius: 7, borderWidth: 1}, miniWeek: {flexDirection: 'row'}, miniWeekText: {color: C.muted, fontFamily: F.s, fontSize: 6, textAlign: 'center', width: '14.285%'}, modeLetter: {color: C.muted, fontFamily: F.b, fontSize: 10}, navigation: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12, marginTop: 12}, navButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, height: 36, justifyContent: 'center', width: 36}, navCenter: {alignItems: 'center', flex: 1}, navTitle: {color: C.pine, fontFamily: F.b, fontSize: 12, textAlign: 'center'}, nowDot: {backgroundColor: '#e86d70', borderRadius: 5, height: 9, left: 47, position: 'absolute', width: 9}, nowLine: {backgroundColor: '#e86d70', height: 1.5, left: 50, position: 'absolute', right: 10, zIndex: 5}, nowText: {backgroundColor: '#e86d70', borderRadius: 5, color: '#fff', fontFamily: F.b, fontSize: 7, left: -43, paddingHorizontal: 4, paddingVertical: 2, position: 'absolute', top: -7}, overlay: {backgroundColor: 'rgba(28,38,23,.42)', flex: 1, justifyContent: 'flex-end'}, pressed: {opacity: .78, transform: [{scale: .986}]}, safe: {backgroundColor: C.mist, flex: 1}, screen: {backgroundColor: C.mist, flex: 1}, sectionSub: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1}, sectionTitle: {color: C.pine, fontFamily: F.b, fontSize: 13}, selectedCell: {backgroundColor: C.sage, borderColor: C.sage}, selectedNumber: {color: '#fff', fontFamily: F.b}, sheet: {...shadow, backgroundColor: '#fbfcf8', borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: '72%', minHeight: 310, padding: 18}, sheetAdd: {alignItems: 'center', backgroundColor: C.dark, borderRadius: 14, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 47}, sheetAddText: {color: '#fff', fontFamily: F.b, fontSize: 11}, sheetEmpty: {alignItems: 'center', paddingVertical: 35}, sheetEvent: {alignItems: 'center', backgroundColor: '#f2f5ee', borderRadius: 14, flexDirection: 'row', gap: 10, marginBottom: 9, padding: 12}, sheetEventDetail: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2}, sheetEventTitle: {color: C.pine, fontFamily: F.s, fontSize: 11}, sheetHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12}, sheetIcon: {alignItems: 'center', borderRadius: 14, height: 42, justifyContent: 'center', width: 42}, sheetScroll: {marginBottom: 12}, sheetSub: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 1}, sheetTitle: {color: C.pine, fontFamily: F.b, fontSize: 15}, summaryHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 16}, time: {color: C.dark, fontFamily: F.b, fontSize: 10}, timeBox: {alignItems: 'center', backgroundColor: '#edf3e9', borderRadius: 11, marginLeft: 4, marginRight: 10, minWidth: 52, paddingHorizontal: 6, paddingVertical: 7}, timeEnd: {color: C.muted, fontFamily: F.r, fontSize: 7, marginTop: 1}, timeEvent: {borderLeftWidth: 3, borderRadius: 8, left: 58, paddingHorizontal: 8, paddingVertical: 5, position: 'absolute', right: 10, zIndex: 3}, timeEventMeta: {color: C.muted, fontFamily: F.r, fontSize: 7}, timeEventTitle: {color: C.pine, fontFamily: F.s, fontSize: 9}, timeGrid: {backgroundColor: '#fbfcf9', borderBottomLeftRadius: 18, borderBottomRightRadius: 18, marginTop: 4, overflow: 'hidden', position: 'relative'}, title: {color: C.pine, fontFamily: F.x, fontSize: 24}, todayButton: {alignItems: 'center', backgroundColor: C.soft, borderRadius: 10, flexDirection: 'row', gap: 3, marginTop: 4, paddingHorizontal: 8, paddingVertical: 3}, todayButtonText: {color: C.dark, fontFamily: F.s, fontSize: 8}, todayCell: {borderColor: C.sage, backgroundColor: '#edf4e9'}, todayNumber: {color: C.dark, fontFamily: F.b}, toggle: {backgroundColor: '#e5ece1', borderRadius: 16, flexDirection: 'row', marginTop: 16, padding: 4}, toggleActive: {...shadow, backgroundColor: '#fff'}, toggleItem: {alignItems: 'center', borderRadius: 12, flex: 1, gap: 1, justifyContent: 'center', minHeight: 46}, toggleText: {color: C.muted, fontFamily: F.s, fontSize: 8}, toggleTextActive: {color: C.dark}, yearGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', padding: 10},
+  safe: {backgroundColor: C.background, flex: 1},
+  screen: {backgroundColor: C.background, flex: 1},
+  content: {alignSelf: 'center', gap: 12, maxWidth: 720, paddingBottom: 28, paddingHorizontal: 16, paddingTop: 8, width: '100%'},
+  topBar: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
+  todayLink: {color: C.accent, fontFamily: F.s, fontSize: 14},
+  topActions: {flexDirection: 'row', gap: 8},
+  circleButton: {alignItems: 'center', backgroundColor: C.card, borderRadius: 18, height: 36, justifyContent: 'center', width: 36},
+  largeTitle: {color: C.label, fontFamily: F.x, fontSize: 31, letterSpacing: -.5, lineHeight: 39},
+  plannerTabs: {backgroundColor: '#e3e3e8', borderRadius: 9, flexDirection: 'row', padding: 2},
+  plannerTab: {alignItems: 'center', borderRadius: 7, flex: 1, paddingVertical: 7},
+  plannerTabActive: {backgroundColor: C.card, boxShadow: '0 1px 3px rgba(0,0,0,.16)'},
+  plannerTabText: {color: C.secondary, fontFamily: F.m, fontSize: 11},
+  plannerTabTextActive: {color: C.label, fontFamily: F.s},
+  segment: {backgroundColor: '#e3e3e8', borderRadius: 9, flexDirection: 'row', padding: 2},
+  segmentItem: {alignItems: 'center', borderRadius: 7, flex: 1, justifyContent: 'center', minHeight: 32},
+  segmentActive: {backgroundColor: C.card, boxShadow: '0 1px 3px rgba(0,0,0,.18)'},
+  segmentText: {color: C.secondary, fontFamily: F.m, fontSize: 10},
+  segmentTextActive: {color: C.label, fontFamily: F.s},
+  periodHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
+  periodTitle: {color: C.label, flex: 1, fontFamily: F.b, fontSize: 17, textAlign: 'center'},
+  chevron: {alignItems: 'center', height: 36, justifyContent: 'center', width: 40},
+  calendarCard: {backgroundColor: C.card, borderRadius: 18, minHeight: 120, overflow: 'hidden'},
+  calendarLoading: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.86)', gap: 8, justifyContent: 'center', ...StyleSheet.absoluteFill},
+  loadingText: {color: C.secondary, fontFamily: F.r, fontSize: 10},
+  dayCell: {alignItems: 'center', height: 43, justifyContent: 'flex-start', width: 38},
+  dayCircle: {alignItems: 'center', borderRadius: 15, height: 30, justifyContent: 'center', width: 30},
+  todayCircle: {backgroundColor: C.accent},
+  selectedCircle: {backgroundColor: '#e5e5ea'},
+  dayNumber: {color: C.label, fontFamily: F.m, fontSize: 11},
+  todayNumber: {color: '#fff', fontFamily: F.b},
+  selectedNumber: {color: C.label, fontFamily: F.b},
+  disabledDay: {color: C.tertiary},
+  dots: {flexDirection: 'row', gap: 2, marginTop: 3},
+  dot: {borderRadius: 2, height: 4, width: 4},
+  dayView: {paddingTop: 4},
+  dayStrip: {borderBottomColor: C.line, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', paddingHorizontal: 4, paddingVertical: 8},
+  dayStripItem: {alignItems: 'center', flex: 1, minHeight: 62},
+  dayStripName: {color: C.secondary, fontFamily: F.m, fontSize: 8},
+  redText: {color: C.accent},
+  dayStripCircle: {alignItems: 'center', borderRadius: 16, height: 32, justifyContent: 'center', marginTop: 3, width: 32},
+  dayStripActive: {backgroundColor: '#e5e5ea'},
+  dayStripNumber: {color: C.label, fontFamily: F.s, fontSize: 13},
+  dayStripNumberActive: {fontFamily: F.b},
+  dayStripDot: {backgroundColor: C.blue, borderRadius: 2, height: 4, marginTop: 3, width: 4},
+  dayStripDotActive: {backgroundColor: C.accent},
+  yearGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'space-between', padding: 12},
+  miniMonth: {paddingVertical: 5, width: '47%'},
+  miniMonthTitle: {color: C.accent, fontFamily: F.b, fontSize: 11, marginBottom: 6},
+  miniDays: {flexDirection: 'row', flexWrap: 'wrap'},
+  miniDay: {alignItems: 'center', height: 21, justifyContent: 'center', position: 'relative', width: '14.285%'},
+  miniDayText: {color: C.label, fontFamily: F.m, fontSize: 7},
+  miniToday: {backgroundColor: C.accent, borderRadius: 10},
+  miniTodayText: {color: '#fff', fontFamily: F.b},
+  miniDot: {backgroundColor: C.blue, borderRadius: 2, bottom: 1, height: 3, position: 'absolute', width: 3},
+  agendaSection: {gap: 8},
+  sectionHeader: {alignItems: 'flex-end', flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2},
+  sectionTitle: {color: C.label, fontFamily: F.b, fontSize: 15},
+  sectionSub: {color: C.secondary, fontFamily: F.r, fontSize: 9, marginTop: 1},
+  seeAll: {color: C.accent, fontFamily: F.s, fontSize: 10},
+  eventList: {backgroundColor: C.card, borderRadius: 16, overflow: 'hidden'},
+  eventRow: {alignItems: 'center', borderBottomColor: C.line, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', minHeight: 70, paddingHorizontal: 12, paddingVertical: 10},
+  eventColor: {alignSelf: 'stretch', borderRadius: 2, marginRight: 10, width: 4},
+  eventTime: {alignItems: 'flex-end', marginRight: 12, width: 48},
+  eventStart: {color: C.label, fontFamily: F.s, fontSize: 10},
+  eventEnd: {color: C.secondary, fontFamily: F.r, fontSize: 8, marginTop: 2},
+  eventCopy: {flex: 1},
+  eventTitle: {color: C.label, fontFamily: F.s, fontSize: 11},
+  eventMeta: {color: C.secondary, fontFamily: F.r, fontSize: 9, marginTop: 3},
+  empty: {alignItems: 'center', backgroundColor: C.card, gap: 4, justifyContent: 'center', minHeight: 150, padding: 22},
+  emptyIcon: {alignItems: 'center', backgroundColor: C.background, borderRadius: 24, height: 48, justifyContent: 'center', width: 48},
+  emptyTitle: {color: C.label, fontFamily: F.s, fontSize: 11, marginTop: 4},
+  emptySub: {color: C.secondary, fontFamily: F.r, fontSize: 9},
+  overlay: {backgroundColor: 'rgba(0,0,0,.25)', flex: 1, justifyContent: 'flex-end'},
+  sheet: {backgroundColor: C.background, borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: '78%', minHeight: 340, padding: 16},
+  handle: {alignSelf: 'center', backgroundColor: '#c7c7cc', borderRadius: 3, height: 5, marginBottom: 16, width: 36},
+  sheetHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12},
+  sheetTitle: {color: C.label, fontFamily: F.b, fontSize: 16},
+  sheetSub: {color: C.secondary, fontFamily: F.r, fontSize: 9, marginTop: 2},
+  close: {alignItems: 'center', backgroundColor: '#e5e5ea', borderRadius: 17, height: 34, justifyContent: 'center', width: 34},
+  sheetScroll: {marginBottom: 12},
+  deleteButton: {alignItems: 'center', height: 36, justifyContent: 'center', width: 36},
+  sheetAdd: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 14, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 48},
+  sheetAddText: {color: '#fff', fontFamily: F.b, fontSize: 11},
+  pressed: {opacity: .62},
 });

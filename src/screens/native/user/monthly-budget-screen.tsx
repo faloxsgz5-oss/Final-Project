@@ -3,6 +3,7 @@ import {ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextI
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {currentMonthKey, loadMonthlyBudget, saveMonthlyBudget} from '@/services/monthly-budget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
@@ -18,6 +19,13 @@ function items(value: unknown) { return Array.isArray(value) ? value.filter((ite
 function money(value: number) { return `฿${Math.max(0, Math.round(value)).toLocaleString('th-TH')}`; }
 function parseMoney(value: string) { return Number(value.replace(/[^\d]/g, '')) || 0; }
 function suggestedBudget(income: number) { return Math.max(0, Math.floor(income * .7 / 100) * 100); }
+function pressureText(level?: string) {
+  if (level === 'critical') return 'ใช้เกินงบเดือนนี้แล้ว ควรหยุดรายจ่ายที่ไม่จำเป็นก่อน';
+  if (level === 'high') return 'งบต่อวันตึงมาก ใช้เฉพาะของจำเป็นจะปลอดภัยกว่า';
+  if (level === 'medium') return 'เริ่มใช้เร็วกว่าแผน ควรคุมรายจ่ายวันนี้';
+  if (level === 'low') return 'ยังพอไหว แต่ควรระวังไม่ให้ใช้เร็วเกินแผน';
+  return 'งบยังอยู่ในโซนปลอดภัย';
+}
 
 // Added for monthly budget planning: lets users set their own spending limit or apply the income-based recommendation.
 export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
@@ -28,10 +36,19 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
   const [expense, setExpense] = useState(0);
   const [mode, setMode] = useState<BudgetMode>('ai');
   const [amountText, setAmountText] = useState('');
+  const [transactions, setTransactions] = useState<Item[]>([]);
 
   const recommendation = suggestedBudget(income);
   const selectedAmount = mode === 'ai' ? recommendation : parseMoney(amountText);
   const remaining = Math.max(0, selectedAmount - expense);
+  const financeInsight = useMemo(() => calculateFinanceBudgetInsight({
+    monthlyBudget: selectedAmount,
+    transactions: transactions.map((item) => ({
+      amount: Number(item.amount ?? 0),
+      occurredAt: item.occurredAt as never,
+      type: item.type === 'income' ? 'income' : 'expense',
+    })),
+  }), [selectedAmount, transactions]);
   const monthLabel = new Intl.DateTimeFormat('th-TH', {month: 'long', year: 'numeric'}).format(new Date());
 
   useEffect(() => {
@@ -42,6 +59,7 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
     ]).then(([pageData, saved]) => {
       if (!active) return;
       const monthTransactions = items(pageData.transactions);
+      setTransactions(monthTransactions);
       setIncome(monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0));
       setExpense(monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount ?? 0), 0));
       if (saved) {
@@ -87,6 +105,13 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
           <View style={styles.heroGlow} /><Text style={styles.heroEyebrow}>งบเดือน{monthLabel}</Text><Text style={styles.heroAmount}>{money(selectedAmount || recommendation)}</Text><Text style={styles.heroText}>{mode === 'ai' ? 'AI แนะนำลิมิตจากรายรับเดือนนี้' : 'ลิมิตค่าใช้จ่ายที่คุณกำหนดเอง'}</Text>
           <View style={styles.heroStatRow}><HeroStat label="รายรับเดือนนี้" value={money(income)} /><HeroStat label="ใช้ไปแล้ว" value={money(expense)} /></View>
         </LinearGradient>
+
+        {financeInsight ? <View style={styles.card}>
+          <View style={styles.cardHeader}><View style={styles.cardIcon}><MaterialIcon color={C.accent} name="query_stats" size={20} /></View><View style={{flex: 1}}><Text style={styles.cardTitle}>AI Dynamic งบต่อวัน</Text><Text style={styles.cardSub}>{pressureText(financeInsight.financePressureLevel)}</Text></View></View>
+          <View style={styles.recommendation}><Text style={styles.recommendationLabel}>เฉลี่ยทั้งเดือน</Text><Text style={styles.recommendationAmount}>{money(financeInsight.averageDailyBudget)} / วัน</Text></View>
+          <View style={styles.recommendation}><Text style={styles.recommendationLabel}>ใช้ได้จริงตอนนี้</Text><Text style={styles.recommendationAmount}>{money(financeInsight.remainingDailyBudget)} / วัน</Text></View>
+          <Text style={styles.inputHint}>เหลือ {financeInsight.daysRemainingIncludingToday} วัน • ใช้ไปแล้ว {money(financeInsight.spentSoFar)} จากงบ {money(financeInsight.monthlyBudget)}</Text>
+        </View> : null}
 
         <View style={styles.modeBar}><ModeButton active={mode === 'ai'} icon="auto_awesome" label="AI แนะนำ" onPress={applyRecommendation} /><ModeButton active={mode === 'manual'} icon="edit" label="กำหนดเอง" onPress={() => setMode('manual')} /></View>
 
