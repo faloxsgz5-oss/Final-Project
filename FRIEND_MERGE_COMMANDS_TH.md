@@ -5,20 +5,23 @@
 ## สรุป branch ที่ต้องใช้
 
 - repo เพื่อน: `https://github.com/faloxsgz5-oss/Final-Project.git`
-- repo KIM: `https://github.com/konpong2006-pixel/Final-Project-KIKIM.git`
-- branch รวมงานที่พร้อมใช้: `codex/merge-kim-updates-into-friend`
-- commit merge ล่าสุด: `11ddbe2`
+- repo เพื่อนมี branch ส่งมอบแล้ว: `codex/merge-kim-updates-into-friend`
+- สำเนาสำรองใน repo KIM: `https://github.com/konpong2006-pixel/Final-Project-KIKIM.git`
+- ตรวจ commit ล่าสุดด้วย `git log -1 --oneline origin/codex/merge-kim-updates-into-friend`
 
-## วิธีที่ง่ายที่สุด: clone แล้ว checkout branch รวมงาน
+> อัปเดต 13 สิงหาคม 2026: branch งานของเพื่อน `agent/sync-complete-smartlife-system`
+> มี commit ใหม่ที่แก้ไฟล์เดียวกันหลายจุด จึงไม่ควรเลือก `ours` หรือ `theirs` ทั้งชุด
+> ให้ merge บน branch ใหม่และตรวจ conflict เป็นรายฟีเจอร์ตามขั้นตอนด้านล่าง
+
+## วิธีที่ง่ายที่สุด: clone แล้ว checkout branch ส่งมอบจาก repo เพื่อน
 
 เปิด CMD หรือ PowerShell แล้วรัน:
 
 ```powershell
 git clone https://github.com/faloxsgz5-oss/Final-Project.git
 cd Final-Project
-git remote add kim https://github.com/konpong2006-pixel/Final-Project-KIKIM.git
-git fetch kim codex/merge-kim-updates-into-friend
-git switch -c test-kim-merged kim/codex/merge-kim-updates-into-friend
+git fetch origin
+git switch -c test-kim-merged origin/codex/merge-kim-updates-into-friend
 npm install
 npm --prefix functions install
 npm run typecheck
@@ -30,11 +33,13 @@ npm run test:line-import
 
 ## ถ้าต้องการ merge เข้ากับ branch งานของเพื่อน
 
-ให้ทำหลังจาก clone และ fetch remote `kim` แล้ว:
+ให้สร้าง branch สำหรับรวมงานจาก branch ล่าสุดของเพื่อนก่อน:
 
 ```powershell
 git switch agent/sync-complete-smartlife-system
-git merge --no-ff kim/codex/merge-kim-updates-into-friend
+git pull --ff-only origin agent/sync-complete-smartlife-system
+git switch -c merge-kim-updates
+git merge --no-ff origin/codex/merge-kim-updates-into-friend
 npm run typecheck
 npm --prefix functions run build
 npm run test:line-import
@@ -46,6 +51,12 @@ npm run test:line-import
 git switch -c final-with-kim-updates
 git push origin final-with-kim-updates
 ```
+
+การ merge ล่าสุดมีแนวโน้มชนกันใน App Check, ปฏิทิน, แบบฟอร์มกิจกรรม,
+AI Assistant, LINE import, Firebase Functions และ lockfile เพราะทั้งสองฝั่งพัฒนาต่อพร้อมกัน
+ให้รักษาระบบใหม่ของเพื่อนในส่วน OCR/Assistant แล้วนำการแก้ล่าสุดของ KIM เข้าเป็นรายจุด ได้แก่
+Adaptive tab, ปฏิทินแบบใหม่ที่คงสีเดิม, parser เวลาแจ้งเตือนธนาคาร,
+การบันทึกกิจกรรม และ App Check retry protection
 
 ห้ามใช้คำสั่งนี้ถ้ายังไม่ได้ตกลงกัน เพราะจะเสี่ยงทับงานหลัก:
 
@@ -94,4 +105,3 @@ npx firebase deploy --only functions --project smartlife-budget
 ```
 
 ควร deploy เฉพาะเมื่อมีสิทธิ์ใน Firebase project และทีมตกลงกันแล้ว
-
