@@ -197,7 +197,7 @@ export function calculateBurnoutDynamicInsight({
   }).length;
   const urgentTaskCount = taskItems.filter((item) => {
     const range = itemRange(item);
-    if (!range) return item.priority === 'urgent' || item.priority === 'high';
+    if (!range) return item.priority === 'urgent' || item.priority === 'high' || item.priority === 'important';
     const hours = (range.start.getTime() - now.getTime()) / 36e5;
     return item.priority === 'urgent' || hours <= 24;
   }).length;

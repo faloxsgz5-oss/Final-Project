@@ -9,7 +9,11 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.smartlife.student",
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.smartlife.student",
@@ -37,6 +41,7 @@
       "./plugins/with-gradle-locale",
       "@react-native-firebase/app",
       "@react-native-firebase/app-check",
+      "@react-native-google-signin/google-signin",
       [
         "expo-notifications",
         {
@@ -82,6 +87,15 @@
       "router": {},
       "eas": {
         "projectId": "94ce55bb-a8ea-4213-8fb5-d3ffc8fe3924"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/94ce55bb-a8ea-4213-8fb5-d3ffc8fe3924",
+      "requestHeaders": {
+        "expo-channel-name": "preview"
       }
     }
   }

@@ -1061,7 +1061,7 @@ function buildStudyPriorityAdvice(context: AssistantContext, preferences: Assist
     .sort((left, right) => {
       const dateDifference = left.startAt.toMillis() - right.startAt.toMillis();
       if (Math.abs(dateDifference) >= 24 * 60 * 60 * 1000) return dateDifference;
-      const priorityScore = (value: string) => /ด่วน|สูง|high|urgent/i.test(value) ? 2 : /กลาง|medium/i.test(value) ? 1 : 0;
+      const priorityScore = (value: string) => /ด่วน|สูง|สำคัญ|high|important|urgent/i.test(value) ? 2 : /กลาง|medium|normal/i.test(value) ? 1 : 0;
       return priorityScore(right.priority) - priorityScore(left.priority) || dateDifference;
     });
 
@@ -2289,6 +2289,8 @@ export async function confirmAssistantAction(uid: string, action: AssistantPropo
       color: '#BB9293',
       content: payload.body,
       relatedScheduleId: payload.linkedScheduleId ?? '',
+      completedAt: null,
+      status: 'pending',
       title: payload.title,
     });
     return {id: result, page: 'smartlife_notes'};

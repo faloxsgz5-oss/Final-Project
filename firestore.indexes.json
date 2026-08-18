@@ -158,6 +158,27 @@
       "collectionGroup": "pendingReview",
       "fieldPath": "rawText",
       "indexes": []
+    },
+    {
+      "collectionGroup": "pendingReview",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        { "queryScope": "COLLECTION_GROUP", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "schedulingBehaviorEvents",
+      "fieldPath": "createdAt",
+      "indexes": [
+        { "queryScope": "COLLECTION_GROUP", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "settings",
+      "fieldPath": "allowAutomaticRescheduling",
+      "indexes": [
+        { "queryScope": "COLLECTION_GROUP", "order": "ASCENDING" }
+      ]
     }
   ]
 }

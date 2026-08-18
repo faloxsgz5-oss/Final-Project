@@ -78,6 +78,30 @@ async function main() {
     await assertFails(updateDoc(activityRef, {aiConfidence: 1, updatedAt: serverTimestamp()}));
     await assertFails(updateDoc(activityRef, {scheduleVersion: 10, updatedAt: serverTimestamp()}));
 
+    const validNote = {
+      category: 'personal',
+      color: '#5F875F',
+      completedAt: null,
+      content: 'Prepare the documents before the appointment.',
+      createdAt: serverTimestamp(),
+      ownerId: 'alice',
+      priority: 'important',
+      relatedScheduleId: '',
+      status: 'pending',
+      title: 'Appointment checklist',
+      updatedAt: serverTimestamp(),
+    };
+    const noteRef = doc(alice, 'users', 'alice', 'notes', 'note-1');
+    await assertSucceeds(setDoc(noteRef, validNote));
+    await assertFails(setDoc(doc(bob, 'users', 'alice', 'notes', 'hijack'), validNote));
+    await assertFails(setDoc(doc(alice, 'users', 'alice', 'notes', 'bad-priority'), {...validNote, priority: 'admin'}));
+    await assertFails(setDoc(doc(alice, 'users', 'alice', 'notes', 'schema-pollution'), {...validNote, privileged: true}));
+    await assertSucceeds(updateDoc(noteRef, {priority: 'urgent', updatedAt: serverTimestamp()}));
+    await assertFails(updateDoc(noteRef, {priority: 'invalid', updatedAt: serverTimestamp()}));
+    await assertFails(updateDoc(noteRef, {status: 'completed', updatedAt: serverTimestamp()}));
+    await assertFails(updateDoc(doc(bob, 'users', 'alice', 'notes', 'note-1'), {completedAt: serverTimestamp(), status: 'completed', updatedAt: serverTimestamp()}));
+    await assertSucceeds(updateDoc(noteRef, {completedAt: serverTimestamp(), status: 'completed', updatedAt: serverTimestamp()}));
+
     await assertFails(setDoc(doc(alice, 'users', 'alice', 'schedulingBehaviorEvents', 'forged-event'), {ownerId: 'alice'}));
     await assertFails(setDoc(doc(alice, 'users', 'alice', 'schedulingPatterns', 'forged-pattern'), {ownerId: 'alice'}));
     await assertFails(setDoc(doc(alice, 'users', 'alice', 'schedulingSuggestions', 'forged-suggestion'), {ownerId: 'alice'}));

@@ -46,8 +46,11 @@ async function blobFromFetch(uri: string) {
 }
 
 export async function localImageUriToBlob(uri: string) {
-  if (!uri || !/^(file|content|ph|https?):\/\//i.test(uri)) {
-    throw new Error(`Unsupported image URI: ${uri || '(empty)'}`);
+  // Expo DocumentPicker uses a browser-owned blob: URL on web. Keep the
+  // native schemes used by ImagePicker/DocumentPicker and also accept data:
+  // URLs so every supported picker result reaches Firebase Storage.
+  if (!uri || !/^(?:blob:|data:|(?:file|content|ph|https?):\/\/)/i.test(uri)) {
+    throw new Error(`Unsupported selected-file URI: ${uri || '(empty)'}`);
   }
 
   const failures: string[] = [];
@@ -71,7 +74,7 @@ export async function localImageUriToBlob(uri: string) {
     console.error('[SmartScan] Both local URI readers failed', {failures, uri: uri.slice(0, 120)});
   }
 
-  throw new Error(`Unable to read the selected image. ${failures.join(' | ')}`);
+  throw new Error(`Unable to read the selected file. ${failures.join(' | ')}`);
 }
 
 export async function uploadUserImage({

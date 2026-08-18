@@ -136,13 +136,17 @@ service cloud.firestore {
 
     function validNote(data, userId) {
       return data.keys().hasAll(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'priority', 'status', 'completedAt', 'createdAt', 'updatedAt'])
         && data.ownerId == userId
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
         && data.content is string && data.content.size() <= 20000
-        && data.category in ['study', 'work', 'idea']
+        && data.category in ['study', 'work', 'idea', 'personal']
         && data.relatedScheduleId is string && data.relatedScheduleId.size() <= 128
         && validColor(data.color)
+        && (!('priority' in data) || data.priority in ['normal', 'important', 'urgent'])
+        && (!('status' in data) || data.status in ['pending', 'completed'])
+        && (!('completedAt' in data) || data.completedAt == null || data.completedAt is timestamp)
+        && (!('status' in data) || data.status != 'completed' || (('completedAt' in data) && data.completedAt is timestamp))
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 

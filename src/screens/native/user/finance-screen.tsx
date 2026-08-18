@@ -93,11 +93,14 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
     const id = str(item, 'id', ''); if (!id) return;
     Alert.alert('ลบรายการการเงินนี้หรือไม่?', 'ข้อมูลจะถูกลบออกจาก Firebase อย่างถาวร', [{text: 'ยกเลิก', style: 'cancel'}, {text: 'ลบถาวร', style: 'destructive', onPress: () => { setData((current) => current ? {...current, transactions: list(current.transactions).filter((entry) => str(entry, 'id', '') !== id)} : current); transactions.remove(uid, id).catch((error) => { console.error('[Finance] Delete failed', error); load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'ลองใหม่อีกครั้ง'); }); }}]);
   };
+  const headerAction = filter === 'income'
+    ? {icon: 'add', label: 'เพิ่มรายรับ', page: 'smartlife_add_income'}
+    : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
       {/* Refactored UI: finance overview follows the period-and-filter dashboard shown in the new design. */}
-      <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Pressable accessibilityLabel="สแกนใบเสร็จ" onPress={() => onNavigate(SMART_SCAN_PAGE)} style={styles.receiptButton}><MaterialIcon color="#fff" name="receipt_long" size={21} /></Pressable></View>
+      <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Pressable accessibilityLabel={headerAction.label} onPress={() => onNavigate(headerAction.page)} style={styles.receiptButton}><MaterialIcon color="#fff" name={headerAction.icon} size={22} /></Pressable></View>
       <View style={styles.periodBar}>{periods.map((item) => <Pressable key={item.page} onPress={() => { setPeriod(periodForPage(item.page)); setReferenceDate(new Date()); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Pressable>)}</View>
       <View style={styles.rangeBar}>
         <Pressable accessibilityLabel="Previous period" onPress={() => setReferenceDate((current) => shiftPeriod(current, periodForPage(periodPage), -1))} style={styles.rangeButton}>
@@ -134,16 +137,23 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Pressable>
 
-        <Pressable onPress={() => onNavigate(SMART_SCAN_PAGE)} style={[styles.menuCard, {backgroundColor: '#eceef7'}]}>
-            <View style={[styles.menuIcon, {backgroundColor: '#7a85b3'}]}><MaterialIcon color="#fff" name="receipt_long" size={20} /></View>
-            <View style={{flex: 1}}>
-              <Text style={styles.menuTitle}>สแกนใบเสร็จ</Text>
-              <Text style={styles.menuSubtitle}>ให้ AI แยกหมวดรายจ่ายให้อัตโนมัติ</Text>
-            </View>
-            <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-        </Pressable>
+        {filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
+          <View style={[styles.menuIcon, {backgroundColor: C.sage}]}><MaterialIcon color="#fff" name="add_card" size={20} /></View>
+          <View style={{flex: 1}}>
+            <Text style={styles.menuTitle}>เพิ่มรายรับ</Text>
+            <Text style={styles.menuSubtitle}>กรอกจำนวน หมวดหมู่ วันที่ และโน้ตด้วยตัวเอง</Text>
+          </View>
+          <MaterialIcon color={C.ink} name="chevron_right" size={21} />
+        </Pressable> : <Pressable onPress={() => onNavigate(SMART_SCAN_PAGE)} style={[styles.menuCard, {backgroundColor: '#eceef7'}]}>
+          <View style={[styles.menuIcon, {backgroundColor: '#7a85b3'}]}><MaterialIcon color="#fff" name="receipt_long" size={20} /></View>
+          <View style={{flex: 1}}>
+            <Text style={styles.menuTitle}>สแกนใบเสร็จ</Text>
+            <Text style={styles.menuSubtitle}>ให้ AI แยกหมวดรายจ่ายให้อัตโนมัติ</Text>
+          </View>
+          <MaterialIcon color={C.ink} name="chevron_right" size={21} />
+        </Pressable>}
 
-        <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text><Pressable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>ดูทั้งหมด</Text></Pressable></View>
+        <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text>{filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>เพิ่มรายรับ</Text></Pressable> : null}</View>
         <View style={styles.transactionList}>{shown.length ? shown.map((item, index) => <TransactionRow item={item} key={str(item, 'id', String(index))} onDelete={() => deleteTransaction(item)} />) : <View style={styles.empty}><MaterialIcon color="#a1aaa0" name="receipt_long" size={32} /><Text style={styles.emptyText}>ยังไม่มีรายการในช่วงนี้</Text></View>}</View>
       </>}
     </ScrollView><UserTabBar active="smartlife_finance_day" onNavigate={onNavigate} />

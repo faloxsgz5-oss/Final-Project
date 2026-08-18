@@ -2153,12 +2153,190 @@ type GeminiGenerateContentResponse = {
   error?: {message?: string};
 };
 
+export const enhanceSmartLifeRecommendations = onCall(
+  {
+    enforceAppCheck: true,
+    maxInstances: 10,
+    memory: "256MiB",
+    region,
+    secrets: [geminiApiKey],
+    timeoutSeconds: 30,
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Please sign in before using SmartLife recommendations.");
+    await enforceAssistantRateLimit(uid);
+    const kind = assistantString(request.data?.kind, 20);
+    if (kind !== "activity" && kind !== "note") throw new HttpsError("invalid-argument", "kind is invalid.");
+    const rawCandidates = Array.isArray(request.data?.candidates) ? request.data.candidates.slice(0, 3) : [];
+    const candidates = rawCandidates.flatMap((value: unknown, index: number) => {
+      if (!value || typeof value !== "object") return [];
+      const item = value as Record<string, unknown>;
+      return [{
+        content: assistantString(item.content, 1200),
+        detail: assistantString(item.detail, 400),
+        index,
+        note: assistantString(item.note, 800),
+        reasons: Array.isArray(item.reasons) ? item.reasons.map((reason) => assistantString(reason, 120)).filter(Boolean).slice(0, 4) : [],
+        title: assistantString(item.title, 160),
+      }];
+    }).filter((item: {title: string}) => item.title);
+    if (!candidates.length) return {items: []};
+
+    const prompt = `You improve SmartLife ${kind} recommendations for a Thai student.
+The candidates below were produced deterministically from the signed-in user's actual schedule, tasks, and notes.
+Rewrite only title, detail, note/content, and short reasons so each recommendation is concrete, concise, natural, and useful.
+Never invent dates, times, subjects, locations, amounts, deadlines, or claims. Never change order or index.
+Keep each title under 80 characters, detail under 220 characters, note/content under 600 characters, and at most 3 reasons.
+Reply as JSON only in the requested schema.
+CANDIDATES:${JSON.stringify(candidates)}`;
+    const configuredModel = assistantString(process.env.GEMINI_ASSISTANT_MODEL, 80);
+    const modelCandidates = [...new Set([configuredModel, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"].filter(Boolean))];
+    let response: Response | null = null;
+    let payload: GeminiGenerateContentResponse = {};
+    for (const [index, model] of modelCandidates.entries()) {
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        body: JSON.stringify({
+          contents: [{parts: [{text: prompt}], role: "user"}],
+          generationConfig: {
+            maxOutputTokens: 1800,
+            responseMimeType: "application/json",
+            responseSchema: {
+              properties: {
+                items: {
+                  items: {
+                    properties: {
+                      content: {type: "STRING"},
+                      detail: {type: "STRING"},
+                      index: {type: "INTEGER"},
+                      note: {type: "STRING"},
+                      reasons: {items: {type: "STRING"}, type: "ARRAY"},
+                      title: {type: "STRING"},
+                    },
+                    required: ["index", "title", "detail", "reasons"],
+                    type: "OBJECT",
+                  },
+                  type: "ARRAY",
+                },
+              },
+              required: ["items"],
+              type: "OBJECT",
+            },
+            temperature: 0.2,
+          },
+        }),
+        headers: {"Content-Type": "application/json", "x-goog-api-key": geminiApiKey.value()},
+        method: "POST",
+      });
+      payload = await response.json() as GeminiGenerateContentResponse;
+      if (response.ok || response.status !== 404 || index === modelCandidates.length - 1) break;
+    }
+    if (!response?.ok) {
+      console.warn("SmartLife recommendation enhancement unavailable; client will keep deterministic candidates.", {status: response?.status, uid});
+      throw new HttpsError(response?.status === 429 ? "resource-exhausted" : "unavailable", "SmartLife AI recommendations are temporarily unavailable.");
+    }
+    const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+    try {
+      const parsed = JSON.parse(text) as {items?: unknown[]};
+      const items = Array.isArray(parsed.items) ? parsed.items.slice(0, candidates.length).flatMap((value) => {
+        if (!value || typeof value !== "object") return [];
+        const item = value as Record<string, unknown>;
+        const index = Math.trunc(assistantNumber(item.index));
+        if (index < 0 || index >= candidates.length) return [];
+        return [{
+          content: assistantString(item.content, 600),
+          detail: assistantString(item.detail, 220),
+          index,
+          note: assistantString(item.note, 600),
+          reasons: Array.isArray(item.reasons) ? item.reasons.map((reason) => assistantString(reason, 120)).filter(Boolean).slice(0, 3) : [],
+          title: assistantString(item.title, 80),
+        }];
+      }) : [];
+      return {items};
+    } catch {
+      throw new HttpsError("data-loss", "SmartLife AI returned invalid recommendation data.");
+    }
+  },
+);
+
 const ASSISTANT_FILE_MIME_TYPES = new Map([
   ["csv", "text/csv"],
   ["ics", "text/calendar"],
   ["pdf", "application/pdf"],
   ["txt", "text/plain"],
 ]);
+
+const ASSISTANT_AUDIO_MIME_TYPES = new Set([
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "audio/webm",
+]);
+
+export const transcribeAssistantAudio = onCall(
+  {
+    enforceAppCheck: true,
+    maxInstances: 10,
+    memory: "512MiB",
+    region,
+    secrets: [geminiApiKey],
+    timeoutSeconds: 60,
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Please sign in before using voice input.");
+    await enforceAssistantRateLimit(uid);
+
+    const mimeType = assistantString(request.data?.mimeType, 80).split(";")[0].toLowerCase();
+    if (!ASSISTANT_AUDIO_MIME_TYPES.has(mimeType)) {
+      throw new HttpsError("invalid-argument", "Unsupported audio format.");
+    }
+    const audioBase64 = requireString(request.data?.audioBase64, "audioBase64");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(audioBase64)) {
+      throw new HttpsError("invalid-argument", "The audio payload is invalid.");
+    }
+    const audio = Buffer.from(audioBase64, "base64");
+    if (audio.length <= 0 || audio.length > 2 * 1024 * 1024) {
+      throw new HttpsError("invalid-argument", "Voice input must be between 1 byte and 2 MB.");
+    }
+
+    const model = process.env.GEMINI_VOICE_MODEL ?? "gemini-2.5-flash";
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                text: "Transcribe this voice message exactly. It may contain Thai and English. Return only the spoken text with ordinary punctuation. Do not answer the speaker and do not add explanations.",
+              },
+              {inlineData: {data: audioBase64, mimeType}},
+            ],
+            role: "user",
+          }],
+          generationConfig: {maxOutputTokens: 700, temperature: 0},
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": geminiApiKey.value(),
+        },
+        method: "POST",
+      },
+    );
+    const payload = await response.json() as GeminiGenerateContentResponse;
+    if (!response.ok) {
+      console.error("SmartLife voice transcription failed.", {status: response.status, uid});
+      if (response.status === 429) throw new HttpsError("resource-exhausted", "Gemini quota is temporarily unavailable.");
+      throw new HttpsError("unavailable", "SmartLife AI could not transcribe this voice message.");
+    }
+    const transcript = cleanAssistantPresentation(
+      payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join(" ") ?? "",
+    ).replace(/^[\s"'“”]+|[\s"'“”]+$/g, "").slice(0, 4000);
+    if (!transcript) throw new HttpsError("data-loss", "SmartLife AI returned an empty transcription.");
+    return {transcript};
+  },
+);
 
 function assistantFileSuggestions(contentType: string) {
   if (contentType === "application/pdf") {

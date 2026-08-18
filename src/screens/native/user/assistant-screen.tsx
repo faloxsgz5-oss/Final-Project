@@ -21,6 +21,7 @@ import {
 } from '@/services/assistant-conversation';
 import {classifyAssistantIntent} from '@/services/assistant-intent';
 import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
+import {assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
 import {
   deleteAssistantConversation,
   listAssistantConversations,
@@ -30,6 +31,8 @@ import {
   type AssistantConversationSummary,
 } from '@/services/assistant-history';
 import {loadLegacyPageData} from '@/services/legacy-data';
+import {sanitizeAssistantMessages} from '@/services/assistant-message-sanitizer';
+import {transcribeAssistantAudio} from '@/services/assistant-voice';
 import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
 import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
 
@@ -70,13 +73,13 @@ function parseStoredMessages(raw: string | null): AssistantChatMessage[] {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((message) => {
+    return sanitizeAssistantMessages(parsed.filter((message) => {
       return message
         && typeof message.id === 'string'
         && (message.role === 'assistant' || message.role === 'user')
         && typeof message.content === 'string'
         && typeof message.timestamp === 'string';
-    }).slice(-MAX_STORED_CHAT_MESSAGES);
+    }).slice(-MAX_STORED_CHAT_MESSAGES));
   } catch {
     return [];
   }
@@ -91,6 +94,61 @@ async function requestMicrophonePermission() {
     title: 'อนุญาตใช้ไมโครโฟน',
   });
   return result === PermissionsAndroid.RESULTS.GRANTED;
+}
+
+async function loadVoiceInputModule() {
+  // @react-native-voice/voice 3.2.4 registers the Android module as RCTVoice,
+  // while its JavaScript entry point still looks for NativeModules.Voice.
+  // Alias both names before importing the library so an already-built APK works.
+  const nativeVoice = NativeModules.Voice ?? NativeModules.RCTVoice;
+  if (!nativeVoice) return null;
+  if (!NativeModules.Voice) {
+    try {
+      NativeModules.Voice = nativeVoice;
+    } catch {
+      try {
+        Object.defineProperty(NativeModules, 'Voice', {configurable: true, value: nativeVoice});
+      } catch {
+        return null;
+      }
+    }
+  }
+  return (await import('@react-native-voice/voice')).default;
+}
+
+type BrowserSpeechRecognitionResult = {
+  [index: number]: {transcript?: string};
+  length: number;
+};
+
+type BrowserSpeechRecognition = {
+  abort: () => void;
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onend: (() => void) | null;
+  onerror: ((event: {error?: string}) => void) | null;
+  onresult: ((event: {resultIndex?: number; results: ArrayLike<BrowserSpeechRecognitionResult>}) => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+function createBrowserSpeechRecognition() {
+  if (Platform.OS !== 'web') return null;
+  const browserGlobal = globalThis as typeof globalThis & {
+    SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+  };
+  const SpeechRecognition = browserGlobal.SpeechRecognition ?? browserGlobal.webkitSpeechRecognition;
+  return SpeechRecognition ? new SpeechRecognition() : null;
+}
+
+function preferredBrowserAudioMimeType() {
+  if (Platform.OS !== 'web' || typeof MediaRecorder === 'undefined') return '';
+  return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+    .find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? '';
 }
 
 function validTimeZone(timeZone?: string) {
@@ -200,6 +258,8 @@ function MessageBubble({
   onConfirm,
   onFeedback,
   onReject,
+  onSpeak,
+  speaking,
   busy,
   savingActionId,
 }: {
@@ -209,6 +269,8 @@ function MessageBubble({
   onConfirm: (messageIdValue: string, action: AssistantProposedAction) => void;
   onFeedback: (message: AssistantChatMessage, rating: AssistantFeedbackRating) => void;
   onReject: (messageIdValue: string, action: AssistantProposedAction) => void;
+  onSpeak: (message: AssistantChatMessage) => void;
+  speaking: boolean;
   savingActionId: string;
 }) {
   const isUser = message.role === 'user';
@@ -244,6 +306,12 @@ function MessageBubble({
         {!isUser && message.id !== 'assistant-intro' ? (
           <View style={local.feedbackRow}>
             <Text style={local.feedbackPrompt}>คำตอบนี้ช่วยได้ไหม</Text>
+            <Pressable
+              accessibilityLabel={speaking ? 'หยุดอ่านคำตอบ' : 'อ่านคำตอบออกเสียง'}
+              onPress={() => onSpeak(message)}
+              style={[local.feedbackButton, speaking && local.feedbackButtonSpeaking]}>
+              <MaterialIcon color={speaking ? '#ffffff' : '#668166'} name={speaking ? 'stop_circle' : 'volume_up'} size={16} />
+            </Pressable>
             <Pressable
               accessibilityLabel="คำตอบมีประโยชน์"
               onPress={() => onFeedback(message, 'helpful')}
@@ -769,6 +837,11 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const cloudWriteQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const scrollToBottomVisibleRef = useRef(false);
   const speechBaseInputRef = useRef('');
+  const browserSpeechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const browserMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const browserMediaStreamRef = useRef<MediaStream | null>(null);
+  const browserVoiceChunksRef = useRef<Blob[]>([]);
+  const browserVoiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const temporaryChatRef = useRef(false);
   const retryConfirmActionRef = useRef<{action: AssistantProposedAction; targetMessageId: string} | null>(null);
   const confirmActionInFlightRef = useRef(false);
@@ -808,6 +881,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const [weeklyInsights, setWeeklyInsights] = useState<WeeklyInsightData | null>(null);
   const [adaptiveInsightDashboard, setAdaptiveInsightDashboard] = useState<AdaptiveDashboard | null>(null);
   const [messages, setMessages] = useState<AssistantChatMessage[]>(() => [assistantIntroMessage()]);
+  const [speakingMessageId, setSpeakingMessageId] = useState('');
   // Refactored UI: the clean state remains visible until the user starts a conversation.
   const hasConversation = messages.some((message) => message.role === 'user');
   const visibleMessages = hasConversation ? messages.filter((message) => message.id !== 'assistant-intro') : [];
@@ -919,6 +993,15 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
 
   useEffect(() => {
     return () => {
+      import('expo-speech').then((module) => module.stop()).catch(() => undefined);
+      browserSpeechRecognitionRef.current?.abort();
+      browserSpeechRecognitionRef.current = null;
+      if (browserVoiceTimeoutRef.current) clearTimeout(browserVoiceTimeoutRef.current);
+      browserVoiceTimeoutRef.current = null;
+      if (browserMediaRecorderRef.current?.state === 'recording') browserMediaRecorderRef.current.stop();
+      browserMediaRecorderRef.current = null;
+      browserMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      browserMediaStreamRef.current = null;
       if (!NativeModules.Voice) return;
       import('@react-native-voice/voice').then((module) => {
         module.default.destroy().catch(() => undefined);
@@ -926,6 +1009,35 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       }).catch(() => undefined);
     };
   }, []);
+
+  const speakAssistantMessage = async (message: AssistantChatMessage) => {
+    if (message.role !== 'assistant') return;
+    let Speech: typeof import('expo-speech');
+    try {
+      Speech = await import('expo-speech');
+    } catch {
+      appendAssistant('เสียงตอบกลับพร้อมใช้งานแล้ว แต่ Development Build ตัวเก่ายังไม่มีโมดูลเสียง กรุณาติดตั้งบิลด์ใหม่หนึ่งครั้ง หลังจากนั้นการแก้หน้าจอทั่วไปอัปเดตผ่าน EAS Update ได้');
+      return;
+    }
+    if (speakingMessageId === message.id) {
+      await Speech.stop().catch(() => undefined);
+      setSpeakingMessageId('');
+      return;
+    }
+    await Speech.stop().catch(() => undefined);
+    const spokenText = message.content.trim();
+    if (!spokenText) return;
+    const language = /[\u0E00-\u0E7F]/.test(spokenText) ? 'th-TH' : 'en-US';
+    setSpeakingMessageId(message.id);
+    Speech.speak(spokenText, {
+      language,
+      onDone: () => setSpeakingMessageId(''),
+      onError: () => setSpeakingMessageId(''),
+      onStopped: () => setSpeakingMessageId(''),
+      pitch: 1,
+      rate: .95,
+    });
+  };
 
   const persistMessage = (message: AssistantChatMessage, state: AssistantConversationState) => {
     if (temporaryChatRef.current || message.id === 'assistant-intro') return;
@@ -1049,7 +1161,8 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setConversationId(conversation.id);
       setConversationState(restored.state);
       autoScrollPendingRef.current = true;
-      setMessages(restored.messages.length ? restored.messages : [assistantIntroMessage()]);
+      const restoredMessages = sanitizeAssistantMessages(restored.messages);
+      setMessages(restoredMessages.length ? restoredMessages : [assistantIntroMessage()]);
       setInlineAdaptiveSuggestions([]);
       setChatHistoryOpen(false);
       await AsyncStorage.setItem(assistantActiveConversationKey(uid), conversation.id);
@@ -1324,12 +1437,19 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   };
 
   const stopVoiceInput = async () => {
-    if (!NativeModules.Voice) {
+    if (Platform.OS === 'web') {
+      if (browserMediaRecorderRef.current?.state === 'recording') {
+        browserMediaRecorderRef.current.stop();
+        return;
+      }
+      browserSpeechRecognitionRef.current?.stop();
+      browserSpeechRecognitionRef.current = null;
       setListening(false);
       return;
     }
     try {
-      const Voice = (await import('@react-native-voice/voice')).default;
+      const Voice = await loadVoiceInputModule();
+      if (!Voice) return;
       await Voice.stop();
     } catch {
       // Stopping can fail if the recognizer already ended. The UI should still reset.
@@ -1342,17 +1462,133 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     if (busy) return;
     setQuickAddOpen(false);
     setQuickAddCategory(null);
-    if (!NativeModules.Voice) {
-      appendAssistant('ปุ่มไมค์พร้อมในหน้าแชทแล้ว แต่ต้อง rebuild Development Build ใหม่ก่อน เพราะแอปใน MuMu ยังไม่มี native module สำหรับแปลงเสียงเป็นข้อความ\n\nหลัง rebuild แล้ว กดไมค์ พูด แล้วข้อความจะถูกเติมในช่องพิมพ์ให้ตรวจแก้ก่อนส่ง');
-      return;
-    }
-    const granted = await requestMicrophonePermission();
-    if (!granted) {
-      appendAssistant('ยังไม่ได้รับสิทธิ์ไมโครโฟน เลยฟังเสียงไม่ได้ตอนนี้นะ เปิด permission ไมโครโฟนให้ SmartLife แล้วลองกดไมค์อีกครั้ง');
+    if (Platform.OS === 'web') {
+      if (typeof MediaRecorder !== 'undefined' && globalThis.navigator?.mediaDevices?.getUserMedia) {
+        try {
+          const stream = await globalThis.navigator.mediaDevices.getUserMedia({audio: true});
+          const preferredMimeType = preferredBrowserAudioMimeType();
+          const recorder = preferredMimeType
+            ? new MediaRecorder(stream, {audioBitsPerSecond: 64_000, mimeType: preferredMimeType})
+            : new MediaRecorder(stream, {audioBitsPerSecond: 64_000});
+          browserMediaStreamRef.current = stream;
+          browserMediaRecorderRef.current = recorder;
+          browserVoiceChunksRef.current = [];
+          speechBaseInputRef.current = input.trimEnd();
+          recorder.ondataavailable = (event) => {
+            if (event.data?.size) browserVoiceChunksRef.current.push(event.data);
+          };
+          recorder.onerror = () => {
+            if (browserVoiceTimeoutRef.current) clearTimeout(browserVoiceTimeoutRef.current);
+            browserVoiceTimeoutRef.current = null;
+            browserMediaRecorderRef.current = null;
+            browserMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+            browserMediaStreamRef.current = null;
+            setListening(false);
+            appendAssistant('บันทึกเสียงจากไมโครโฟนไม่สำเร็จครับ กรุณาตรวจสิทธิ์ไมโครโฟนแล้วลองใหม่');
+          };
+          recorder.onstop = () => {
+            const chunks = browserVoiceChunksRef.current;
+            browserVoiceChunksRef.current = [];
+            if (browserVoiceTimeoutRef.current) clearTimeout(browserVoiceTimeoutRef.current);
+            browserVoiceTimeoutRef.current = null;
+            browserMediaRecorderRef.current = null;
+            browserMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+            browserMediaStreamRef.current = null;
+            setListening(false);
+            const blob = new Blob(chunks, {type: recorder.mimeType || preferredMimeType || 'audio/webm'});
+            if (!blob.size) {
+              appendAssistant('ยังไม่ได้ยินเสียงครับ กดไมค์แล้วพูดใหม่อีกครั้งได้เลย');
+              return;
+            }
+            setBusy(true);
+            transcribeAssistantAudio(blob)
+              .then((transcript) => {
+                setInput([speechBaseInputRef.current, transcript].filter(Boolean).join(' '));
+                requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({animated: true}));
+              })
+              .catch((error) => {
+                const kind = classifyAssistantError(error);
+                appendAssistant(kind === 'unknown'
+                  ? 'แปลงเสียงเป็นข้อความไม่สำเร็จครับ กรุณาลองพูดใหม่อีกครั้ง'
+                  : assistantErrorMessage(kind));
+              })
+              .finally(() => setBusy(false));
+          };
+          recorder.start(250);
+          setListening(true);
+          browserVoiceTimeoutRef.current = setTimeout(() => {
+            if (browserMediaRecorderRef.current?.state === 'recording') browserMediaRecorderRef.current.stop();
+          }, 30_000);
+          return;
+        } catch (error) {
+          browserMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+          browserMediaStreamRef.current = null;
+          const message = error instanceof Error ? error.message : String(error);
+          appendAssistant(/notallowed|not allowed|permission|denied/i.test(message)
+            ? 'ยังไม่ได้รับสิทธิ์ไมโครโฟนครับ อนุญาตไมโครโฟนให้เว็บไซต์ SmartLife แล้วกดไมค์ใหม่ได้เลย'
+            : 'เปิดไมโครโฟนบนเว็บไม่สำเร็จครับ กรุณาตรวจว่าไม่มีโปรแกรมอื่นใช้ไมค์อยู่แล้วลองใหม่');
+          return;
+        }
+      }
+      const recognition = createBrowserSpeechRecognition();
+      if (!recognition) {
+        appendAssistant('เบราว์เซอร์นี้ยังไม่รองรับการพิมพ์ด้วยเสียง กรุณาเปิด SmartLife ด้วย Chrome หรือ Edge รุ่นล่าสุด หรือพิมพ์ข้อความในช่องแชทได้เลย');
+        return;
+      }
+      speechBaseInputRef.current = input.trimEnd();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'th-TH';
+      recognition.onresult = (event) => {
+        const spokenParts: string[] = [];
+        for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
+          const spoken = event.results[index]?.[0]?.transcript?.trim();
+          if (spoken) spokenParts.push(spoken);
+        }
+        if (!spokenParts.length) return;
+        setInput([speechBaseInputRef.current, spokenParts.join(' ')].filter(Boolean).join(' '));
+      };
+      recognition.onerror = (event) => {
+        browserSpeechRecognitionRef.current = null;
+        setListening(false);
+        if (event.error === 'aborted') return;
+        appendAssistant(event.error === 'not-allowed'
+          ? 'ยังไม่ได้รับสิทธิ์ไมโครโฟนครับ อนุญาตไมโครโฟนให้เว็บไซต์ SmartLife แล้วกดไมค์ใหม่ได้เลย'
+          : 'ฟังเสียงไม่สำเร็จครับ ลองกดไมค์แล้วพูดใหม่ หรือพิมพ์ข้อความต่อเองได้เลย');
+      };
+      recognition.onend = () => {
+        browserSpeechRecognitionRef.current = null;
+        setListening(false);
+      };
+      browserSpeechRecognitionRef.current = recognition;
+      setListening(true);
+      try {
+        recognition.start();
+      } catch {
+        browserSpeechRecognitionRef.current = null;
+        setListening(false);
+        appendAssistant('เริ่มฟังเสียงบนเว็บไม่สำเร็จครับ ลองกดไมค์ใหม่อีกครั้ง หรือพิมพ์ข้อความต่อเองได้เลย');
+      }
       return;
     }
     try {
-      const Voice = (await import('@react-native-voice/voice')).default;
+      const Voice = await loadVoiceInputModule();
+      if (!Voice) {
+        appendAssistant('แอปที่เปิดอยู่ยังไม่พบระบบรับเสียง ให้ติดตั้ง app-debug.apk ล่าสุดแล้วเปิดผ่าน start-smartlife-mumu.cmd ได้เลย ไม่ต้อง rebuild ซ้ำ');
+        return;
+      }
+      const granted = await requestMicrophonePermission();
+      if (!granted) {
+        appendAssistant('ยังไม่ได้รับสิทธิ์ไมโครโฟน เลยฟังเสียงไม่ได้ตอนนี้นะ เปิด permission ไมโครโฟนให้ SmartLife แล้วลองกดไมค์อีกครั้ง');
+        return;
+      }
+      if (Platform.OS === 'android') {
+        const services = await Promise.resolve(Voice.getSpeechRecognitionServices());
+        if (Array.isArray(services) && services.length === 0) {
+          appendAssistant('APK นี้มีโมดูลไมค์แล้ว แต่ MuMu เครื่องนี้ยังไม่มีบริการรู้จำเสียงของ Android จึงยังแปลงเสียงเป็นข้อความไม่ได้\n\nให้ติดตั้ง Google app หรือ Speech Recognition & Synthesis ใน MuMu หรือทดสอบ APK ล่าสุดบนมือถือ Android จริงได้เลย ไม่ต้อง rebuild ซ้ำ');
+          return;
+        }
+      }
       speechBaseInputRef.current = input.trimEnd();
       Voice.onSpeechPartialResults = (event) => {
         const spoken = event.value?.[0]?.trim();
@@ -1374,8 +1610,8 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     } catch (error) {
       setListening(false);
       const message = error instanceof Error ? error.message : '';
-      if (/native module|Voice|Cannot find/i.test(message)) {
-        appendAssistant('ปุ่มไมค์ต้อง rebuild Development Build ใหม่ก่อนนะ เพราะ native voice module ยังไม่อยู่ในแอปที่เปิดอยู่ใน MuMu');
+      if (/recognition service|speech recognizer|not available/i.test(message)) {
+        appendAssistant('ระบบไมค์ในแอปพร้อมแล้ว แต่ MuMu ยังไม่มีบริการรู้จำเสียง ให้ติดตั้ง Google app หรือ Speech Recognition & Synthesis ใน MuMu แล้วลองใหม่ ไม่ต้อง rebuild');
         return;
       }
       appendAssistant('เริ่มฟังเสียงไม่ได้ตอนนี้นะ ลองใหม่อีกครั้ง หรือพิมพ์ข้อความเองก่อนก็ได้');
@@ -1426,7 +1662,14 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         appendAssistant(message);
         return;
       }
-      appendAssistant('อัปโหลดหรือวิเคราะห์ไฟล์ไม่สำเร็จ กรุณาตรวจอินเทอร์เน็ตแล้วลองเลือกไฟล์ PDF, TXT, CSV หรือ ICS อีกครั้ง');
+      if (/storage\/(?:unauthorized|unauthenticated)/i.test(message)) {
+        appendAssistant('บัญชีนี้ยังอัปโหลดไฟล์เข้า SmartLife Storage ไม่สำเร็จครับ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่หนึ่งครั้ง จากนั้นเลือกไฟล์เดิมอีกครั้ง');
+        return;
+      }
+      const kind = classifyAssistantError(error);
+      appendAssistant(kind === 'unknown'
+        ? 'อัปโหลดหรือวิเคราะห์ไฟล์ไม่สำเร็จ กรุณาตรวจอินเทอร์เน็ตแล้วลองเลือกไฟล์ PDF, TXT, CSV หรือ ICS อีกครั้ง'
+        : assistantErrorMessage(kind));
     } finally {
       setBusy(false);
     }
@@ -1566,7 +1809,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} savingActionId={savingActionId} />
+              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} />
             ))}
             <InlineAdaptivePanel
               busyKey={inlineAdaptiveBusyKey}
@@ -1841,6 +2084,7 @@ const local = StyleSheet.create({
   focusText: {color: '#4b584e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
   feedbackButton: {alignItems: 'center', backgroundColor: '#eef3eb', borderRadius: 14, height: 28, justifyContent: 'center', width: 30},
   feedbackButtonActive: {backgroundColor: '#668166'},
+  feedbackButtonSpeaking: {backgroundColor: '#668166'},
   feedbackButtonNegative: {backgroundColor: '#a66e6e'},
   feedbackPrompt: {color: '#849080', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 9},
   feedbackRow: {alignItems: 'center', borderTopColor: '#edf0ea', borderTopWidth: 1, flexDirection: 'row', gap: 6, marginTop: 10, paddingTop: 8},

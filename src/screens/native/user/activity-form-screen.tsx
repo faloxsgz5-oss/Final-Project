@@ -10,7 +10,9 @@ import {Card, MaterialIcon, PrimaryButton, UserHeader, UserShell, type UserNavig
 type FormPage = 'smartlife_add_activity' | 'smartlife_add_task' | 'smartlife_add_appointment' | 'smartlife_add_income' | 'smartlife_save_activity' | 'smartlife_save_task' | 'smartlife_save_appointment';
 type ActivityKind = 'activity' | 'task' | 'appointment';
 type FormMode = 'manual' | 'ai';
+type EntryMode = 'event' | 'reminder';
 type TransactionKind = 'income' | 'expense';
+type PriorityValue = 'normal' | 'important' | 'urgent';
 
 const colors = ['#5f875f', '#9297bb', '#d06d62', '#d9a844', '#6c9db6', '#ad7cae'];
 const activityTypes: {icon: string; label: string; value: ActivityKind}[] = [
@@ -24,11 +26,20 @@ const activityCopy: Record<ActivityKind, {details: string; due: string; location
   appointment: {details: 'โน้ตนัดหมาย', due: 'วันที่', location: 'สถานที่นัด', reminder: 'ผู้เกี่ยวข้อง', save: 'บันทึกนัดหมาย', title: 'เพิ่มนัดหมาย'},
 };
 const priorityOptions = [
-  {description: 'ทำเมื่อมีเวลา', icon: 'low_priority', label: 'ต่ำ', value: 'low'},
-  {description: 'สำคัญระดับปกติ', icon: 'radio_button_checked', label: 'ปกติ', value: 'normal'},
-  {description: 'ควรทำก่อนรายการทั่วไป', icon: 'priority_high', label: 'สูง', value: 'high'},
-  {description: 'ดันขึ้นลำดับแรกของ AI', icon: 'warning', label: 'ด่วน', value: 'urgent'},
-];
+  {description: 'รายการทั่วไป', icon: 'radio_button_checked', label: 'ทั่วไป', value: 'normal'},
+  {description: 'ควรจัดไว้ก่อน', icon: 'priority_high', label: 'สำคัญ', value: 'important'},
+  {description: 'ต้องทำก่อนรายการอื่น', icon: 'warning', label: 'เร่งด่วน', value: 'urgent'},
+] as const;
+const reminderOptions = [
+  {icon: 'notifications_off', label: 'ไม่เตือน', value: ''},
+  {icon: 'notifications_active', label: 'ตรงเวลา', value: 'ตรงเวลา'},
+  {icon: 'timer', label: '10 นาทีก่อน', value: '10 นาทีก่อน'},
+  {icon: 'schedule', label: '30 นาทีก่อน', value: '30 นาทีก่อน'},
+  {icon: 'hourglass_top', label: '1 ชั่วโมงก่อน', value: '1 ชั่วโมงก่อน'},
+  {icon: 'event_upcoming', label: '1 วันก่อน', value: '1 วันก่อน'},
+] as const;
+const durationOptions = [30, 60, 90, 120] as const;
+const recurrenceOptions = ['ไม่ทำซ้ำ', 'ทุกวัน', 'ทุกสัปดาห์', 'ทุกเดือน'] as const;
 
 function config(page: FormPage) {
   if (page.includes('income')) return {action: 'create-transaction', title: 'เพิ่มรายการการเงิน', type: 'income', target: 'smartlife_finance_day'};
@@ -78,15 +89,18 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   const [category, setCategory] = useState(form.type === 'income' ? '\u0e40\u0e07\u0e34\u0e19\u0e42\u0e2d\u0e19' : '');
   const [transactionType, setTransactionType] = useState<TransactionKind>(form.type === 'income' ? 'income' : 'expense');
   const [activityType, setActivityType] = useState<ActivityKind>(form.type === 'income' ? 'activity' : form.type as ActivityKind);
+  const [entryMode, setEntryMode] = useState<EntryMode>('event');
   const [formMode, setFormMode] = useState<FormMode>('manual');
   const [location, setLocation] = useState('');
   const [date, setDate] = useState(dateValue);
   const [time, setTime] = useState(timeValue);
   const [pickerTarget, setPickerTarget] = useState<'date' | 'time' | null>(null);
   const [reminder, setReminder] = useState('');
+  const [durationMinutes, setDurationMinutes] = useState(60);
+  const [recurrence, setRecurrence] = useState<(typeof recurrenceOptions)[number]>('ไม่ทำซ้ำ');
   const [note, setNote] = useState('');
   const [attendees, setAttendees] = useState('');
-  const [priority, setPriority] = useState('normal');
+  const [priority, setPriority] = useState<PriorityValue>('normal');
   const [color, setColor] = useState(colors[0]);
   const [aiSuggestions, setAiSuggestions] = useState<ActivitySuggestion[]>([]);
   const [loadingAiSuggestions, setLoadingAiSuggestions] = useState(false);
@@ -125,7 +139,19 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     try {
       const payload = isTransaction
         ? {type: transactionType, amount: parsedAmount, merchant: title.trim(), category, note, occurredAt: startDate.toISOString()}
-        : {title, type: activityType, location, color, note, reminder, category, priority, attendees, startAt: startDate.toISOString(), endAt: new Date(startDate.getTime() + 60 * 60 * 1000).toISOString()};
+        : {
+          title,
+          type: entryMode === 'reminder' ? 'task' : activityType,
+          location,
+          color,
+          note: recurrence === 'ไม่ทำซ้ำ' ? note : `${note}${note.trim() ? '\n\n' : ''}ทำซ้ำ: ${recurrence}`,
+          reminder: entryMode === 'reminder' && !reminder ? 'ตรงเวลา' : reminder,
+          category: entryMode === 'reminder' ? 'reminder' : category,
+          priority,
+          attendees,
+          startAt: startDate.toISOString(),
+          endAt: new Date(startDate.getTime() + durationMinutes * 60 * 1000).toISOString(),
+        };
       await runLegacyDataAction(uid, `user/${page}`, {action: form.action, payload});
     } catch (error) {
       Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
@@ -144,12 +170,14 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
 
   const useSuggestion = (suggestion: ActivitySuggestion) => {
     const startAt = new Date(suggestion.startAt);
+    setEntryMode('event');
     setActivityType(suggestion.type);
     setTitle(suggestion.title);
     setLocation(suggestion.location);
     setDate(formatDateText(startAt));
     setTime(formatTimeText(startAt));
-    setPriority(suggestion.priority);
+    setPriority(suggestion.priority === 'urgent' ? 'urgent' : suggestion.priority === 'high' || suggestion.priority === 'important' ? 'important' : 'normal');
+    setDurationMinutes(Math.max(30, Math.round((new Date(suggestion.endAt).getTime() - startAt.getTime()) / 60000)) || 60);
     setNote(`${suggestion.note}\n\nเหตุผลที่ AI เลือก: ${suggestion.reasons.join(', ')}`);
     setFormMode('manual');
   };
@@ -174,6 +202,63 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   </UserShell>;
 
   return <UserShell active="smartlife_planner" onNavigate={onNavigate}>
+    <View style={styles.modernPage}>
+      <View style={styles.modernHeader}>
+        <Pressable accessibilityLabel="ปิด" onPress={() => onNavigate('smartlife_planner')} style={styles.roundButton}><MaterialIcon color="#354133" name="close" size={24} /></Pressable>
+        <View style={styles.modernHeaderCopy}><Text style={styles.eyebrow}>SMARTLIFE PLANNER</Text><Text style={styles.modernTitle}>{formMode === 'ai' ? 'AI แนะนำ' : 'รายการใหม่'}</Text></View>
+        <Pressable accessibilityLabel="บันทึก" disabled={saving || !title.trim()} onPress={save} style={[styles.doneButton, (saving || !title.trim()) && styles.doneButtonDisabled]}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={24} />}</Pressable>
+      </View>
+
+      <View style={styles.entryToggle}>
+        <Pressable onPress={() => { setEntryMode('event'); setFormMode('manual'); }} style={[styles.entryMode, entryMode === 'event' && formMode === 'manual' && styles.entryModeActive]}><MaterialIcon color={entryMode === 'event' && formMode === 'manual' ? '#fff' : '#718071'} name="calendar_month" size={17} /><Text style={[styles.entryModeText, entryMode === 'event' && formMode === 'manual' && styles.entryModeTextActive]}>กิจกรรม</Text></Pressable>
+        <Pressable onPress={() => { setEntryMode('reminder'); setFormMode('manual'); setReminder((value) => value || 'ตรงเวลา'); }} style={[styles.entryMode, entryMode === 'reminder' && formMode === 'manual' && styles.entryModeActive]}><MaterialIcon color={entryMode === 'reminder' && formMode === 'manual' ? '#fff' : '#718071'} name="notifications_active" size={17} /><Text style={[styles.entryModeText, entryMode === 'reminder' && formMode === 'manual' && styles.entryModeTextActive]}>เตือนความจำ</Text></Pressable>
+      </View>
+
+      <Pressable onPress={() => { setLoadingAiSuggestions(true); setFormMode((value) => value === 'ai' ? 'manual' : 'ai'); }} style={styles.aiModeButton}>
+        <View style={styles.aiModeIcon}><MaterialIcon color="#5f875f" name="auto_awesome" size={18} /></View><View style={{flex: 1}}><Text style={styles.aiModeTitle}>AI ช่วยแนะนำช่วงเวลาที่เหมาะ</Text><Text style={styles.aiModeText}>ตรวจช่วงว่าง งาน และตารางเรียนก่อนเพิ่ม</Text></View><MaterialIcon color="#658064" name={formMode === 'ai' ? 'expand_less' : 'chevron_right'} size={20} />
+      </Pressable>
+
+      {formMode === 'ai' ? <AiSuggestions loading={loadingAiSuggestions} onUse={useSuggestion} suggestions={aiSuggestions} /> : <>
+        {entryMode === 'event' ? <View style={styles.typeRow}>{activityTypes.map((item) => <Pressable key={item.value} onPress={() => setActivityType(item.value)} style={[styles.typeCard, activityType === item.value && styles.typeCardActive]}><MaterialIcon color={activityType === item.value ? '#ffffff' : '#778477'} name={item.icon} size={20} /><Text style={[styles.typeText, activityType === item.value && styles.typeTextActive]}>{item.label}</Text></Pressable>)}</View> : null}
+
+        <View style={styles.identityCard}>
+          <TextInput onChangeText={setTitle} placeholder={entryMode === 'reminder' ? 'ชื่อการเตือน' : activityType === 'task' ? 'ชื่องาน' : activityType === 'appointment' ? 'ชื่อนัดหมาย' : 'ชื่อกิจกรรม'} placeholderTextColor="#9ba49a" style={styles.titleInput} value={title} />
+          <View style={styles.cardDivider} />
+          <View style={styles.inlineInput}><MaterialIcon color="#6f826e" name={entryMode === 'reminder' ? 'notes' : 'location_on'} size={18} /><TextInput onChangeText={entryMode === 'reminder' ? setNote : setLocation} placeholder={entryMode === 'reminder' ? 'เพิ่มโน้ตสั้น ๆ' : 'สถานที่หรือห้องเรียน (ไม่บังคับ)'} placeholderTextColor="#9ba49a" style={styles.inlineTextInput} value={entryMode === 'reminder' ? note : location} /></View>
+        </View>
+
+        <Text style={styles.sectionTitle}>วันที่และเวลา</Text>
+        <View style={styles.modernCard}>
+          <View style={styles.dateTimeRow}><View style={styles.rowIcon}><MaterialIcon color="#5f875f" name="event" size={20} /></View><View style={{flex: 1}}><Text style={styles.rowLabel}>วันที่</Text><Pressable onPress={() => setPickerTarget('date')}><Text style={styles.rowValue}>{thaiDateText(date)}</Text></Pressable></View></View>
+          <View style={styles.cardDivider} />
+          <View style={styles.dateTimeRow}><View style={styles.rowIcon}><MaterialIcon color="#5f875f" name="schedule" size={20} /></View><View style={{flex: 1}}><Text style={styles.rowLabel}>{entryMode === 'reminder' ? 'เวลาเตือน' : 'เวลาเริ่ม'}</Text><Pressable onPress={() => setPickerTarget('time')}><Text style={styles.rowValue}>{time}</Text></Pressable></View></View>
+          <View style={styles.cardDivider} />
+          <Text style={styles.rowLabel}>ระยะเวลา</Text><Text style={styles.rowHint}>เวลาสิ้นสุดจะคำนวณให้อัตโนมัติ</Text><View style={styles.compactChips}>{durationOptions.map((minutes) => <Pressable key={minutes} onPress={() => setDurationMinutes(minutes)} style={[styles.compactChip, durationMinutes === minutes && styles.compactChipActive]}><Text style={[styles.compactChipText, durationMinutes === minutes && styles.compactChipTextActive]}>{minutes < 60 ? `${minutes} นาที` : `${minutes / 60} ชม.`}</Text></Pressable>)}</View>
+          {pickerTarget ? <NativeDateTimePicker accentColor="#638363" is24Hour mode={pickerTarget ?? 'date'} onDismiss={() => setPickerTarget(null)} onValueChange={(_, selectedDate) => selectFormDateTime(selectedDate)} presentation="dialog" value={pickerTarget === 'date' ? parseDateText(date) : parseTimeText(time)} /> : null}
+        </View>
+
+        <Text style={styles.sectionTitle}>ความสำคัญ</Text>
+        <View style={styles.modernCard}><View style={styles.priorityQuickRow}>{priorityOptions.map((item) => <Pressable accessibilityLabel={`เลือกความสำคัญ ${item.label}`} accessibilityRole="button" accessibilityState={{selected: priority === item.value}} key={item.value} onPress={() => setPriority(item.value)} style={[styles.priorityQuickOption, priority === item.value && styles.priorityQuickOptionActive]}><MaterialIcon color={priority === item.value ? '#fff' : '#5f875f'} name={item.icon} size={17} /><Text style={[styles.priorityQuickText, priority === item.value && styles.priorityQuickTextActive]}>{item.label}</Text></Pressable>)}</View></View>
+
+        <Text style={styles.sectionTitle}>การแจ้งเตือน</Text>
+        <View style={styles.modernCard}><View style={styles.reminderGrid}>{reminderOptions.map((item) => <Pressable key={item.value || 'none'} onPress={() => setReminder(item.value)} style={[styles.reminderOption, reminder === item.value && styles.reminderOptionActive]}><View style={[styles.reminderIcon, reminder === item.value && styles.reminderIconActive]}><MaterialIcon color={reminder === item.value ? '#fff' : '#5f875f'} name={item.icon} size={17} /></View><Text style={[styles.reminderText, reminder === item.value && styles.reminderTextActive]}>{item.label}</Text></Pressable>)}</View></View>
+
+        <Text style={styles.sectionTitle}>ตัวเลือกเพิ่มเติม</Text>
+        <View style={styles.modernCard}>
+          <Text style={styles.rowLabel}>ทำซ้ำ</Text><View style={styles.recurrenceRow}>{recurrenceOptions.map((item) => <Pressable key={item} onPress={() => setRecurrence(item)} style={[styles.recurrenceChip, recurrence === item && styles.recurrenceChipActive]}><Text style={[styles.recurrenceText, recurrence === item && styles.recurrenceTextActive]}>{item}</Text></Pressable>)}</View>
+          {entryMode === 'event' ? <><View style={styles.cardDivider} /><Text style={styles.rowLabel}>รายละเอียด</Text><TextInput multiline onChangeText={setNote} placeholder="เพิ่มรายละเอียด สิ่งที่ต้องเตรียม หรือลิงก์ที่เกี่ยวข้อง" placeholderTextColor="#879186" style={styles.noteInput} textAlignVertical="top" value={note} /></> : null}
+          {activityType === 'appointment' && entryMode === 'event' ? <><View style={styles.cardDivider} /><Input icon="person_outline" onChangeText={setAttendees} placeholder="เพิ่มผู้เกี่ยวข้อง" value={attendees} /></> : null}
+          <View style={styles.cardDivider} /><Text style={styles.colorLabel}>สีของรายการ</Text><View style={styles.colorRow}>{colors.map((item) => <Pressable accessibilityLabel={`เลือกสี ${item}`} key={item} onPress={() => setColor(item)} style={[styles.color, {backgroundColor: item}, color === item && styles.colorSelected]} />)}</View>
+        </View>
+
+        <Pressable disabled={saving || !title.trim()} onPress={save} style={[styles.saveShell, (saving || !title.trim()) && styles.disabled]}><LinearGradient colors={['#6f966f', '#476d43']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : entryMode === 'reminder' ? 'บันทึกการเตือน' : copy.save}</Text></LinearGradient></Pressable>
+      </>}
+    </View>
+  </UserShell>;
+
+  /* Kept temporarily unreachable while the redesigned form is validated against the same save pipeline. */
+  // eslint-disable-next-line no-unreachable
+  if (false) return <UserShell active="smartlife_planner" onNavigate={onNavigate}>
     <View style={styles.page}>
       {/* Refactored UI: activity, task, appointment, and AI suggestion layouts share one existing save pipeline. */}
       <View style={styles.header}><Text style={styles.title}>{formMode === 'ai' ? 'AI แนะนำ' : copy.title}</Text><Pressable accessibilityLabel="ปิด" onPress={() => onNavigate('smartlife_planner')} style={styles.close}><MaterialIcon color="#354133" name="close" size={21} /></Pressable></View>
@@ -183,7 +268,7 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
         <View style={styles.formCard}>
           <FieldLabel label={activityType === 'task' ? 'ชื่องาน' : activityType === 'appointment' ? 'ชื่อนัดหมาย' : 'ชื่อกิจกรรม'} /><Input icon="format_align_left" onChangeText={setTitle} placeholder={activityType === 'task' ? 'แตะเพื่อพิมพ์ชื่องาน' : activityType === 'appointment' ? 'แตะเพื่อพิมพ์ชื่อนัดหมาย' : 'แตะเพื่อพิมพ์ชื่อกิจกรรม'} value={title} />
           <View style={styles.twoColumn}><View style={styles.column}><FieldLabel label={copy.due} /><PickerButton icon="event" label="วันที่" onPress={() => setPickerTarget('date')} value={thaiDateText(date)} /></View><View style={styles.column}><FieldLabel label={activityType === 'appointment' ? 'ช่วงเวลา' : activityType === 'task' ? 'เวลาเตือน' : 'เวลา'} /><PickerButton icon="schedule" label="เวลา" onPress={() => setPickerTarget('time')} value={time} /></View></View>
-          {pickerTarget ? <NativeDateTimePicker accentColor="#638363" is24Hour mode={pickerTarget} onDismiss={() => setPickerTarget(null)} onValueChange={(_, selectedDate) => selectFormDateTime(selectedDate)} presentation="dialog" value={pickerTarget === 'date' ? parseDateText(date) : parseTimeText(time)} /> : null}
+          {pickerTarget ? <NativeDateTimePicker accentColor="#638363" is24Hour mode={pickerTarget ?? 'date'} onDismiss={() => setPickerTarget(null)} onValueChange={(_, selectedDate) => selectFormDateTime(selectedDate)} presentation="dialog" value={pickerTarget === 'date' ? parseDateText(date) : parseTimeText(time)} /> : null}
           <FieldLabel label={copy.location} /><Input icon="location_on" onChangeText={setLocation} placeholder={activityType === 'task' ? 'เลือกวิชาหรือหมวดงาน' : activityType === 'appointment' ? 'เพิ่มสถานที่นัด' : 'เพิ่มสถานที่'} value={location} />
           {activityType === 'task' ? <><FieldLabel label="ความสำคัญ" /><View style={styles.priorityGrid}>{priorityOptions.map((item) => <Pressable accessibilityLabel={`เลือกความสำคัญ${item.label}`} key={item.value} onPress={() => setPriority(item.value)} style={({pressed}) => [styles.priorityOption, priority === item.value && styles.priorityOptionActive, pressed && styles.pressed]}><View style={[styles.priorityIcon, priority === item.value && styles.priorityIconActive]}><MaterialIcon color={priority === item.value ? '#fff' : '#638363'} name={item.icon} size={17} /></View><View style={{flex: 1}}><Text style={[styles.priorityLabel, priority === item.value && styles.priorityLabelActive]}>{item.label}</Text><Text style={[styles.priorityDescription, priority === item.value && styles.priorityDescriptionActive]}>{item.description}</Text></View></Pressable>)}</View></> : activityType === 'appointment' ? <><FieldLabel label="ผู้เกี่ยวข้อง" /><Input icon="person_outline" onChangeText={setAttendees} placeholder="เพิ่มชื่อเพื่อนหรือกลุ่ม" value={attendees} /></> : <><FieldLabel label="แจ้งเตือน" /><Input icon="notifications_none" onChangeText={setReminder} placeholder="เลือกเวลาแจ้งเตือน" value={reminder} /></>}
           <FieldLabel label={copy.details} /><TextInput multiline onChangeText={setNote} placeholder={activityType === 'task' ? 'เพิ่มรายละเอียด เช่น rubric ไฟล์แนบ หรือสิ่งที่ต้องส่ง' : activityType === 'appointment' ? 'เพิ่มรายละเอียด เช่น จุดนัดพบ สิ่งที่ต้องเตรียม หรือหัวข้อที่จะคุย' : 'เพิ่มรายละเอียด เช่น สิ่งที่ต้องเตรียม หรือไฟล์ที่ต้องส่ง'} placeholderTextColor="#879186" style={styles.noteInput} textAlignVertical="top" value={note} />
@@ -248,5 +333,58 @@ const incomeStyles = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  aiActions: {flexDirection: 'row', gap: 9, marginTop: 12}, aiCard: {backgroundColor: '#edf4eb', borderRadius: 20, marginTop: 16, padding: 15}, aiPrimary: {alignItems: 'center', backgroundColor: '#5f875f', borderRadius: 11, flex: 1, minHeight: 35, justifyContent: 'center'}, aiPrimaryText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 10}, aiSecondary: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 11, flex: 1, justifyContent: 'center', minHeight: 35}, aiSecondaryText: {color: '#5a7759', fontFamily: 'Prompt_700Bold', fontSize: 10}, aiText: {color: '#70806f', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 3}, aiTitle: {color: '#2e3c2e', fontFamily: 'Prompt_700Bold', fontSize: 12}, close: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, height: 40, justifyContent: 'center', width: 40}, color: {borderColor: '#fff', borderRadius: 15, borderWidth: 3, height: 30, width: 30}, colorLabel: {color: '#344235', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 15}, colorRow: {flexDirection: 'row', gap: 7, marginTop: 7}, colorSelected: {borderColor: '#2e3c2e', transform: [{scale: 1.08}]}, column: {flex: 1}, disabled: {opacity: .55}, emptyAi: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, gap: 8, justifyContent: 'center', minHeight: 86, padding: 14}, emptyAiText: {color: '#6b7669', fontFamily: 'Prompt_500Medium', fontSize: 10, lineHeight: 16, textAlign: 'center'}, formCard: {backgroundColor: '#fff', borderRadius: 22, boxShadow: '0 8px 20px rgba(42,58,42,.08)', marginTop: 12, padding: 15}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, input: {color: '#354133', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, minHeight: 42, paddingHorizontal: 10}, inputShell: {alignItems: 'center', backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 14, borderWidth: 1, flexDirection: 'row', minHeight: 44, paddingHorizontal: 11}, label: {color: '#344235', fontFamily: 'Prompt_700Bold', fontSize: 11, marginBottom: 6, marginTop: 13}, mode: {alignItems: 'center', borderRadius: 14, flex: 1, justifyContent: 'center', minHeight: 39}, modeActive: {backgroundColor: '#5f875f'}, modeText: {color: '#778477', fontFamily: 'Prompt_700Bold', fontSize: 11}, modeTextActive: {color: '#fff'}, modeToggle: {backgroundColor: '#e8eee5', borderRadius: 17, flexDirection: 'row', marginTop: 12, padding: 4}, noteInput: {backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 14, borderWidth: 1, color: '#354133', fontFamily: 'Prompt_400Regular', fontSize: 12, minHeight: 96, padding: 12}, page: {paddingBottom: 6}, pickerButton: {alignItems: 'center', backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 52, paddingHorizontal: 11}, pickerLabel: {color: '#7c8879', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, pickerValue: {color: '#354133', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 1}, pressed: {opacity: .78, transform: [{scale: .987}]}, priorityDescription: {color: '#7a8677', fontFamily: 'Prompt_400Regular', fontSize: 8, marginTop: 1}, priorityDescriptionActive: {color: 'rgba(255,255,255,.84)'}, priorityGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, priorityIcon: {alignItems: 'center', backgroundColor: '#e8efe5', borderRadius: 12, height: 32, justifyContent: 'center', width: 32}, priorityIconActive: {backgroundColor: 'rgba(255,255,255,.22)'}, priorityLabel: {color: '#354133', fontFamily: 'Prompt_800ExtraBold', fontSize: 11}, priorityLabelActive: {color: '#fff'}, priorityOption: {alignItems: 'center', backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 15, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 58, padding: 9, width: '48.5%'}, priorityOptionActive: {backgroundColor: '#5f875f', borderColor: '#5f875f'}, reasonRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 7}, save: {alignItems: 'center', justifyContent: 'center', minHeight: 50}, saveShell: {borderRadius: 16, marginTop: 15, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 14}, scoreBadge: {alignItems: 'center', backgroundColor: '#edf2eb', borderRadius: 99, minWidth: 33, paddingHorizontal: 8, paddingVertical: 4}, scoreBadgeText: {color: '#5f875f', fontFamily: 'Prompt_800ExtraBold', fontSize: 10}, suggestionArea: {gap: 10, marginTop: 16}, suggestionCard: {backgroundColor: '#fff', borderRadius: 20, boxShadow: '0 6px 18px rgba(42,58,42,.07)', padding: 14}, suggestionCardHead: {alignItems: 'center', flexDirection: 'row', gap: 8, justifyContent: 'space-between'}, suggestionHero: {borderRadius: 20, padding: 16}, suggestionHeroText: {color: 'rgba(255,255,255,.88)', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 4}, suggestionHeroTitle: {color: '#fff', fontFamily: 'Prompt_800ExtraBold', fontSize: 15}, suggestionText: {color: '#657164', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 5}, suggestionTitle: {color: '#314032', flex: 1, fontFamily: 'Prompt_800ExtraBold', fontSize: 14}, tag: {backgroundColor: '#edf2eb', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4}, tagRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 10}, tagText: {color: '#687767', fontFamily: 'Prompt_700Bold', fontSize: 8}, title: {color: '#2f3d2f', fontFamily: 'Prompt_800ExtraBold', fontSize: 22}, twoColumn: {flexDirection: 'row', gap: 9}, typeCard: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, flex: 1, gap: 5, minHeight: 61, justifyContent: 'center'}, typeCardActive: {backgroundColor: '#5f875f'}, typeRow: {flexDirection: 'row', gap: 7, marginTop: 12}, typeText: {color: '#778477', fontFamily: 'Prompt_700Bold', fontSize: 9}, typeTextActive: {color: '#fff'}, useSuggestion: {alignItems: 'center', backgroundColor: '#5f875f', borderRadius: 12, justifyContent: 'center', marginTop: 12, minHeight: 37}, useSuggestionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  aiModeButton: {alignItems: 'center', backgroundColor: '#eef4ea', borderColor: '#dce8d7', borderRadius: 19, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 11, minHeight: 64, paddingHorizontal: 13},
+  aiModeIcon: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 13, height: 38, justifyContent: 'center', width: 38},
+  aiModeText: {color: '#7b8879', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 1},
+  aiModeTitle: {color: '#354433', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  aiActions: {flexDirection: 'row', gap: 9, marginTop: 12}, aiCard: {backgroundColor: '#edf4eb', borderRadius: 20, marginTop: 16, padding: 15}, aiPrimary: {alignItems: 'center', backgroundColor: '#5f875f', borderRadius: 11, flex: 1, minHeight: 35, justifyContent: 'center'}, aiPrimaryText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 10}, aiSecondary: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 11, flex: 1, justifyContent: 'center', minHeight: 35}, aiSecondaryText: {color: '#5a7759', fontFamily: 'Prompt_700Bold', fontSize: 10}, aiText: {color: '#70806f', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 3}, aiTitle: {color: '#2e3c2e', fontFamily: 'Prompt_700Bold', fontSize: 12}, close: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, height: 40, justifyContent: 'center', width: 40}, color: {borderColor: '#fff', borderRadius: 15, borderWidth: 3, height: 30, width: 30}, colorLabel: {color: '#344235', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 15}, colorRow: {flexDirection: 'row', gap: 7, marginTop: 7}, colorSelected: {borderColor: '#2e3c2e', transform: [{scale: 1.08}]}, column: {flex: 1}, disabled: {opacity: .55}, emptyAi: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, gap: 8, justifyContent: 'center', minHeight: 86, padding: 14}, emptyAiText: {color: '#6b7669', fontFamily: 'Prompt_500Medium', fontSize: 10, lineHeight: 16, textAlign: 'center'}, formCard: {backgroundColor: '#fff', borderRadius: 22, boxShadow: '0 8px 20px rgba(42,58,42,.08)', marginTop: 12, padding: 15}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, input: {color: '#354133', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, minHeight: 42, paddingHorizontal: 10}, inputShell: {alignItems: 'center', backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 14, borderWidth: 1, flexDirection: 'row', minHeight: 44, paddingHorizontal: 11}, label: {color: '#344235', fontFamily: 'Prompt_700Bold', fontSize: 11, marginBottom: 6, marginTop: 13}, mode: {alignItems: 'center', borderRadius: 14, flex: 1, justifyContent: 'center', minHeight: 39}, modeActive: {backgroundColor: '#5f875f'}, modeText: {color: '#778477', fontFamily: 'Prompt_700Bold', fontSize: 11}, modeTextActive: {color: '#fff'}, modeToggle: {backgroundColor: '#e8eee5', borderRadius: 17, flexDirection: 'row', marginTop: 12, padding: 4}, noteInput: {backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 14, borderWidth: 1, color: '#354133', fontFamily: 'Prompt_400Regular', fontSize: 12, minHeight: 96, padding: 12}, page: {paddingBottom: 6}, pickerButton: {alignItems: 'center', backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 52, paddingHorizontal: 11}, pickerLabel: {color: '#7c8879', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, pickerValue: {color: '#354133', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 1}, pressed: {opacity: .78, transform: [{scale: .987}]}, priorityDescription: {color: '#7a8677', fontFamily: 'Prompt_400Regular', fontSize: 8, marginTop: 1}, priorityDescriptionActive: {color: 'rgba(255,255,255,.84)'}, priorityGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, priorityIcon: {alignItems: 'center', backgroundColor: '#e8efe5', borderRadius: 12, height: 32, justifyContent: 'center', width: 32}, priorityIconActive: {backgroundColor: 'rgba(255,255,255,.22)'}, priorityLabel: {color: '#354133', fontFamily: 'Prompt_800ExtraBold', fontSize: 11}, priorityLabelActive: {color: '#fff'}, priorityOption: {alignItems: 'center', backgroundColor: '#f7f9f5', borderColor: '#e0e7de', borderRadius: 15, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 58, padding: 9, width: '48.5%'}, priorityOptionActive: {backgroundColor: '#5f875f', borderColor: '#5f875f'}, reasonRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 7}, save: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, saveShell: {borderRadius: 16, marginTop: 15, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 14}, scoreBadge: {alignItems: 'center', backgroundColor: '#edf2eb', borderRadius: 99, minWidth: 33, paddingHorizontal: 8, paddingVertical: 4}, scoreBadgeText: {color: '#5f875f', fontFamily: 'Prompt_800ExtraBold', fontSize: 10}, suggestionArea: {gap: 10, marginTop: 16}, suggestionCard: {backgroundColor: '#fff', borderRadius: 20, boxShadow: '0 6px 18px rgba(42,58,42,.07)', padding: 14}, suggestionCardHead: {alignItems: 'center', flexDirection: 'row', gap: 8, justifyContent: 'space-between'}, suggestionHero: {borderRadius: 20, padding: 16}, suggestionHeroText: {color: 'rgba(255,255,255,.88)', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 4}, suggestionHeroTitle: {color: '#fff', fontFamily: 'Prompt_800ExtraBold', fontSize: 15}, suggestionText: {color: '#657164', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 5}, suggestionTitle: {color: '#314032', flex: 1, fontFamily: 'Prompt_800ExtraBold', fontSize: 14}, tag: {backgroundColor: '#edf2eb', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4}, tagRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 10}, tagText: {color: '#687767', fontFamily: 'Prompt_700Bold', fontSize: 8}, title: {color: '#2f3d2f', fontFamily: 'Prompt_800ExtraBold', fontSize: 22}, twoColumn: {flexDirection: 'row', gap: 9}, typeCard: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, flex: 1, gap: 5, minHeight: 61, justifyContent: 'center'}, typeCardActive: {backgroundColor: '#5f875f'}, typeRow: {flexDirection: 'row', gap: 7, marginTop: 12}, typeText: {color: '#778477', fontFamily: 'Prompt_700Bold', fontSize: 9}, typeTextActive: {color: '#fff'}, useSuggestion: {alignItems: 'center', backgroundColor: '#5f875f', borderRadius: 12, justifyContent: 'center', marginTop: 12, minHeight: 37}, useSuggestionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  cardDivider: {backgroundColor: '#e8ece6', height: 1, marginVertical: 12},
+  compactChip: {backgroundColor: '#f0f4ed', borderRadius: 11, paddingHorizontal: 9, paddingVertical: 7},
+  compactChipActive: {backgroundColor: '#5f875f'},
+  compactChips: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 9},
+  compactChipText: {color: '#748073', fontFamily: 'Prompt_700Bold', fontSize: 8},
+  compactChipTextActive: {color: '#fff'},
+  dateTimeRow: {alignItems: 'center', flexDirection: 'row', gap: 11},
+  doneButton: {alignItems: 'center', backgroundColor: '#5f875f', borderRadius: 21, boxShadow: '0 8px 17px rgba(70,100,65,.2)', height: 44, justifyContent: 'center', width: 44},
+  doneButtonDisabled: {backgroundColor: '#cbd3c9', boxShadow: 'none'},
+  entryMode: {alignItems: 'center', borderRadius: 14, flex: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 42},
+  entryModeActive: {backgroundColor: '#5f875f', boxShadow: '0 6px 14px rgba(68,96,64,.18)'},
+  entryModeText: {color: '#718071', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  entryModeTextActive: {color: '#fff'},
+  entryToggle: {backgroundColor: '#e8eee5', borderRadius: 18, flexDirection: 'row', marginTop: 13, padding: 4},
+  eyebrow: {color: '#6f8a6b', fontFamily: 'Prompt_700Bold', fontSize: 8, letterSpacing: .6},
+  headerDone: {alignItems: 'center', backgroundColor: '#5f875f', borderRadius: 21, height: 44, justifyContent: 'center', width: 44},
+  headerDoneDisabled: {backgroundColor: '#cbd3c9'},
+  identityCard: {backgroundColor: '#fff', borderRadius: 22, boxShadow: '0 8px 20px rgba(42,58,42,.07)', marginTop: 12, paddingHorizontal: 15, paddingVertical: 7},
+  inlineInput: {alignItems: 'center', flexDirection: 'row', gap: 6},
+  inlineTextInput: {color: '#354133', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 11, minHeight: 42},
+  modernCard: {backgroundColor: '#fff', borderRadius: 22, boxShadow: '0 8px 20px rgba(42,58,42,.07)', padding: 15},
+  modernHeader: {alignItems: 'center', flexDirection: 'row', gap: 11},
+  modernHeaderCopy: {alignItems: 'center', flex: 1},
+  modernPage: {paddingBottom: 8},
+  modernTitle: {color: '#2f3d2f', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, marginTop: 1},
+  priorityQuickOption: {alignItems: 'center', backgroundColor: '#f0f4ed', borderColor: '#e1e7df', borderRadius: 13, borderWidth: 1, flex: 1, gap: 5, justifyContent: 'center', minHeight: 54, paddingHorizontal: 5},
+  priorityQuickOptionActive: {backgroundColor: '#5f875f', borderColor: '#5f875f'},
+  priorityQuickRow: {flexDirection: 'row', gap: 7},
+  priorityQuickText: {color: '#657264', fontFamily: 'Prompt_700Bold', fontSize: 9},
+  priorityQuickTextActive: {color: '#fff'},
+  recurrenceChip: {backgroundColor: '#f0f4ed', borderRadius: 99, paddingHorizontal: 10, paddingVertical: 7},
+  recurrenceChipActive: {backgroundColor: '#dfeadd'},
+  recurrenceRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 9},
+  recurrenceText: {color: '#7b8579', fontFamily: 'Prompt_600SemiBold', fontSize: 8},
+  recurrenceTextActive: {color: '#4e704c'},
+  reminderGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
+  reminderIcon: {alignItems: 'center', backgroundColor: '#e6efe3', borderRadius: 12, height: 32, justifyContent: 'center', width: 32},
+  reminderIconActive: {backgroundColor: '#5f875f'},
+  reminderOption: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e1e7df', borderRadius: 15, borderWidth: 1, flexDirection: 'row', gap: 7, minHeight: 48, paddingHorizontal: 9, width: '48.5%'},
+  reminderOptionActive: {backgroundColor: '#eef5eb', borderColor: '#86a584'},
+  reminderText: {color: '#697568', flexShrink: 1, fontFamily: 'Prompt_600SemiBold', fontSize: 8},
+  reminderTextActive: {color: '#456644', fontFamily: 'Prompt_700Bold'},
+  roundButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 21, boxShadow: '0 6px 15px rgba(42,58,42,.07)', height: 44, justifyContent: 'center', width: 44},
+  rowHint: {color: '#929a91', fontFamily: 'Prompt_400Regular', fontSize: 8, marginTop: 1},
+  rowIcon: {alignItems: 'center', backgroundColor: '#eaf2e6', borderRadius: 13, height: 39, justifyContent: 'center', width: 39},
+  rowLabel: {color: '#697568', fontFamily: 'Prompt_600SemiBold', fontSize: 9},
+  rowValue: {color: '#30402f', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 2},
+  sectionTitle: {color: '#334132', fontFamily: 'Prompt_800ExtraBold', fontSize: 13, marginBottom: 8, marginTop: 16},
+  titleInput: {color: '#30402f', fontFamily: 'Prompt_700Bold', fontSize: 17, minHeight: 51},
 });

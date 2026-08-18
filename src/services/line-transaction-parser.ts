@@ -1,8 +1,8 @@
-import * as Crypto from 'expo-crypto';
 import {getFunctions, httpsCallable} from 'firebase/functions';
 
 import {ensureAppCheckReady} from '@/lib/app-check';
 import {firebaseApp} from '@/lib/firebase';
+import {sha256Hex} from '@/lib/sha256';
 import {
   maskAccountNumbers,
   normalizeLineText,
@@ -43,10 +43,7 @@ const parseWithLlmCall = httpsCallable<
 >(functions, 'parseLineBankMessage');
 
 export async function fingerprintLineText(rawText: string) {
-  return Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    normalizeLineText(rawText),
-  );
+  return sha256Hex(normalizeLineText(rawText));
 }
 
 function validDateIso(value: unknown) {

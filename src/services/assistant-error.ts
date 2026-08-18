@@ -10,7 +10,7 @@ function errorText(error: unknown) {
 export function classifyAssistantError(error: unknown): AssistantErrorKind {
   const text = errorText(error);
   if (/app.?check|play integrity|native-module-missing|rnfbappmodule/.test(text)) return 'app_check';
-  if (/permission-denied|insufficient permissions|forbidden|http.?403/.test(text)) return 'permission';
+  if (/permission-denied|insufficient permissions|forbidden|http.?403|storage\/(?:unauthorized|unauthenticated)/.test(text)) return 'permission';
   if (/unauthenticated|id.?token.*(?:expired|invalid|revoked)|user-token-expired|auth\/user-disabled|auth\/user-not-found/.test(text)) {
     return 'authentication';
   }
@@ -25,7 +25,7 @@ export function classifyAssistantError(error: unknown): AssistantErrorKind {
 }
 
 export function assistantErrorMessage(kind: AssistantErrorKind) {
-  if (kind === 'app_check') return 'App Check ยังไม่พร้อมในแอปที่ติดตั้งอยู่ครับ กรุณาติดตั้ง SmartLife build ล่าสุดแล้วลองอีกครั้ง';
+  if (kind === 'app_check') return 'ระบบยืนยัน SmartLife ยังไม่พร้อมครับ หากใช้เว็บให้รีเฟรชหน้า หรือหากใช้แอปให้เปิด SmartLife build ล่าสุดแล้วลองอีกครั้ง';
   if (kind === 'authentication') return 'ระบบยืนยันตัวตนกับบริการ AI ไม่สำเร็จชั่วคราวครับ ลองอีกครั้งหรือเปิดแอปใหม่ได้เลย โดยข้อความที่ส่งมายังอยู่ในแชท';
   if (kind === 'permission') return 'ตอนนี้บัญชีนี้ไม่มีสิทธิ์อ่านข้อมูลส่วนที่ถามครับ ข้อมูลส่วนอื่นยังไม่ถูกลบหรือแก้ไข';
   if (kind === 'quota') return 'บริการ AI ถึงขีดจำกัดชั่วคราวครับ รอสักครู่แล้วลองใหม่ได้ โดยคำถามที่คำนวณจากตัวเลขในข้อความยังตอบต่อได้';

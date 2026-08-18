@@ -8,6 +8,7 @@ import {
   updateAssistantConversationState,
 } from '../src/services/assistant-conversation.ts';
 import {classifyAssistantError} from '../src/services/assistant-error.ts';
+import {sanitizeAssistantMessages} from '../src/services/assistant-message-sanitizer.ts';
 import {
   deterministicFinancialScenarioAnswer,
   shouldUseDeterministicFinancialScenario,
@@ -40,6 +41,19 @@ check('permission errors are not reported as expired sessions', () => {
   }), 'gemini');
   assert.equal(classifyAssistantError({code: 'functions/internal'}), 'server');
   assert.equal(classifyAssistantError({code: 'functions/unauthenticated', message: 'Firebase App Check token is missing'}), 'app_check');
+});
+
+check('stale build support replies and consecutive duplicate assistant replies are hidden', () => {
+  const timestamp = '2026-08-16T10:00:00.000Z';
+  const cleaned = sanitizeAssistantMessages([
+    {content: 'แสดงข้อมูล OCR ที่บันทึกไว้ช่วงล่าสุด', id: 'u1', role: 'user', timestamp},
+    {content: 'พบใบเสร็จล่าสุด ยอด 14 บาท', id: 'a1', role: 'assistant', timestamp},
+    {content: 'พบใบเสร็จล่าสุด ยอด 14 บาท', id: 'a2', role: 'assistant', timestamp},
+    {content: 'แอปที่เปิดอยู่ยังไม่พบระบบรับเสียง ให้ติดตั้ง app-debug.apk ล่าสุดแล้วเปิดผ่าน start-smartlife-mumu.cmd', id: 'a3', role: 'assistant', timestamp},
+    {content: 'ระบบยืนยันตัวตนกับบริการ AI ไม่สำเร็จชั่วคราวครับ ลองอีกครั้ง', id: 'a4', role: 'assistant', timestamp},
+    {content: 'อัปโหลดหรือวิเคราะห์ไฟล์ไม่สำเร็จ กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่', id: 'a5', role: 'assistant', timestamp},
+  ]);
+  assert.deepEqual(cleaned.map((message) => message.id), ['u1', 'a1']);
 });
 
 check('budget allocation uses current-message values deterministically', () => {

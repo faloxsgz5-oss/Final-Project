@@ -32,6 +32,19 @@ The Google account used during setup must first be added as a teammate on the
 `smartlife-budget` Firebase project. No API key or Firebase field needs to be
 copied manually. Server secrets never leave Firebase Secret Manager.
 
+## Update an existing teammate copy
+
+If the repository is already installed and the working tree has no personal
+changes, open CMD in `Final-Project` and run:
+
+```cmd
+git switch master && git pull origin master && setup-smartlife.cmd
+```
+
+Then use `npm start` with an installed Development Build, `npm run
+start:tunnel` when the phone is on a different network, or `npm run android`
+to rebuild and install the Android Development Build.
+
 ## Main features
 
 - Firebase Email/Password and Google authentication

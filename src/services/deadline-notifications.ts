@@ -22,15 +22,17 @@ type ReminderPlan = {
   title: string;
 };
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    priority: Notifications.AndroidNotificationPriority.MAX,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      priority: Notifications.AndroidNotificationPriority.MAX,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 function toDate(value: TimestampLike) {
   if (!value) return null;
@@ -67,14 +69,14 @@ function startOfDay(date: Date) {
 
 function leadMinutes(priority?: string) {
   if (priority === 'urgent') return 24 * 60;
-  if (priority === 'high') return 12 * 60;
+  if (priority === 'high' || priority === 'important') return 12 * 60;
   if (priority === 'low') return 60;
   return 6 * 60;
 }
 
 function priorityLabel(priority?: string) {
   if (priority === 'urgent') return 'ด่วนมาก';
-  if (priority === 'high') return 'สำคัญ';
+  if (priority === 'high' || priority === 'important') return 'สำคัญ';
   if (priority === 'low') return 'ไม่ด่วน';
   return 'ควรทำ';
 }
@@ -255,6 +257,8 @@ export async function syncDeadlineNotifications(uid: string) {
 
 export function useDeadlineNotificationNavigation() {
   useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+
     const redirect = (notification: Notifications.Notification) => {
       const url = notification.request.content.data?.url;
       if (typeof url === 'string') router.push(url as Href);

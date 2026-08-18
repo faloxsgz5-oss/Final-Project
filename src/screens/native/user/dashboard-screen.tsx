@@ -2,9 +2,12 @@
 import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import {LinearGradient} from 'expo-linear-gradient';
+import {Timestamp} from 'firebase/firestore';
 
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
+import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 
 type Props = {onNavigate: (page: string) => void; uid: string};
@@ -27,7 +30,7 @@ function priorityScore(item: Item) {
   if (/task|งาน|assignment|homework/i.test(type)) score += 40;
   if (/appointment|นัด|ประชุม/i.test(type)) score += 28;
   if (/activity|class|เรียน/i.test(type)) score += 18;
-  if (/urgent|high|ด่วน|สูง/i.test(string(item, 'priority', ''))) score += 24;
+  if (/urgent|high|important|ด่วน|สูง|สำคัญ/i.test(string(item, 'priority', ''))) score += 24;
   importantWords.forEach((word) => { if (text.includes(word.toLowerCase())) score += 10; });
   const hoursUntil = (millis(item) - Date.now()) / 36e5;
   if (hoursUntil <= 0) score += 34;
@@ -43,7 +46,7 @@ function priorityReasons(item: Item) {
   const hoursUntil = (millis(item) - Date.now()) / 36e5;
   if (/task|งาน|assignment|homework/i.test(type)) reasons.push('เป็นงานที่ต้องทำ');
   if (/appointment|นัด|ประชุม/i.test(type)) reasons.push('เป็นนัดหมาย/ประชุม');
-  if (/urgent|high|ด่วน|สูง/i.test(string(item, 'priority', ''))) reasons.push('ตั้งความสำคัญไว้สูง');
+  if (/urgent|high|important|ด่วน|สูง|สำคัญ/i.test(string(item, 'priority', ''))) reasons.push('ตั้งความสำคัญไว้สูง');
   if (hoursUntil <= 0) reasons.push('เลยกำหนดหรือถึงเวลาแล้ว');
   else if (hoursUntil <= 24) reasons.push('กำหนดภายในวันนี้');
   else if (hoursUntil <= 72) reasons.push('ใกล้ deadline');
@@ -64,6 +67,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const [data, setData] = useState<Item | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
+  const [completingId, setCompletingId] = useState('');
   const load = useCallback(async () => setData(await loadLegacyPageData(uid, 'user/index') as Item), [uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
@@ -87,13 +91,33 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const notes = useMemo(() => items(data?.notes), [data]);
   const transactions = useMemo(() => items(data?.transactions), [data]);
   const notifications = useMemo(() => items(data?.notifications), [data]);
-  const workNotes = notes.filter((item) => /งาน|task|assignment|homework/i.test(string(item, 'category', '')));
-  const pending = [...activities.filter((item) => item.status !== 'completed'), ...workNotes];
+  const workNotes = notes.filter((item) => item.status !== 'completed' && /งาน|task|assignment|homework/i.test(string(item, 'category', '')));
+  const pending = [
+    ...activities.filter((item) => item.status !== 'completed').map((item): Item => ({...item, __entity: 'activity'})),
+    ...workNotes.map((item): Item => ({...item, __entity: 'note'})),
+  ];
   const expense = transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   const income = transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   const balance = Math.max(income - expense, 0);
   const unread = notifications.filter((item) => item.read !== true).length;
   const urgent = [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2);
+  const markComplete = useCallback(async (item: Item) => {
+    const id = string(item, 'id', '');
+    const entity = string(item, '__entity', 'activity');
+    if (!id || completingId) return;
+    setCompletingId(id);
+    const key = entity === 'note' ? 'notes' : 'activities';
+    setData((current) => current ? {...current, [key]: items(current[key]).map((entry) => string(entry, 'id', '') === id ? {...entry, completedAt: new Date().toISOString(), status: 'completed'} : entry)} : current);
+    try {
+      if (entity === 'note') await notesStore.update(uid, id, {completedAt: Timestamp.fromDate(new Date()), status: 'completed'});
+      else await activitiesStore.update(uid, id, {status: 'completed'});
+    } catch (error) {
+      await load().catch(() => undefined);
+      Alert.alert('อัปเดตงานไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+    } finally {
+      setCompletingId('');
+    }
+  }, [completingId, load, uid]);
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.sage} />} showsVerticalScrollIndicator={false}>
@@ -108,13 +132,14 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           <View style={styles.prompt}><Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} /></View>
           <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>ตอบทันที: {money(balance)}</Text></View>
         </SoftPress>
+        <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>
 
         {showDevTools && pending.length === 0 && transactions.length === 0 ? <Pressable disabled={seeding} onPress={seedAiDynamicData} style={({pressed}) => [styles.seedCard, pressed && styles.pressed, seeding && {opacity: .6}]}><View style={styles.seedIcon}><MaterialIcon color={colors.sageDark} name="database" size={20} /></View><View style={{flex: 1}}><Text style={styles.seedTitle}>เติมข้อมูลทดสอบ AI Dynamic</Text><Text style={styles.seedSub}>เพิ่มตาราง งาน โน้ต และการเงินเข้า Firebase ของบัญชีนี้</Text></View><Text style={styles.seedAction}>{seeding ? 'กำลังเพิ่ม...' : 'เพิ่มเลย'}</Text></Pressable> : null}
 
         <View style={[styles.priorityCard, {overflow: 'hidden'}]}><LinearGradient colors={['rgba(255,255,255,.98)', '#eef4ea']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.priorityHeader}><View style={styles.priorityTitleRow}><MaterialIcon color={colors.sageDark} name="auto_awesome" size={18} /><Text style={styles.priorityTitle}>AI จัดลำดับวันนี้</Text></View><View style={styles.dynamicBadge}><Text style={styles.dynamicText}>Dynamic</Text></View></View>
           <Text style={styles.priorityCaption}>ระบบดันสอบและงานด่วนขึ้นก่อนตามบริบทของวัน</Text>
-          {urgent.length ? urgent.map((item, index) => <View key={string(item, 'id', String(index))} style={styles.priorityItem}><View style={[styles.rank, index === 1 && styles.rankSoft]}><Text style={styles.rankText}>{index + 1}</Text></View><View style={styles.priorityCopy}><Text numberOfLines={1} style={styles.priorityItemTitle}>{string(item, 'title')}</Text><Text style={styles.priorityItemSub}>{time(item.startAt)} · {string(item, 'type', 'งานสำคัญ')} · คะแนน {priorityScore(item)}</Text><View style={styles.reasonWrap}>{priorityReasons(item).map((reason) => <View key={reason} style={styles.reasonChip}><Text style={styles.reasonText}>{reason}</Text></View>)}</View></View><View style={styles.urgency}><Text style={styles.urgencyText}>{index === 0 ? 'ด่วน' : 'สำคัญ'}</Text></View></View>) : <View style={styles.priorityItem}><View style={styles.rank}><MaterialIcon color="#fff" name="check" size={15} /></View><View style={styles.priorityCopy}><Text style={styles.priorityItemTitle}>วันนี้ไม่มีงานด่วน</Text><Text style={styles.priorityItemSub}>AI จะอัปเดตเมื่อมีรายการใหม่</Text></View></View>}
+          {urgent.length ? urgent.map((item, index) => <View key={string(item, 'id', String(index))} style={styles.priorityItem}><View style={[styles.rank, index === 1 && styles.rankSoft]}><Text style={styles.rankText}>{index + 1}</Text></View><View style={styles.priorityCopy}><Text numberOfLines={1} style={styles.priorityItemTitle}>{string(item, 'title')}</Text><Text style={styles.priorityItemSub}>{time(item.startAt)} · {string(item, 'type', 'งานสำคัญ')} · คะแนน {priorityScore(item)}</Text><View style={styles.reasonWrap}>{priorityReasons(item).map((reason) => <View key={reason} style={styles.reasonChip}><Text style={styles.reasonText}>{reason}</Text></View>)}</View></View><View style={styles.priorityActions}><View style={styles.urgency}><Text style={styles.urgencyText}>{index === 0 ? 'ด่วน' : 'สำคัญ'}</Text></View><Pressable accessibilityLabel={`ทำ ${string(item, 'title')} ให้เสร็จ`} disabled={Boolean(completingId)} onPress={() => void markComplete(item)} style={({pressed}) => [styles.doneButton, pressed && styles.pressed]}>{completingId === string(item, 'id', '') ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={15} />}<Text style={styles.doneText}>เสร็จ</Text></Pressable></View></View>) : <View style={styles.priorityItem}><View style={styles.rank}><MaterialIcon color="#fff" name="check" size={15} /></View><View style={styles.priorityCopy}><Text style={styles.priorityItemTitle}>วันนี้ไม่มีงานด่วน</Text><Text style={styles.priorityItemSub}>AI จะอัปเดตเมื่อมีรายการใหม่</Text></View></View>}
           <View style={styles.collapsed}><MaterialIcon color="#7e8979" name="inventory_2" size={15} /><Text style={styles.collapsedText}>ข้อมูลรองถูกย่อไว้ชั่วคราว: งบอาหาร โน้ตทั่วไป และรายการไม่เร่งด่วน</Text></View>
         </View>
 
@@ -166,6 +191,8 @@ const styles = StyleSheet.create({
   courseTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 13},
   dynamicBadge: {backgroundColor: '#e8f0e4', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5},
   dynamicText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 8},
+  doneButton: {alignItems: 'center', backgroundColor: colors.sageDark, borderRadius: 10, flexDirection: 'row', gap: 2, minHeight: 29, paddingHorizontal: 7},
+  doneText: {color: '#fff', fontFamily: font.bold, fontSize: 7},
   empty: {alignItems: 'center', gap: 8, paddingVertical: 22},
   emptyText: {color: colors.muted, fontFamily: font.regular, fontSize: 11},
   focusCard: {...shadow, backgroundColor: '#fff', borderRadius: 17, flex: 1, minHeight: 154, padding: 13},
@@ -188,6 +215,7 @@ const styles = StyleSheet.create({
   priorityCopy: {flex: 1},
   priorityHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   priorityItem: {alignItems: 'center', backgroundColor: '#f6f8f3', borderColor: 'rgba(44,52,27,.06)', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 7, padding: 9},
+  priorityActions: {alignItems: 'flex-end', gap: 6},
   priorityItemSub: {color: colors.muted, fontFamily: font.regular, fontSize: 9, marginTop: 1},
   priorityItemTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 11},
   priorityTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 14},

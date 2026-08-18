@@ -190,7 +190,7 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
     return notes.create(uid, {
       title: asString(data.title), content: asString(data.content),
       category: asString(data.category, 'study') as NoteCategory,
-      color: asString(data.color, '#6F8F6D'), relatedScheduleId: asString(data.relatedScheduleId),
+      color: asString(data.color, '#6F8F6D'), completedAt: null, priority: asString(data.priority, 'normal') as 'normal' | 'important' | 'urgent', relatedScheduleId: asString(data.relatedScheduleId), status: 'pending',
     });
   }
   if (request.action === 'seed-ai-dynamic-test-data') return seedAiDynamicTestData(uid);
@@ -200,6 +200,7 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
       amount: asNumber(data.amount), category: asString(data.category, 'อื่น ๆ'),
       merchant: asString(data.merchant), note: asString(data.note),
       occurredAt: Timestamp.fromDate(asDate(data.occurredAt)), receiptPath: asString(data.receiptPath),
+      source: 'manual_entry',
     });
   }
   if (request.action === 'create-activity') {

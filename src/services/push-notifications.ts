@@ -4,14 +4,16 @@ import {Platform} from 'react-native';
 
 import {adaptiveScheduling} from '@/services/adaptive-scheduling';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 export async function registerAdaptivePushNotifications() {
   if (Platform.OS === 'web' || !Device.isDevice) return {registered: false, reason: 'physical-device-required'} as const;
@@ -42,7 +44,7 @@ type TaskLike = {
   title: string;
   startAt?: {toDate?: () => Date} | Date | string;
   endAt?: {toDate?: () => Date} | Date | string;
-  priority?: 'urgent' | 'important' | 'normal';
+  priority?: 'urgent' | 'important' | 'high' | 'normal';
   status?: string;
 };
 
@@ -64,6 +66,7 @@ function reminderOffsetsMs(priority: string | undefined): number[] {
     case 'urgent':
       return [60 * 60 * 1000, 15 * 60 * 1000]; // 1 hour + 15 minutes
     case 'important':
+    case 'high':
       return [2 * 60 * 60 * 1000]; // 2 hours
     default:
       return [30 * 60 * 1000]; // 30 minutes
@@ -73,7 +76,8 @@ function reminderOffsetsMs(priority: string | undefined): number[] {
 function priorityLabel(priority: string | undefined): string {
   switch (priority) {
     case 'urgent': return '🔴 ด่วน';
-    case 'important': return '🟡 สำคัญ';
+    case 'important':
+    case 'high': return '🟡 สำคัญ';
     default: return '📋 ทั่วไป';
   }
 }

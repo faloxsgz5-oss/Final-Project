@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,7 @@ import {CalendarList, CalendarProvider, LocaleConfig, WeekCalendar, type DateDat
 
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
+import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
 import {MaterialIcon, UserTabBar} from './user-ui';
 
@@ -29,6 +30,7 @@ type EventItem = Record<string, unknown> & {
   entityType?: 'activity' | 'schedule';
   location?: string;
   courseCode?: string;
+  priority?: string;
   seriesId?: string;
   type?: string;
 };
@@ -81,6 +83,13 @@ function formatMonth(value: string) { return new Intl.DateTimeFormat('th-TH', {m
 function shortDay(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'short', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
 function eventTitle(item: EventItem) { return typeof item.title === 'string' && item.title.trim() ? item.title : 'กิจกรรม'; }
 function textEvent(value: unknown, fallback: string) { return typeof value === 'string' && value.trim() ? value : fallback; }
+function priorityInfo(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const priority = value.toLowerCase();
+  if (priority === 'urgent') return {backgroundColor: '#f8e4e1', color: '#b84e43', label: 'เร่งด่วน'};
+  if (priority === 'important' || priority === 'high') return {backgroundColor: '#fbf0d9', color: '#9a6b18', label: 'สำคัญ'};
+  return {backgroundColor: '#e8f0e5', color: '#5f835f', label: 'ทั่วไป'};
+}
 function offsetDate(value: string, amount: number) {
   const [year, month, day] = value.split('-').map(Number);
   const date = new Date(Date.UTC(year, month - 1, day + amount, 12));
@@ -117,7 +126,7 @@ function miniMonthDays(year: number, month: number) {
 
 export default function CalendarScreen({onNavigate, page, planner, uid}: Props) {
   const {width} = useWindowDimensions();
-  const calendarWidth = Math.min(Math.max(width - 32, 310), 680);
+  const calendarWidth = Math.min(Math.max(width - 32, 310), width >= 900 ? 1168 : 680);
   const [today] = useState(todayKey);
   const [mode, setMode] = useState<ViewMode>(page === 'smartlife_calendar_month' ? 'month' : page === 'smartlife_calendar_week' ? 'week' : 'day');
   const [selectedDate, setSelectedDate] = useState(today);
@@ -126,6 +135,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [completingId, setCompletingId] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,7 +144,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       const [classItems, activityItems] = await Promise.all([schedules.between(uid, from, to), activities.between(uid, from, to)]);
       setEvents([
         ...classItems.map((item) => ({...item, entityType: 'schedule' as const})),
-        ...activityItems.map((item) => ({...item, entityType: 'activity' as const})),
+        ...activityItems.filter((item) => item.status !== 'completed' && item.status !== 'cancelled').map((item) => ({...item, entityType: 'activity' as const})),
       ].sort((a, b) => toDate(a.startAt).getTime() - toDate(b.startAt).getTime()));
     } finally {
       setLoading(false);
@@ -189,6 +199,21 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       }},
     ]);
   }, [load, uid]);
+
+  const completeEvent = useCallback(async (event: EventItem) => {
+    if (!event.id || event.entityType !== 'activity' || completingId) return;
+    const id = event.id;
+    setCompletingId(id);
+    setEvents((current) => current.filter((item) => item.id !== id));
+    try {
+      await activities.update(uid, id, {status: 'completed'});
+    } catch (error) {
+      await load().catch(() => undefined);
+      Alert.alert('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setCompletingId('');
+    }
+  }, [completingId, load, uid]);
 
   const DayCell = ({date, state}: {date?: DateData; state?: string}) => {
     if (!date) return null;
@@ -267,7 +292,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             </Pressable>
           );
         })}</View>
-        <AgendaList events={selectedEvents} onOpen={() => setDetailsOpen(true)} />
+        <DayTimeline date={selectedDate} events={selectedEvents} isToday={selectedDate === today} onOpen={() => setDetailsOpen(true)} />
       </View>
     );
   };
@@ -290,6 +315,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
           {planner ? <View accessibilityRole="tablist" style={styles.plannerTabs}>{([['calendar', 'ตาราง'], ['notes', 'โน้ต'], ['adaptive', 'Adaptive']] as [PlannerTab, string][]).map(([key, label]) => <Pressable accessibilityRole="tab" accessibilityState={{selected: planner.activeTab === key}} key={key} onPress={() => planner.onTabChange(key)} style={[styles.plannerTab, planner.activeTab === key && styles.plannerTabActive]}><Text style={[styles.plannerTabText, planner.activeTab === key && styles.plannerTabTextActive]}>{label}</Text></Pressable>)}</View> : null}
 
           <GoogleCalendarSyncCard onSynced={load} uid={uid} />
+          <AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} />
 
           <View accessibilityRole="tablist" style={styles.segment}>{(['day', 'week', 'month', 'year'] as ViewMode[]).map((item) => (
             <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => { setMode(item); setVisibleDate(selectedDate); }} style={[styles.segmentItem, mode === item && styles.segmentActive]}>
@@ -308,8 +334,10 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             {loading ? <View style={styles.calendarLoading}><ActivityIndicator color={C.accent} /><Text style={styles.loadingText}>กำลังโหลดปฏิทิน…</Text></View> : null}
           </View>
 
-          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList events={selectedEvents} onOpen={() => setDetailsOpen(true)} /></View> : null}
+          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onOpen={() => setDetailsOpen(true)} /></View> : null}
         </ScrollView>
+
+        <Pressable accessibilityLabel="เพิ่มกิจกรรมใหม่" accessibilityRole="button" onPress={() => onNavigate('smartlife_add_activity')} style={({pressed}) => [styles.fab, pressed && styles.fabPressed]}><MaterialIcon color={C.accent} name="add" size={30} /></Pressable>
 
         <UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_calendar_day'} onNavigate={onNavigate} />
 
@@ -318,7 +346,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             <View style={styles.sheet}>
               <View style={styles.handle} />
               <View style={styles.sheetHead}><View><Text style={styles.sheetTitle}>{formatLongDate(selectedDate)}</Text><Text style={styles.sheetSub}>{selectedEvents.length} รายการ</Text></View><Pressable onPress={() => setDetailsOpen(false)} style={styles.close}><MaterialIcon color={C.secondary} name="close" size={20} /></Pressable></View>
-              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow event={event} key={String(event.id ?? index)} onDelete={() => deleteEvent(event)} />) : <EmptyAgenda />}</ScrollView>
+              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => void completeEvent(event) : undefined} onDelete={() => deleteEvent(event)} />) : <EmptyAgenda />}</ScrollView>
               <Pressable onPress={() => { setDetailsOpen(false); onNavigate('smartlife_add_activity'); }} style={styles.sheetAdd}><MaterialIcon color="#fff" name="add" size={20} /><Text style={styles.sheetAddText}>เพิ่มกิจกรรม</Text></Pressable>
             </View>
           </View>
@@ -328,19 +356,64 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   );
 }
 
-function AgendaList({events, onOpen}: {events: EventItem[]; onOpen: () => void}) {
+function AgendaList({completingId, events, onComplete, onOpen}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onOpen: () => void}) {
   if (!events.length) return <EmptyAgenda />;
-  return <View style={styles.eventList}>{events.map((event, index) => <EventRow event={event} key={String(event.id ?? index)} onPress={onOpen} />)}</View>;
+  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onPress={onOpen} />)}</View>;
 }
 
-function EventRow({event, onDelete, onPress}: {event: EventItem; onDelete?: () => void; onPress?: () => void}) {
+const HOUR_HEIGHT = 62;
+const TIMELINE_HEIGHT = HOUR_HEIGHT * 24;
+function timelineMinute(value: unknown) {
+  const part = bangkokParts(toDate(value));
+  const hour = Math.min(Number(part.hour) || 0, 23);
+  return hour * 60 + (Number(part.minute) || 0);
+}
+function softEventColor(color: string) {
+  return /^#[0-9a-f]{6}$/i.test(color) ? `${color}24` : '#e9efe6';
+}
+function DayTimeline({date, events, isToday, onOpen}: {date: string; events: EventItem[]; isToday: boolean; onOpen: () => void}) {
+  const scrollRef = useRef<ScrollView>(null);
+  const didScroll = useRef(false);
+  const nowMinute = timelineMinute(new Date());
+  const firstEventMinute = events.length ? Math.min(...events.map((event) => timelineMinute(event.startAt))) : 8 * 60;
+  const initialMinute = isToday ? nowMinute : firstEventMinute;
+
+  useEffect(() => { didScroll.current = false; }, [date, events.length]);
+  const scrollToRelevantTime = () => {
+    if (didScroll.current) return;
+    didScroll.current = true;
+    const y = Math.max(0, (initialMinute / 60) * HOUR_HEIGHT - HOUR_HEIGHT * 1.35);
+    scrollRef.current?.scrollTo({animated: false, y});
+  };
+
+  return <View style={styles.timelineFrame}>
+    <View style={styles.timelineHeader}><View><Text style={styles.timelineDate}>{isToday ? 'วันนี้' : formatLongDate(date)}</Text><Text style={styles.timelineHint}>เลื่อนเพื่อดูตารางตลอด 24 ชั่วโมง</Text></View><View style={styles.timelineCount}><Text style={styles.timelineCountText}>{events.length} รายการ</Text></View></View>
+    <ScrollView contentContainerStyle={styles.timelineScrollContent} nestedScrollEnabled onContentSizeChange={scrollToRelevantTime} ref={scrollRef} showsVerticalScrollIndicator={false} style={styles.timelineScroll}>
+      <View style={{height: TIMELINE_HEIGHT}}>
+        {Array.from({length: 24}, (_, hour) => <View key={hour} style={[styles.hourRow, {top: hour * HOUR_HEIGHT}]}><Text style={styles.hourLabel}>{pad(hour)}:00</Text><View style={styles.hourLine} /></View>)}
+        {events.map((event, index) => {
+          const start = timelineMinute(event.startAt);
+          const duration = Math.max(30, Math.min(24 * 60 - start, Math.round((toDate(event.endAt).getTime() - toDate(event.startAt).getTime()) / 60000)));
+          const color = typeof event.color === 'string' ? event.color : event.entityType === 'schedule' ? C.green : C.blue;
+          return <Pressable accessibilityLabel={`${eventTitle(event)} ${formatTime(event.startAt)} ถึง ${formatTime(event.endAt)}`} key={String(event.id ?? index)} onPress={onOpen} style={({pressed}) => [styles.timelineEvent, {backgroundColor: softEventColor(color), borderLeftColor: color, height: Math.max(42, duration / 60 * HOUR_HEIGHT - 3), top: start / 60 * HOUR_HEIGHT + 1}, pressed && styles.pressed]}>
+            <Text numberOfLines={1} style={styles.timelineEventTitle}>{eventTitle(event)}</Text><Text numberOfLines={1} style={styles.timelineEventMeta}>{formatTime(event.startAt)}–{formatTime(event.endAt)}{event.location ? ` · ${String(event.location)}` : ''}</Text>
+          </Pressable>;
+        })}
+        {isToday ? <View pointerEvents="none" style={[styles.nowLine, {top: nowMinute / 60 * HOUR_HEIGHT}]}><View style={styles.nowDot} /><Text style={styles.nowLabel}>{formatTime(new Date())}</Text><View style={styles.nowRule} /></View> : null}
+      </View>
+    </ScrollView>
+  </View>;
+}
+
+function EventRow({completing = false, event, onComplete, onDelete, onPress}: {completing?: boolean; event: EventItem; onComplete?: () => void; onDelete?: () => void; onPress?: () => void}) {
   const color = typeof event.color === 'string' ? event.color : event.entityType === 'schedule' ? C.green : C.blue;
+  const priority = priorityInfo(event.priority);
   return (
     <Pressable disabled={!onPress} onPress={onPress} style={({pressed}) => [styles.eventRow, pressed && styles.pressed]}>
       <View style={[styles.eventColor, {backgroundColor: color}]} />
       <View style={styles.eventTime}><Text style={styles.eventStart}>{formatTime(event.startAt)}</Text><Text style={styles.eventEnd}>{formatTime(event.endAt)}</Text></View>
-      <View style={styles.eventCopy}><Text numberOfLines={1} style={styles.eventTitle}>{eventTitle(event)}</Text><Text numberOfLines={1} style={styles.eventMeta}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text></View>
-      {onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={onDelete} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : <MaterialIcon color={C.tertiary} name="chevron_right" size={20} />}
+      <View style={styles.eventCopy}><Text numberOfLines={1} style={styles.eventTitle}>{eventTitle(event)}</Text><View style={styles.eventMetaRow}><Text numberOfLines={1} style={styles.eventMeta}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text>{priority ? <View style={[styles.priorityBadge, {backgroundColor: priority.backgroundColor}]}><Text style={[styles.priorityBadgeText, {color: priority.color}]}>{priority.label}</Text></View> : null}</View></View>
+      <View style={styles.eventActions}>{onComplete ? <Pressable accessibilityLabel={`ทำ ${eventTitle(event)} ให้เสร็จ`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onComplete(); }} style={styles.completeEventButton}>{completing ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeEventText}>เสร็จ</Text></Pressable> : null}{onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={(pressEvent) => { pressEvent.stopPropagation(); onDelete(); }} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : !onComplete ? <MaterialIcon color={C.tertiary} name="chevron_right" size={20} /> : null}</View>
     </Pressable>
   );
 }
@@ -352,7 +425,7 @@ function EmptyAgenda() {
 const styles = StyleSheet.create({
   safe: {backgroundColor: C.background, flex: 1},
   screen: {backgroundColor: C.background, flex: 1},
-  content: {alignSelf: 'center', gap: 12, maxWidth: 720, paddingBottom: 28, paddingHorizontal: 16, paddingTop: 8, width: '100%'},
+  content: {alignSelf: 'center', gap: 12, maxWidth: 1200, paddingBottom: 28, paddingHorizontal: 16, paddingTop: 8, width: '100%'},
   topBar: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   todayLink: {color: C.accent, fontFamily: F.s, fontSize: 14},
   topActions: {flexDirection: 'row', gap: 8},
@@ -395,6 +468,24 @@ const styles = StyleSheet.create({
   dayStripNumberActive: {fontFamily: F.b},
   dayStripDot: {backgroundColor: C.blue, borderRadius: 2, height: 4, marginTop: 3, width: 4},
   dayStripDotActive: {backgroundColor: C.accent},
+  timelineFrame: {backgroundColor: '#fbfcf9'},
+  timelineHeader: {alignItems: 'center', borderBottomColor: C.line, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10},
+  timelineDate: {color: C.label, fontFamily: F.b, fontSize: 12},
+  timelineHint: {color: C.secondary, fontFamily: F.r, fontSize: 8, marginTop: 2},
+  timelineCount: {backgroundColor: C.accentSoft, borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5},
+  timelineCountText: {color: C.accent, fontFamily: F.b, fontSize: 8},
+  timelineScroll: {height: 470},
+  timelineScrollContent: {paddingBottom: 2},
+  hourRow: {alignItems: 'flex-start', flexDirection: 'row', height: HOUR_HEIGHT, left: 0, position: 'absolute', right: 0},
+  hourLabel: {color: C.tertiary, fontFamily: F.m, fontSize: 8, paddingRight: 8, textAlign: 'right', transform: [{translateY: -6}], width: 54},
+  hourLine: {borderTopColor: '#e5e9e2', borderTopWidth: StyleSheet.hairlineWidth, flex: 1},
+  timelineEvent: {borderLeftWidth: 4, borderRadius: 9, left: 60, overflow: 'hidden', paddingHorizontal: 9, paddingVertical: 6, position: 'absolute', right: 10, zIndex: 2},
+  timelineEventTitle: {color: C.label, fontFamily: F.b, fontSize: 10},
+  timelineEventMeta: {color: C.secondary, fontFamily: F.m, fontSize: 8, marginTop: 2},
+  nowLine: {alignItems: 'center', flexDirection: 'row', left: 43, position: 'absolute', right: 0, zIndex: 5},
+  nowDot: {backgroundColor: C.accent, borderRadius: 5, height: 9, width: 9},
+  nowLabel: {backgroundColor: C.accent, borderRadius: 8, color: '#fff', fontFamily: F.b, fontSize: 8, marginLeft: -2, overflow: 'hidden', paddingHorizontal: 5, paddingVertical: 2},
+  nowRule: {backgroundColor: C.accent, flex: 1, height: 2},
   yearGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'space-between', padding: 12},
   miniMonth: {paddingVertical: 5, width: '47%'},
   miniMonthTitle: {color: C.accent, fontFamily: F.b, fontSize: 11, marginBottom: 6},
@@ -416,8 +507,14 @@ const styles = StyleSheet.create({
   eventStart: {color: C.label, fontFamily: F.s, fontSize: 10},
   eventEnd: {color: C.secondary, fontFamily: F.r, fontSize: 8, marginTop: 2},
   eventCopy: {flex: 1},
+  eventActions: {alignItems: 'center', flexDirection: 'row', gap: 5},
+  completeEventButton: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 11, flexDirection: 'row', gap: 3, minHeight: 34, paddingHorizontal: 9},
+  completeEventText: {color: '#fff', fontFamily: F.b, fontSize: 8},
   eventTitle: {color: C.label, fontFamily: F.s, fontSize: 11},
-  eventMeta: {color: C.secondary, fontFamily: F.r, fontSize: 9, marginTop: 3},
+  eventMeta: {color: C.secondary, flexShrink: 1, fontFamily: F.r, fontSize: 9},
+  eventMetaRow: {alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 3},
+  priorityBadge: {borderRadius: 99, paddingHorizontal: 6, paddingVertical: 2},
+  priorityBadgeText: {fontFamily: F.b, fontSize: 7},
   empty: {alignItems: 'center', backgroundColor: C.card, gap: 4, justifyContent: 'center', minHeight: 150, padding: 22},
   emptyIcon: {alignItems: 'center', backgroundColor: C.background, borderRadius: 24, height: 48, justifyContent: 'center', width: 48},
   emptyTitle: {color: C.label, fontFamily: F.s, fontSize: 11, marginTop: 4},
@@ -433,5 +530,7 @@ const styles = StyleSheet.create({
   deleteButton: {alignItems: 'center', height: 36, justifyContent: 'center', width: 36},
   sheetAdd: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 14, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 48},
   sheetAddText: {color: '#fff', fontFamily: F.b, fontSize: 11},
+  fab: {alignItems: 'center', backgroundColor: '#fff', borderColor: C.line, borderRadius: 28, borderWidth: 1, bottom: 78, boxShadow: '0 10px 22px rgba(55,86,54,.18)', height: 58, justifyContent: 'center', position: 'absolute', right: 20, width: 58, zIndex: 20},
+  fabPressed: {opacity: .86, transform: [{scale: .96}]},
   pressed: {opacity: .62},
 });

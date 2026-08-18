@@ -4,9 +4,11 @@ import {
   CustomProvider,
   getToken as getWebAppCheckToken,
   initializeAppCheck as initializeWebAppCheck,
+  ReCaptchaEnterpriseProvider,
 } from 'firebase/app-check';
 
 import {isDemoMode} from '@/lib/demo-mode';
+import {appCheckDebugToken} from '@/lib/app-check-debug-token';
 import {firebaseApp} from '@/lib/firebase';
 
 const APP_CHECK_TOKEN_LIFETIME_MS = 50 * 60 * 1000;
@@ -50,6 +52,15 @@ export class AppCheckDebugTokenMissingError extends Error {
   }
 }
 
+export class AppCheckWebSiteKeyMissingError extends Error {
+  readonly code = 'app-check/web-site-key-missing';
+
+  constructor() {
+    super('Firebase App Check reCAPTCHA Enterprise site key is missing from the web configuration.');
+    this.name = 'AppCheckWebSiteKeyMissingError';
+  }
+}
+
 export class AppCheckTemporarilyUnavailableError extends Error {
   readonly code = 'app-check/retry-later';
 
@@ -68,16 +79,34 @@ function appCheckErrorText(error: unknown) {
 }
 
 export function isAppCheckError(error: unknown) {
-  if (error instanceof AppCheckUnavailableError || error instanceof AppCheckDebugTokenMissingError || error instanceof AppCheckTemporarilyUnavailableError) return true;
+  if (error instanceof AppCheckUnavailableError || error instanceof AppCheckDebugTokenMissingError || error instanceof AppCheckWebSiteKeyMissingError || error instanceof AppCheckTemporarilyUnavailableError) return true;
   return /(app.?check|token-error|too many attempts|play integrity|debug token)/i.test(appCheckErrorText(error));
 }
 
 export function appCheckErrorMessage(error: unknown) {
   if (error instanceof AppCheckUnavailableError) return 'Development Build ตัวนี้ยังไม่มี Firebase App Check กรุณาติดตั้งบิลด์ล่าสุดแล้วเปิดแอปใหม่';
   if (error instanceof AppCheckDebugTokenMissingError) return 'Development Build ยังไม่ได้ตั้งค่า App Check สำหรับเครื่องนี้ กรุณาปิดและเปิดแอปใหม่หลังซิงก์ค่าล่าสุด';
+  if (error instanceof AppCheckWebSiteKeyMissingError) return 'เว็บยังไม่ได้ตั้งค่า Firebase App Check กรุณารีเฟรชหลังอัปเดตระบบแล้วลองใหม่';
   if (error instanceof AppCheckTemporarilyUnavailableError) return `ระบบยืนยันแอปกำลังพักการขอโทเคน กรุณารอประมาณ ${error.retryAfterSeconds} วินาทีแล้วลองใหม่`;
   if (/too many attempts|token-error/i.test(appCheckErrorText(error))) return 'ระบบยืนยันแอปถูกจำกัดชั่วคราวจากการขอโทเคนซ้ำ กรุณารอสักครู่แล้วลองใหม่';
   return 'ยังยืนยัน Development Build กับ Firebase ไม่สำเร็จ กรุณาปิดและเปิดแอปใหม่แล้วลองอีกครั้ง';
+}
+
+async function initializeBrowserAppCheck() {
+  const siteKey = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_RECAPTCHA_ENTERPRISE_SITE_KEY?.trim();
+  if (!siteKey) throw new AppCheckWebSiteKeyMissingError();
+
+  if (!appCheckRuntime.webAppCheckInstance) {
+    appCheckRuntime.webAppCheckInstance = initializeWebAppCheck(firebaseApp, {
+      isTokenAutoRefreshEnabled: true,
+      provider: new ReCaptchaEnterpriseProvider(siteKey),
+    });
+  }
+
+  // Fetch once before the callable request. This avoids the first Functions
+  // call racing ahead while reCAPTCHA Enterprise is still exchanging a token.
+  const {token} = await getWebAppCheckToken(appCheckRuntime.webAppCheckInstance, false);
+  if (!token) throw new Error('Firebase App Check did not return a web token.');
 }
 
 async function initializeAndroidAppCheck() {
@@ -94,7 +123,7 @@ async function initializeAndroidAppCheck() {
   ]);
 
   if (!appCheckRuntime.nativeAppCheckInstance) {
-    const debugToken = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_DEBUG_TOKEN?.trim();
+    const debugToken = appCheckDebugToken;
     // A Development Build uses a registered explicit token so Fast Refresh or
     // reinstalling an emulator does not generate unregistered tokens and
     // trigger Firebase's request throttle. Release builds always use Play
@@ -145,14 +174,14 @@ async function initializeAndroidAppCheck() {
 }
 
 export function ensureAppCheckReady() {
-  if (isDemoMode || Platform.OS !== 'android') {
+  if (isDemoMode || (Platform.OS !== 'android' && Platform.OS !== 'web')) {
     return Promise.resolve();
   }
 
   // An old development client cannot obtain a valid Play Integrity token.
   // Report the exact cause so the assistant does not disguise it as a Gemini
   // or connectivity failure.
-  if (!NativeModules.RNFBAppModule) {
+  if (Platform.OS === 'android' && !NativeModules.RNFBAppModule) {
     return Promise.reject(new AppCheckUnavailableError());
   }
 
@@ -163,7 +192,8 @@ export function ensureAppCheckReady() {
   }
 
   if (!appCheckRuntime.readyPromise) {
-    appCheckRuntime.readyPromise = initializeAndroidAppCheck().then(() => {
+    const initialize = Platform.OS === 'web' ? initializeBrowserAppCheck : initializeAndroidAppCheck;
+    appCheckRuntime.readyPromise = initialize().then(() => {
       appCheckRuntime.retryAfterMs = 0;
     }).catch((error) => {
       // Do not hammer App Check after a throttled token request. The shared

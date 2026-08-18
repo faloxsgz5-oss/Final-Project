@@ -1,4 +1,9 @@
 import {activities, notes, schedules} from '@/services/firestore';
+import {getFunctions, httpsCallable} from 'firebase/functions';
+import {ensureAppCheckReady} from '@/lib/app-check';
+import {auth, firebaseApp} from '@/lib/firebase';
+import {isDemoMode} from '@/lib/demo-mode';
+import {withAssistantAuthRetry} from '@/services/assistant-auth-retry';
 import type {Activity, ActivityType, Note, NoteCategory, Schedule, WithId} from '@/types/smartlife';
 
 type TimeValue = Date | string | number | {seconds?: number; toDate?: () => Date; toMillis?: () => number} | null | undefined;
@@ -21,7 +26,7 @@ export type ActivitySuggestion = {
   endAt: string;
   location: string;
   note: string;
-  priority: 'low' | 'normal' | 'high' | 'urgent';
+  priority: 'low' | 'normal' | 'high' | 'important' | 'urgent';
   reasons: string[];
   score: number;
   startAt: string;
@@ -39,9 +44,60 @@ export type NoteSuggestion = {
   title: string;
 };
 
+type RecommendationKind = 'activity' | 'note';
+type EnhancedRecommendation = {content?: string; detail?: string; index: number; note?: string; reasons?: string[]; title?: string};
+const recommendationFunctions = getFunctions(firebaseApp, 'asia-southeast1');
+const enhanceRecommendationsCall = httpsCallable<
+  {candidates: (ActivitySuggestion | NoteSuggestion)[]; kind: RecommendationKind},
+  {items: EnhancedRecommendation[]}
+>(recommendationFunctions, 'enhanceSmartLifeRecommendations');
+const recommendationCache = new Map<string, {expiresAt: number; value: (ActivitySuggestion | NoteSuggestion)[]}>();
+
+async function enhanceRecommendations<T extends ActivitySuggestion | NoteSuggestion>(uid: string, kind: RecommendationKind, candidates: T[]) {
+  if (isDemoMode || !candidates.length) return candidates;
+  const fingerprint = JSON.stringify(candidates.map((item) => [item.title, item.detail, item.reasons]));
+  const cacheKey = `${uid}:${kind}:${fingerprint}`;
+  const cached = recommendationCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T[];
+  try {
+    await ensureAppCheckReady();
+    const result = await withAssistantAuthRetry(
+      () => enhanceRecommendationsCall({candidates, kind}),
+      {
+        expectedUid: uid,
+        getCurrentUid: () => auth.currentUser?.uid,
+        refreshToken: () => auth.currentUser?.getIdToken(true) ?? Promise.reject(new Error('No authenticated user.')),
+      },
+    );
+    const enhancements = Array.isArray(result.data.items) ? result.data.items : [];
+    const merged = candidates.map((candidate, index) => {
+      const enhanced = enhancements.find((item) => item.index === index);
+      if (!enhanced) return candidate;
+      return {
+        ...candidate,
+        ...(kind === 'note' && enhanced.title?.trim() ? {title: enhanced.title.trim()} : {}),
+        ...(enhanced.detail?.trim() ? {detail: enhanced.detail.trim()} : {}),
+        ...(enhanced.reasons?.length ? {reasons: enhanced.reasons.filter(Boolean).slice(0, 3)} : {}),
+        ...('note' in candidate && enhanced.note?.trim() ? {note: enhanced.note.trim()} : {}),
+        ...('content' in candidate && enhanced.content?.trim() ? {content: enhanced.content.trim()} : {}),
+      } as T;
+    });
+    recommendationCache.set(cacheKey, {expiresAt: Date.now() + 2 * 60_000, value: merged});
+    return merged;
+  } catch {
+    // Recommendations remain usable from the deterministic, conflict-safe engine
+    // while App Check, connectivity, quota, or Gemini is temporarily unavailable.
+    return candidates;
+  }
+}
+
 const urgentWords = ['quiz', 'ควิซ', 'สอบ', 'ส่ง', 'deadline', 'project', 'โปรเจค', 'รายงาน', 'lab', 'แลบ'];
 const studyWords = ['เรียน', 'สอบ', 'ควิซ', 'quiz', 'lab', 'แลบ', 'assignment', 'homework', 'การบ้าน', 'รายงาน'];
 const workWords = ['งาน', 'task', 'todo', 'นัด', 'ประชุม', 'ส่งงาน', 'โปรเจค', 'project'];
+const academicDeadlineWords = [
+  'สอบ', 'สอบกลางภาค', 'สอบปลายภาค', 'ควิซ', 'แบบทดสอบ', 'ส่งงาน', 'กำหนดส่ง',
+  'การบ้าน', 'exam', 'midterm', 'final', 'quiz', 'assignment', 'homework', 'deadline', 'due',
+];
 
 function clampScore(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -165,7 +221,7 @@ function scoreTask(item: WithId<Activity>, now: Date) {
   const reasons: string[] = [];
 
   if (item.priority === 'urgent') { score += 35; reasons.push('ผู้ใช้เลือกด่วน'); }
-  else if (item.priority === 'high') { score += 25; reasons.push('ผู้ใช้เลือกสำคัญสูง'); }
+  else if (item.priority === 'high' || item.priority === 'important') { score += 25; reasons.push('ผู้ใช้เลือกสำคัญ'); }
   else if (item.priority === 'normal') score += 10;
 
   if (dates) {
@@ -185,6 +241,59 @@ function scoreTask(item: WithId<Activity>, now: Date) {
 function readableActivityTitle(item: WithId<Activity>) {
   if (/^(ทำ|อ่าน|เตรียม|ทบทวน)/i.test(item.title.trim())) return item.title.trim();
   return `ทำ ${item.title.trim()}`;
+}
+
+function isAcademicDeadline(item: WithId<Activity>) {
+  if (item.status === 'completed' || item.status === 'cancelled') return false;
+  return hasAny(normalizeText(item.title, item.note, item.category, item.location), academicDeadlineWords);
+}
+
+function thaiShortDate(date: Date) {
+  return new Intl.DateTimeFormat('th-TH', {
+    day: 'numeric', month: 'short', timeZone: 'Asia/Bangkok',
+  }).format(date);
+}
+
+export function buildGroundedAcademicSuggestionsFromData(
+  scheduleItems: WithId<Schedule>[],
+  activityItems: WithId<Activity>[],
+  now = new Date(),
+) {
+  const blocks = buildBusyBlocks(scheduleItems, activityItems);
+  const freeSlots = [0, 1]
+    .flatMap((offset) => findFreeSlots(blocks, startOfDay(now, offset), 35))
+    .filter((slot) => slot.end > now)
+    .sort((first, second) => first.start.getTime() - second.start.getTime());
+  const deadlines = activityItems
+    .filter(isAcademicDeadline)
+    .map((item) => ({item, ...scoreTask(item, now)}))
+    .filter((entry) => !entry.dates || entry.dates.start > now)
+    .sort((first, second) => {
+      const firstDue = first.dates?.start.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const secondDue = second.dates?.start.getTime() ?? Number.MAX_SAFE_INTEGER;
+      return firstDue - secondDue || second.score - first.score;
+    });
+  const deadline = deadlines[0];
+  if (!deadline) return [];
+  const slot = freeSlots.find((candidate) => !deadline.dates || candidate.end <= deadline.dates.start);
+  if (!slot) return [];
+  const fitted = fitSlot(slot, deadline.score >= 80 ? 60 : 35);
+  const dueText = deadline.dates
+    ? `ก่อนกำหนด ${thaiShortDate(deadline.dates.start)} ${formatTime(deadline.dates.start)}`
+    : 'จากงานสอบ/งานส่งในปฏิทินของคุณ';
+  return [{
+    detail: `${dueText} • ช่วงนี้ไม่ชนคาบเรียนหรือกิจกรรมอื่น`,
+    endAt: fitted.end.toISOString(),
+    location: deadline.item.location || 'ช่วงว่าง',
+    note: `เตรียมหัวข้อจาก "${deadline.item.title}" ตามรายละเอียดที่บันทึกไว้`,
+    priority: deadline.score >= 80 ? 'urgent' as const : deadline.score >= 60 ? 'high' as const : 'normal' as const,
+    reasons: ['อิงจากงานสอบ/งานส่งในปฏิทินจริง', 'ตรวจแล้วว่าไม่ชนตาราง'],
+    score: deadline.score,
+    startAt: fitted.start.toISOString(),
+    time: `${thaiShortDate(fitted.start)} ${formatTimeRange(fitted.start, fitted.end)}`,
+    title: `เตรียม ${deadline.item.title.trim()}`,
+    type: 'task' as const,
+  } satisfies ActivitySuggestion];
 }
 
 function noteCategoryFromText(text: string): NoteCategory {
@@ -332,7 +441,18 @@ export async function getActivitySuggestions(uid: string) {
     schedules.between(uid, from, to),
     activities.between(uid, from, to),
   ]);
-  return buildActivitySuggestionsFromData(scheduleItems, activityItems, now);
+  return enhanceRecommendations(uid, 'activity', buildActivitySuggestionsFromData(scheduleItems, activityItems, now));
+}
+
+export async function getGroundedAcademicSuggestions(uid: string) {
+  const now = new Date();
+  const from = startOfDay(now);
+  const [scheduleItems, activityItems] = await Promise.all([
+    schedules.between(uid, from, endOfDay(now, 1)),
+    activities.between(uid, from, endOfDay(now, 14)),
+  ]);
+  const grounded = buildGroundedAcademicSuggestionsFromData(scheduleItems, activityItems, now);
+  return enhanceRecommendations(uid, 'activity', grounded);
 }
 
 export async function getNoteSuggestions(uid: string) {
@@ -344,5 +464,5 @@ export async function getNoteSuggestions(uid: string) {
     activities.between(uid, from, to),
     notes.list(uid),
   ]);
-  return buildNoteSuggestionsFromData(scheduleItems, activityItems, noteItems, now);
+  return enhanceRecommendations(uid, 'note', buildNoteSuggestionsFromData(scheduleItems, activityItems, noteItems, now));
 }

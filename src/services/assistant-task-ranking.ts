@@ -10,7 +10,7 @@ export type AssistantTaskRankInput = {
 };
 
 function priorityScore(value = '') {
-  if (/ด่วน|สูง|high|urgent|critical/i.test(value)) return 3;
+  if (/ด่วน|สูง|สำคัญ|high|important|urgent|critical/i.test(value)) return 3;
   if (/กลาง|medium|normal/i.test(value)) return 2;
   if (/ต่ำ|low/i.test(value)) return 1;
   return 0;

@@ -65,8 +65,11 @@ export type Activity = OwnedDocument & {
 export type Note = OwnedDocument & {
   category: NoteCategory;
   color: string;
+  completedAt?: Timestamp | null;
   content: string;
+  priority?: 'normal' | 'important' | 'urgent';
   relatedScheduleId: string;
+  status?: 'pending' | 'completed';
   title: string;
 };
 

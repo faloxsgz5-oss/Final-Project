@@ -1,6 +1,6 @@
 import type {PropsWithChildren} from 'react';
 import type {StyleProp, ViewStyle} from 'react-native';
-import {StyleSheet} from 'react-native';
+import {Platform, StyleSheet} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 type ResponsiveSafeAreaProps = PropsWithChildren<{
@@ -21,9 +21,17 @@ export function ResponsiveSafeArea({children, style}: ResponsiveSafeAreaProps) {
 
 const styles = StyleSheet.create({
   base: {
+    alignSelf: 'center',
     flex: 1,
     // A small buffer after the device inset keeps headers comfortable on phones
     // without affecting the existing button shapes, colors, or spacing system.
     paddingTop: 6,
+    width: '100%',
+    ...(Platform.OS === 'web' ? {
+      // Keep the same SmartLife screen hierarchy on web, but give it a real
+      // desktop canvas instead of forcing every route into a phone-sized frame.
+      boxShadow: '0 18px 60px rgba(44, 52, 27, 0.10)',
+      maxWidth: 1280,
+    } : null),
   },
 });
