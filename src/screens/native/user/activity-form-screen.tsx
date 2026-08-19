@@ -7,7 +7,7 @@ import {runLegacyDataAction} from '@/services/legacy-data';
 import {getActivitySuggestions, recommendationLevel, type ActivitySuggestion} from '@/services/smartlife-recommendations';
 import {Card, MaterialIcon, PrimaryButton, UserHeader, UserShell, type UserNavigate, userStyles} from './user-ui';
 
-type FormPage = 'smartlife_add_activity' | 'smartlife_add_task' | 'smartlife_add_appointment' | 'smartlife_add_income' | 'smartlife_save_activity' | 'smartlife_save_task' | 'smartlife_save_appointment';
+type FormPage = 'smartlife_add_activity' | 'smartlife_add_task' | 'smartlife_add_appointment' | 'smartlife_add_income' | 'smartlife_add_expense' | 'smartlife_save_activity' | 'smartlife_save_task' | 'smartlife_save_appointment';
 type ActivityKind = 'activity' | 'task' | 'appointment';
 type FormMode = 'manual' | 'ai';
 type EntryMode = 'event' | 'reminder';
@@ -43,6 +43,7 @@ const recurrenceOptions = ['ไม่ทำซ้ำ', 'ทุกวัน', '�
 
 function config(page: FormPage) {
   if (page.includes('income')) return {action: 'create-transaction', title: 'เพิ่มรายการการเงิน', type: 'income', target: 'smartlife_finance_day'};
+  if (page.includes('expense')) return {action: 'create-transaction', title: 'เพิ่มรายการการเงิน', type: 'expense', target: 'smartlife_finance_day'};
   if (page.includes('task')) return {action: 'create-activity', title: 'เพิ่มงาน', type: 'task' as ActivityKind, target: 'smartlife_calendar_day'};
   if (page.includes('appointment')) return {action: 'create-activity', title: 'เพิ่มนัดหมาย', type: 'appointment' as ActivityKind, target: 'smartlife_calendar_day'};
   return {action: 'create-activity', title: 'เพิ่มกิจกรรม', type: 'activity' as ActivityKind, target: 'smartlife_calendar_day'};
@@ -86,9 +87,9 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   const form = useMemo(() => config(page), [page]);
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
-  const [category, setCategory] = useState(form.type === 'income' ? '\u0e40\u0e07\u0e34\u0e19\u0e42\u0e2d\u0e19' : '');
+  const [category, setCategory] = useState(form.type === 'income' ? '\u0e40\u0e07\u0e34\u0e19\u0e42\u0e2d\u0e19' : form.type === 'expense' ? 'อาหาร' : '');
   const [transactionType, setTransactionType] = useState<TransactionKind>(form.type === 'income' ? 'income' : 'expense');
-  const [activityType, setActivityType] = useState<ActivityKind>(form.type === 'income' ? 'activity' : form.type as ActivityKind);
+  const [activityType, setActivityType] = useState<ActivityKind>(form.type === 'income' || form.type === 'expense' ? 'activity' : form.type as ActivityKind);
   const [entryMode, setEntryMode] = useState<EntryMode>('event');
   const [formMode, setFormMode] = useState<FormMode>('manual');
   const [location, setLocation] = useState('');
@@ -133,6 +134,9 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     if (isTransaction && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
       return Alert.alert('กรอกจำนวนเงินให้ถูกต้อง');
     }
+    if (transactionType === 'expense' && !category.trim()) {
+      return Alert.alert('เลือกหรือกรอกหมวดรายจ่ายก่อนบันทึก');
+    }
     const startDate = new Date(`${date}T${time}:00`);
     if (Number.isNaN(startDate.getTime())) return Alert.alert('ตรวจสอบวันที่และเวลาอีกครั้ง');
     setSaving(true);
@@ -162,7 +166,7 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     Alert.alert(
       'บันทึกสำเร็จ',
       isTransaction
-        ? `เพิ่มรายรับ ${parsedAmount.toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
+        ? `เพิ่ม${transactionType === 'income' ? 'รายรับ' : 'รายจ่าย'} ${parsedAmount.toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
         : `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`,
     );
     onNavigate(form.target);
@@ -188,7 +192,8 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     setPickerTarget(null);
   };
 
-  if (isTransaction) return <IncomeForm amount={amount} category={category} date={date} note={note} onBack={() => onNavigate('smartlife_finance_day')} onNavigate={onNavigate} onSave={save} saving={saving} setAmount={setAmount} setCategory={setCategory} setDate={setDate} setNote={setNote} setTime={setTime} setTitle={setTitle} time={time} title={title} />;
+  if (isTransaction && transactionType === 'income') return <IncomeForm amount={amount} category={category} date={date} note={note} onBack={() => onNavigate('smartlife_finance_day')} onNavigate={onNavigate} onSave={save} saving={saving} setAmount={setAmount} setCategory={setCategory} setDate={setDate} setNote={setNote} setTime={setTime} setTitle={setTitle} time={time} title={title} />;
+  if (isTransaction) return <ExpenseForm amount={amount} category={category} date={date} note={note} onBack={() => onNavigate('smartlife_finance_day')} onNavigate={onNavigate} onSave={save} saving={saving} setAmount={setAmount} setCategory={setCategory} setDate={setDate} setNote={setNote} setTime={setTime} setTitle={setTitle} time={time} title={title} />;
 
   if (false && isTransaction) return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
     <UserHeader onNavigate={onNavigate} subtitle="บันทึกข้อมูลลง Firebase" title={form.title} />
@@ -305,6 +310,60 @@ function IncomeForm({amount, category, date, note, onBack, onNavigate, onSave, s
     </View>
   </UserShell>;
 }
+
+function ExpenseForm({amount, category, date, note, onBack, onNavigate, onSave, saving, setAmount, setCategory, setDate, setNote, setTime, setTitle, time, title}: {amount: string; category: string; date: string; note: string; onBack: () => void; onNavigate: UserNavigate; onSave: () => void; saving: boolean; setAmount: (value: string) => void; setCategory: (value: string) => void; setDate: (value: string) => void; setNote: (value: string) => void; setTime: (value: string) => void; setTitle: (value: string) => void; time: string; title: string}) {
+  const categories = [
+    {icon: 'restaurant', label: 'อาหาร', value: 'อาหาร'},
+    {icon: 'shopping_bag', label: 'ช้อปปิ้ง', value: 'ช้อปปิ้ง'},
+    {icon: 'directions_bus', label: 'เดินทาง', value: 'เดินทาง'},
+    {icon: 'receipt_long', label: 'บิลและบริการ', value: 'บิลและบริการ'},
+  ];
+  const initialCustomCategory = categories.some((item) => item.value === category) ? '' : category;
+  const [customMode, setCustomMode] = useState(Boolean(initialCustomCategory));
+  const [customCategory, setCustomCategory] = useState(initialCustomCategory);
+  const [pickerTarget, setPickerTarget] = useState<'date' | 'time' | null>(null);
+  const selected = customMode ? 'other' : categories.find((item) => item.value === category)?.value;
+  const selectCategory = (value: string) => {
+    setCustomMode(false);
+    setCategory(value);
+  };
+  const selectCustomCategory = () => {
+    setCustomMode(true);
+    setCategory(customCategory);
+  };
+  const updateCustomCategory = (value: string) => {
+    setCustomCategory(value);
+    setCategory(value);
+  };
+  const selectDateTime = (selectedDate?: Date | null) => {
+    if (!selectedDate || !pickerTarget) return;
+    if (pickerTarget === 'date') setDate(formatDateText(selectedDate));
+    else setTime(formatTimeText(selectedDate));
+    setPickerTarget(null);
+  };
+
+  return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
+    <View style={incomeStyles.page}>
+      {/* Added for manual expenses: quick categories plus a user-defined category. */}
+      <View style={incomeStyles.header}><Pressable accessibilityLabel="กลับหน้าการเงิน" onPress={onBack} style={incomeStyles.back}><MaterialIcon color="#344035" name="chevron_left" size={25} /></Pressable><View style={{flex: 1}}><Text style={incomeStyles.expenseEyebrow}>รายจ่ายใหม่</Text><Text style={incomeStyles.title}>เพิ่มรายจ่ายเอง</Text></View><Pressable disabled={saving} onPress={onSave} style={[incomeStyles.done, incomeStyles.expenseDone, saving && incomeStyles.disabled]}><MaterialIcon color="#fff" name="check" size={22} /></Pressable></View>
+      <LinearGradient colors={['#d77b70', '#bd6064']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={incomeStyles.amountCard}><Text style={incomeStyles.amountLabel}>จำนวนเงิน</Text><View style={incomeStyles.amountRow}><Text style={incomeStyles.currency}>฿</Text><TextInput keyboardType="numeric" onChangeText={setAmount} placeholder="0" placeholderTextColor="rgba(255,255,255,.68)" style={incomeStyles.amountInput} value={amount} /></View></LinearGradient>
+      <View style={incomeStyles.formCard}>
+        <Text style={incomeStyles.label}>หมวดรายจ่าย</Text>
+        <View style={incomeStyles.sourceGrid}>
+          {categories.map((item) => <Pressable accessibilityLabel={`เลือกหมวดรายจ่าย ${item.label}`} key={item.value} onPress={() => selectCategory(item.value)} style={[incomeStyles.source, selected === item.value && incomeStyles.expenseSourceActive]}><View style={[incomeStyles.sourceIcon, incomeStyles.expenseSourceIcon, selected === item.value && incomeStyles.expenseSourceIconActive]}><MaterialIcon color={selected === item.value ? '#fff' : '#b96561'} name={item.icon} size={18} /></View><View style={incomeStyles.sourceCopy}><Text style={incomeStyles.sourceTitle}>{item.label}</Text><Text style={incomeStyles.sourceSub}>แตะเพื่อเลือก</Text></View></Pressable>)}
+          <Pressable accessibilityLabel="เพิ่มหมวดรายจ่ายอื่น ๆ" onPress={selectCustomCategory} style={[incomeStyles.source, selected === 'other' && incomeStyles.expenseSourceActive]}><View style={[incomeStyles.sourceIcon, incomeStyles.expenseSourceIcon, selected === 'other' && incomeStyles.expenseSourceIconActive]}><MaterialIcon color={selected === 'other' ? '#fff' : '#b96561'} name="add" size={18} /></View><View style={incomeStyles.sourceCopy}><Text style={incomeStyles.sourceTitle}>อื่น ๆ</Text><Text style={incomeStyles.sourceSub}>ตั้งหมวดเอง</Text></View></Pressable>
+        </View>
+        {customMode ? <View style={incomeStyles.expenseCustomCategoryBlock}><Text style={incomeStyles.expenseCustomCategoryHint}>ตั้งชื่อหมวดรายจ่ายของคุณ</Text><TextInput autoFocus maxLength={40} onChangeText={updateCustomCategory} placeholder="เช่น สุขภาพ, สัตว์เลี้ยง, ค่าเรียน" placeholderTextColor="#879087" style={incomeStyles.input} value={customCategory} /></View> : null}
+        <Text style={incomeStyles.label}>ชื่อรายการหรือร้านค้า</Text><TextInput onChangeText={setTitle} placeholder="เช่น ข้าวกลางวัน, ร้านหนังสือ" placeholderTextColor="#879087" style={incomeStyles.input} value={title} />
+        <Text style={incomeStyles.label}>วันที่</Text><View style={incomeStyles.dateRow}><Pressable accessibilityLabel="เลือกรายจ่ายวันที่" onPress={() => setPickerTarget('date')} style={({pressed}) => [incomeStyles.pickerButton, {flex: 1}, pressed && incomeStyles.pressed]}><MaterialIcon color="#b96561" name="event" size={18} /><View style={{flex: 1}}><Text style={incomeStyles.pickerLabel}>วันที่</Text><Text style={incomeStyles.pickerValue}>{thaiDateText(date)}</Text></View></Pressable><Pressable accessibilityLabel="เลือกรายจ่ายเวลา" onPress={() => setPickerTarget('time')} style={({pressed}) => [incomeStyles.pickerButton, {flex: .7}, pressed && incomeStyles.pressed]}><MaterialIcon color="#b96561" name="schedule" size={18} /><View style={{flex: 1}}><Text style={incomeStyles.pickerLabel}>เวลา</Text><Text style={incomeStyles.pickerValue}>{time}</Text></View></Pressable></View>
+        {pickerTarget ? <NativeDateTimePicker accentColor="#b96561" is24Hour mode={pickerTarget} onDismiss={() => setPickerTarget(null)} onValueChange={(_, selectedDate) => selectDateTime(selectedDate)} presentation="dialog" value={pickerTarget === 'date' ? parseDateText(date) : parseTimeText(time)} /> : null}
+        <Text style={incomeStyles.label}>หมายเหตุ</Text><TextInput multiline onChangeText={setNote} placeholder="เพิ่มรายละเอียด (ไม่บังคับ)" placeholderTextColor="#879087" style={incomeStyles.note} textAlignVertical="top" value={note} />
+      </View>
+      <View style={incomeStyles.statRow}><IncomeStat label="หลังบันทึก" value={`รายจ่าย -฿${Number(amount || 0).toLocaleString('th-TH')}`} /><IncomeStat label="ยอดรายการนี้" value={`฿${Number(amount || 0).toLocaleString('th-TH')}`} /></View>
+      <Pressable disabled={saving} onPress={onSave} style={[incomeStyles.saveShell, saving && incomeStyles.disabled]}><LinearGradient colors={['#b96561', '#934b50']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={incomeStyles.save}><MaterialIcon color="#fff" name="check" size={18} /><Text style={incomeStyles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกรายจ่าย'}</Text></LinearGradient></Pressable>
+    </View>
+  </UserShell>;
+}
 function IncomeStat({label, value}: {label: string; value: string}) { return <View style={incomeStyles.stat}><Text style={incomeStyles.statLabel}>{label}</Text><Text style={incomeStyles.statValue}>{value}</Text></View>; }
 function AiSuggestions({loading, onUse, suggestions}: {loading: boolean; onUse: (suggestion: ActivitySuggestion) => void; suggestions: ActivitySuggestion[]}) {
   return <View style={styles.suggestionArea}>
@@ -329,7 +388,7 @@ function Input({icon, ...props}: {icon?: string} & React.ComponentProps<typeof T
 function PickerButton({icon, label, onPress, value}: {icon: string; label: string; onPress: () => void; value: string}) { return <Pressable onPress={onPress} style={({pressed}) => [styles.pickerButton, pressed && styles.pressed]}><MaterialIcon color="#638363" name={icon} size={18} /><View style={{flex: 1}}><Text style={styles.pickerLabel}>{label}</Text><Text style={styles.pickerValue}>{value}</Text></View></Pressable>; }
 
 const incomeStyles = StyleSheet.create({
-  amountCard: {borderRadius: 20, marginTop: 14, padding: 16}, amountInput: {color: '#fff', flex: 1, fontFamily: 'Prompt_800ExtraBold', fontSize: 34, padding: 0}, amountLabel: {color: 'rgba(255,255,255,.88)', fontFamily: 'Prompt_600SemiBold', fontSize: 11}, amountRow: {alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 10}, back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 43, justifyContent: 'center', width: 43}, currency: {color: '#fff', fontFamily: 'Prompt_800ExtraBold', fontSize: 31}, dateRow: {flexDirection: 'row', gap: 8}, disabled: {opacity: .55}, done: {alignItems: 'center', backgroundColor: '#6270aa', borderRadius: 17, height: 43, justifyContent: 'center', width: 43}, eyebrow: {color: '#698668', fontFamily: 'Prompt_700Bold', fontSize: 9}, formCard: {backgroundColor: '#fff', borderRadius: 21, boxShadow: '0 8px 19px rgba(43,57,41,.08)', marginTop: 14, padding: 14}, header: {alignItems: 'center', flexDirection: 'row', gap: 10}, input: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, minHeight: 44, paddingHorizontal: 12}, label: {color: '#788178', fontFamily: 'Prompt_700Bold', fontSize: 10, marginBottom: 6, marginTop: 13}, note: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_500Medium', fontSize: 11, minHeight: 78, padding: 12}, page: {paddingBottom: 5}, pickerButton: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 58, paddingHorizontal: 12}, pickerLabel: {color: '#879087', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, pickerValue: {color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 1}, pressed: {opacity: .78, transform: [{scale: .987}]}, save: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, saveShell: {borderRadius: 16, marginTop: 14, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 14}, source: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, padding: 9, width: '48.5%'}, sourceActive: {backgroundColor: '#eff1fb', borderColor: '#aeb8df'}, sourceGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, sourceIcon: {alignItems: 'center', backgroundColor: '#e7f0e4', borderRadius: 12, height: 32, justifyContent: 'center', width: 32}, sourceIconActive: {backgroundColor: '#8792c2'}, sourceSub: {color: '#8c948b', fontFamily: 'Prompt_400Regular', fontSize: 7, marginTop: 1}, sourceTitle: {color: '#374136', fontFamily: 'Prompt_700Bold', fontSize: 10}, stat: {backgroundColor: '#fff', borderRadius: 17, flex: 1, padding: 12}, statLabel: {color: '#8a9389', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, statRow: {flexDirection: 'row', gap: 10, marginTop: 14}, statValue: {color: '#31402e', fontFamily: 'Prompt_800ExtraBold', fontSize: 13, marginTop: 3}, title: {color: '#344035', fontFamily: 'Prompt_800ExtraBold', fontSize: 20},
+  amountCard: {borderRadius: 20, marginTop: 14, padding: 16}, amountInput: {color: '#fff', flex: 1, fontFamily: 'Prompt_800ExtraBold', fontSize: 34, padding: 0}, amountLabel: {color: 'rgba(255,255,255,.88)', fontFamily: 'Prompt_600SemiBold', fontSize: 11}, amountRow: {alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 10}, back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 43, justifyContent: 'center', width: 43}, currency: {color: '#fff', fontFamily: 'Prompt_800ExtraBold', fontSize: 31}, dateRow: {flexDirection: 'row', gap: 8}, disabled: {opacity: .55}, done: {alignItems: 'center', backgroundColor: '#6270aa', borderRadius: 17, height: 43, justifyContent: 'center', width: 43}, expenseCustomCategoryBlock: {backgroundColor: '#fdf2f0', borderColor: '#f0d7d3', borderRadius: 16, borderWidth: 1, marginTop: 10, padding: 10}, expenseCustomCategoryHint: {color: '#9a605d', fontFamily: 'Prompt_600SemiBold', fontSize: 9, marginBottom: 6}, expenseDone: {backgroundColor: '#b96561'}, expenseEyebrow: {color: '#b96561', fontFamily: 'Prompt_700Bold', fontSize: 9}, expenseSourceActive: {backgroundColor: '#fff0ed', borderColor: '#dfa6a0'}, expenseSourceIcon: {backgroundColor: '#f8e4e0'}, expenseSourceIconActive: {backgroundColor: '#c76d68'}, eyebrow: {color: '#698668', fontFamily: 'Prompt_700Bold', fontSize: 9}, formCard: {backgroundColor: '#fff', borderRadius: 21, boxShadow: '0 8px 19px rgba(43,57,41,.08)', marginTop: 14, padding: 14}, header: {alignItems: 'center', flexDirection: 'row', gap: 10}, input: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, minHeight: 44, paddingHorizontal: 12}, label: {color: '#788178', fontFamily: 'Prompt_700Bold', fontSize: 10, marginBottom: 6, marginTop: 13}, note: {backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, color: '#344035', fontFamily: 'Prompt_500Medium', fontSize: 11, minHeight: 78, padding: 12}, page: {paddingBottom: 5}, pickerButton: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 58, paddingHorizontal: 12}, pickerLabel: {color: '#879087', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, pickerValue: {color: '#344035', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 1}, pressed: {opacity: .78, transform: [{scale: .987}]}, save: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, saveShell: {borderRadius: 16, marginTop: 14, overflow: 'hidden'}, saveText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 14}, source: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e0e6dd', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, padding: 9, width: '48.5%'}, sourceActive: {backgroundColor: '#eff1fb', borderColor: '#aeb8df'}, sourceCopy: {flex: 1, minWidth: 0}, sourceGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, sourceIcon: {alignItems: 'center', backgroundColor: '#e7f0e4', borderRadius: 12, height: 32, justifyContent: 'center', width: 32}, sourceIconActive: {backgroundColor: '#8792c2'}, sourceSub: {color: '#8c948b', fontFamily: 'Prompt_400Regular', fontSize: 7, marginTop: 1}, sourceTitle: {color: '#374136', fontFamily: 'Prompt_700Bold', fontSize: 10}, stat: {backgroundColor: '#fff', borderRadius: 17, flex: 1, padding: 12}, statLabel: {color: '#8a9389', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, statRow: {flexDirection: 'row', gap: 10, marginTop: 14}, statValue: {color: '#31402e', fontFamily: 'Prompt_800ExtraBold', fontSize: 13, marginTop: 3}, title: {color: '#344035', fontFamily: 'Prompt_800ExtraBold', fontSize: 20},
 });
 
 const styles = StyleSheet.create({

@@ -22,6 +22,7 @@ import {
 import {classifyAssistantIntent} from '@/services/assistant-intent';
 import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
 import {assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
+import {calculateBurnoutDynamicInsight} from '@/services/dynamic-insights';
 import {
   deleteAssistantConversation,
   listAssistantConversations,
@@ -34,6 +35,7 @@ import {loadLegacyPageData} from '@/services/legacy-data';
 import {sanitizeAssistantMessages} from '@/services/assistant-message-sanitizer';
 import {transcribeAssistantAudio} from '@/services/assistant-voice';
 import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import type {Activity, Schedule, WithId} from '@/types/smartlife';
 import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
 
 function nowIso() {
@@ -618,13 +620,20 @@ function AssistantInsights({adaptiveDashboard, data, onAsk}: {adaptiveDashboard:
     const behaviorEvidence = learnedPattern
       ? `${adaptiveCategoryLabels[learnedPattern.activityCategory] ?? learnedPattern.activityCategory} · เรียนรู้จากผลลัพธ์จริง ${learnedPattern.observationCount} ครั้ง`
       : 'ยังมีข้อมูลผลลัพธ์ไม่พอ จึงใช้เฉพาะตาราง 7 วันและจะไม่สรุปเป็นนิสัยถาวร';
+    const burnout = calculateBurnoutDynamicInsight({
+      activities: activities as unknown as WithId<Activity>[],
+      pendingTasks: activities.filter((item) => item.type === 'task') as unknown as WithId<Activity>[],
+      schedules: schedules as unknown as WithId<Schedule>[],
+      weekActivities: activities as unknown as WithId<Activity>[],
+      weekSchedules: schedules as unknown as WithId<Schedule>[],
+    });
     const workload = all.length;
-    const risk = workload >= 10 ? 'สูง' : workload >= 6 ? 'ปานกลาง' : 'ต่ำ';
-    const riskCopy = workload >= 10
-      ? 'สัปดาห์นี้มีรายการค่อนข้างแน่น ลองเว้นช่วงพักสั้น ๆ ระหว่างงานสำคัญ'
-      : workload >= 6
-        ? 'ตารางมีหลายรายการ กระจายงานยากไว้ก่อนช่วงที่คุณมีสมาธิ'
-        : 'ตารางยังมีพื้นที่พัก ลองกันเวลาสำหรับงานสำคัญไว้ล่วงหน้า';
+    const risk = burnout.riskLevel === 'high' ? 'สูง' : burnout.riskLevel === 'medium' ? 'ปานกลาง' : 'ต่ำ';
+    const sleepEvidence = burnout.sleepDataDays > 0
+      ? `นอนเฉลี่ย ${burnout.averageSleepHours ?? '-'} ชม. จาก ${burnout.sleepDataDays} คืน`
+      : 'ยังไม่มีข้อมูลการนอน จึงไม่คาดเดา';
+    const ratio = burnout.studyWorkToSleepRatio === null ? '' : ` · สัดส่วนงานต่อการนอน ${burnout.studyWorkToSleepRatio}:1`;
+    const riskCopy = `คะแนน ${burnout.score}/100 · เรียน/งาน ${burnout.busyHoursThisWeek} ชม. · งานค้าง ${burnout.pendingTaskCount} · ${sleepEvidence}${ratio}`;
     const focus: InsightItem[] = all.slice(0, 3).map((item) => ({icon: item.icon, subtitle: item.kind, title: item.title}));
     if (!focus.length) focus.push(
       {icon: 'calendar_month', subtitle: 'เริ่มจากข้อมูลที่มี', title: 'เพิ่มตารางของสัปดาห์นี้'},
@@ -659,11 +668,11 @@ const ADAPTIVE_AI_SHORTCUT = 'smartlife_adaptive_ai';
 const shortcuts = [
   ['calendar_month', 'ตารางวันนี้', 'ดูงานเรียงลำดับ', 'smartlife_notifications_schedule'],
   ['check_box', 'งานค้าง', 'เรียงความสำคัญ', 'smartlife_notifications_urgent'],
-  ['account_balance_wallet', 'งบวันนี้', 'เช็กเงินคงเหลือ', 'smartlife_notifications_finance'],
+  ['account_balance_wallet', 'งบสัปดาห์', 'เช็กยอดใช้และลิมิต 80%', 'smartlife_notifications_finance'],
   ['auto_awesome', 'Adaptive AI', 'จัดงานลงเวลาว่าง', ADAPTIVE_AI_SHORTCUT],
 ];
 
-type QuickAddCategoryId = 'adaptive' | 'finance' | 'note' | 'ocr' | 'task' | 'time';
+type QuickAddCategoryId = 'adaptive' | 'finance' | 'note' | 'ocr' | 'task' | 'time' | 'wellbeing';
 type QuickAddSuggestion = {action?: 'activate_adaptive'; detail: string; icon: string; prompt: string; title: string};
 
 const defaultOcrShortcuts: QuickAddSuggestion[] = [
@@ -778,11 +787,25 @@ const quickAddCategories: {
     id: 'finance',
     suggestions: [
       {detail: 'ดูจากรายการของเดือนนี้', icon: 'account_balance_wallet', prompt: 'เดือนนี้ฉันเหลือเงินเท่าไหร่', title: 'เงินเหลือเท่าไหร่'},
-      {detail: 'สรุปรายรับและรายจ่ายวันนี้', icon: 'today', prompt: 'สรุปงบวันนี้ให้หน่อย', title: 'งบวันนี้เป็นอย่างไร'},
-      {detail: 'คำนวณวงเงินที่เหมาะสมต่อวัน', icon: 'savings', prompt: 'ควรแบ่งใช้เงินที่เหลือยังไง', title: 'ควรแบ่งเงินยังไง'},
+      {detail: 'ดูยอดใช้และสัดส่วนของสัปดาห์', icon: 'date_range', prompt: 'สรุปงบสัปดาห์นี้ให้หน่อย', title: 'งบสัปดาห์เป็นอย่างไร'},
+      {detail: 'เตือนเมื่อใช้ถึง 80% ของกรอบ', icon: 'savings', prompt: 'สัปดาห์นี้ใช้งบไปกี่เปอร์เซ็นต์แล้ว', title: 'ใกล้ถึง 80% หรือยัง'},
       {detail: 'แนะนำจากงบและจำนวนวันที่เหลือ', icon: 'restaurant', prompt: 'วันนี้ควรตั้งงบค่าอาหารเท่าไหร่', title: 'ค่าอาหารควรเท่าไหร่'},
     ],
     title: 'การเงิน',
+  },
+  {
+    createLabel: 'เพิ่มเวลานอนในแพลนเนอร์',
+    createPrompt: 'เพิ่มกิจกรรม นอน เวลา ',
+    detail: 'ความเสี่ยงหมดไฟ การพัก และข้อมูลการนอน',
+    icon: 'self_improvement',
+    id: 'wellbeing',
+    suggestions: [
+      {detail: 'คำนวณจากตาราง งานค้าง และการนอนจริง', icon: 'monitor_heart', prompt: 'ประเมินความเสี่ยงหมดไฟจากข้อมูลของฉัน', title: 'เช็กความเสี่ยงหมดไฟ'},
+      {detail: 'ดูหลักฐานที่ถูกนำไปคิดคะแนน', icon: 'fact_check', prompt: 'คะแนนหมดไฟของฉันคิดจากข้อมูลอะไรบ้าง', title: 'ดูเหตุผลของคะแนน'},
+      {detail: 'เลือกสิ่งที่เหมาะกับช่องว่างจริง', icon: 'hourglass_bottom', prompt: 'ตอนนี้มีเวลาว่างเท่าไหร่และควรพักหรือทำอะไร', title: 'ช่วงว่างควรทำอะไร'},
+      {detail: 'ตรวจเฉพาะกิจกรรมการนอนที่บันทึกไว้', icon: 'bedtime', prompt: 'สัปดาห์นี้มีข้อมูลการนอนของฉันกี่คืน', title: 'ดูข้อมูลการนอน'},
+    ],
+    title: 'สุขภาพใจ',
   },
   {
     createLabel: 'จดโน้ตใหม่',
@@ -826,7 +849,7 @@ const quickAddCategories: {
 // Refactored UI: these use the existing message pipeline instead of adding a second data flow.
 const shortcutPrompts: Record<string, string> = {
   smartlife_notifications_ai: 'ช่วยแนะนำเวลาอ่านหนังสือวันนี้',
-  smartlife_notifications_finance: 'สรุปงบวันนี้ให้หน่อย',
+  smartlife_notifications_finance: 'สรุปงบสัปดาห์นี้ให้หน่อย',
   smartlife_notifications_schedule: 'วันนี้มีตารางอะไรบ้าง',
   smartlife_notifications_urgent: 'มีงานค้างอะไรบ้าง',
 };

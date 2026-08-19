@@ -20,11 +20,11 @@ function money(value: number) { return `฿${Math.max(0, Math.round(value)).toLo
 function parseMoney(value: string) { return Number(value.replace(/[^\d]/g, '')) || 0; }
 function suggestedBudget(income: number) { return Math.max(0, Math.floor(income * .7 / 100) * 100); }
 function pressureText(level?: string) {
-  if (level === 'critical') return 'ใช้เกินงบเดือนนี้แล้ว ควรหยุดรายจ่ายที่ไม่จำเป็นก่อน';
-  if (level === 'high') return 'งบต่อวันตึงมาก ใช้เฉพาะของจำเป็นจะปลอดภัยกว่า';
-  if (level === 'medium') return 'เริ่มใช้เร็วกว่าแผน ควรคุมรายจ่ายวันนี้';
-  if (level === 'low') return 'ยังพอไหว แต่ควรระวังไม่ให้ใช้เร็วเกินแผน';
-  return 'งบยังอยู่ในโซนปลอดภัย';
+  if (level === 'critical') return 'ใช้เกินกรอบสัปดาห์แล้ว ควรเก็บเงินไว้สำหรับรายการจำเป็นก่อน';
+  if (level === 'high') return 'ใช้ถึงระดับเตือน 80% ของสัปดาห์แล้ว';
+  if (level === 'medium') return 'เริ่มเข้าใกล้ระดับเตือนของสัปดาห์';
+  if (level === 'low') return 'ยังอยู่ในกรอบ แต่ควรเช็กยอดรวมของสัปดาห์';
+  return 'งบสัปดาห์นี้ยังอยู่ในโซนปลอดภัย';
 }
 
 // Added for monthly budget planning: lets users set their own spending limit or apply the income-based recommendation.
@@ -107,10 +107,10 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
         </LinearGradient>
 
         {financeInsight ? <View style={styles.card}>
-          <View style={styles.cardHeader}><View style={styles.cardIcon}><MaterialIcon color={C.accent} name="query_stats" size={20} /></View><View style={{flex: 1}}><Text style={styles.cardTitle}>AI Dynamic งบต่อวัน</Text><Text style={styles.cardSub}>{pressureText(financeInsight.financePressureLevel)}</Text></View></View>
-          <View style={styles.recommendation}><Text style={styles.recommendationLabel}>เฉลี่ยทั้งเดือน</Text><Text style={styles.recommendationAmount}>{money(financeInsight.averageDailyBudget)} / วัน</Text></View>
-          <View style={styles.recommendation}><Text style={styles.recommendationLabel}>ใช้ได้จริงตอนนี้</Text><Text style={styles.recommendationAmount}>{money(financeInsight.remainingDailyBudget)} / วัน</Text></View>
-          <Text style={styles.inputHint}>เหลือ {financeInsight.daysRemainingIncludingToday} วัน • ใช้ไปแล้ว {money(financeInsight.spentSoFar)} จากงบ {money(financeInsight.monthlyBudget)}</Text>
+          <View style={styles.cardHeader}><View style={styles.cardIcon}><MaterialIcon color={C.accent} name="query_stats" size={20} /></View><View style={{flex: 1}}><Text style={styles.cardTitle}>AI Dynamic งบรายสัปดาห์</Text><Text style={styles.cardSub}>{pressureText(financeInsight.financePressureLevel)}</Text></View></View>
+          <View style={styles.recommendation}><Text style={styles.recommendationLabel}>กรอบสัปดาห์นี้</Text><Text style={styles.recommendationAmount}>{money(financeInsight.weeklyBudget)}</Text></View>
+          <View style={styles.recommendation}><Text style={styles.recommendationLabel}>ใช้แล้ว {financeInsight.weeklyUsagePercent}%</Text><Text style={styles.recommendationAmount}>เหลือ {money(financeInsight.weeklyRemainingBudget)}</Text></View>
+          <Text style={styles.inputHint}>ช่วง {financeInsight.weekStart} ถึง {financeInsight.weekEnd} • ระบบเตือนเมื่อใช้ถึง 80%</Text>
         </View> : null}
 
         <View style={styles.modeBar}><ModeButton active={mode === 'ai'} icon="auto_awesome" label="AI แนะนำ" onPress={applyRecommendation} /><ModeButton active={mode === 'manual'} icon="edit" label="กำหนดเอง" onPress={() => setMode('manual')} /></View>

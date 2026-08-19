@@ -95,7 +95,9 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
   };
   const headerAction = filter === 'income'
     ? {icon: 'add', label: 'เพิ่มรายรับ', page: 'smartlife_add_income'}
-    : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
+    : filter === 'expense'
+      ? {icon: 'add', label: 'เพิ่มรายจ่าย', page: 'smartlife_add_expense'}
+      : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
@@ -122,8 +124,8 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
         <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.menuCard, {backgroundColor: '#faecea', marginTop: 16}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#d89182'}]}><MaterialIcon color="#fff" name="savings" size={20} /></View>
             <View style={{flex: 1}}>
-              <Text style={styles.menuTitle}>กำหนดงบรายเดือน</Text>
-              <Text style={styles.menuSubtitle}>{monthlyBudget ? `ตั้งงบไว้ ${money(monthlyBudget)}` : 'ตั้งเอง หรือให้ AI แนะนำจากรายรับ'}</Text>
+              <Text style={styles.menuTitle}>กำหนดงบและกรอบรายสัปดาห์</Text>
+              <Text style={styles.menuSubtitle}>{monthlyBudget ? `วงเงินเดือน ${money(monthlyBudget)} · AI แบ่งให้เป็นรายสัปดาห์` : 'ตั้งวงเงิน แล้ว AI คุมยอดรวมเป็นรายสัปดาห์'}</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Pressable>
@@ -144,16 +146,26 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
             <Text style={styles.menuSubtitle}>กรอกจำนวน หมวดหมู่ วันที่ และโน้ตด้วยตัวเอง</Text>
           </View>
           <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-        </Pressable> : <Pressable onPress={() => onNavigate(SMART_SCAN_PAGE)} style={[styles.menuCard, {backgroundColor: '#eceef7'}]}>
-          <View style={[styles.menuIcon, {backgroundColor: '#7a85b3'}]}><MaterialIcon color="#fff" name="receipt_long" size={20} /></View>
-          <View style={{flex: 1}}>
-            <Text style={styles.menuTitle}>สแกนใบเสร็จ</Text>
-            <Text style={styles.menuSubtitle}>ให้ AI แยกหมวดรายจ่ายให้อัตโนมัติ</Text>
-          </View>
-          <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-        </Pressable>}
+        </Pressable> : <>
+          {filter === 'expense' ? <Pressable onPress={() => onNavigate('smartlife_add_expense')} style={[styles.menuCard, {backgroundColor: '#fcedea'}]}>
+            <View style={[styles.menuIcon, {backgroundColor: '#c96e68'}]}><MaterialIcon color="#fff" name="add_card" size={20} /></View>
+            <View style={{flex: 1}}>
+              <Text style={styles.menuTitle}>เพิ่มรายจ่ายเอง</Text>
+              <Text style={styles.menuSubtitle}>เลือกหมวดหลัก หรือตั้งชื่อหมวดรายจ่ายของคุณเอง</Text>
+            </View>
+            <MaterialIcon color={C.ink} name="chevron_right" size={21} />
+          </Pressable> : null}
+          <Pressable onPress={() => onNavigate(SMART_SCAN_PAGE)} style={[styles.menuCard, {backgroundColor: '#eceef7'}]}>
+            <View style={[styles.menuIcon, {backgroundColor: '#7a85b3'}]}><MaterialIcon color="#fff" name="receipt_long" size={20} /></View>
+            <View style={{flex: 1}}>
+              <Text style={styles.menuTitle}>สแกนใบเสร็จ</Text>
+              <Text style={styles.menuSubtitle}>ให้ AI แยกหมวดรายจ่ายให้อัตโนมัติ</Text>
+            </View>
+            <MaterialIcon color={C.ink} name="chevron_right" size={21} />
+          </Pressable>
+        </>}
 
-        <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text>{filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>เพิ่มรายรับ</Text></Pressable> : null}</View>
+        <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text>{filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>เพิ่มรายรับ</Text></Pressable> : filter === 'expense' ? <Pressable onPress={() => onNavigate('smartlife_add_expense')}><Text style={styles.allLink}>เพิ่มรายจ่าย</Text></Pressable> : null}</View>
         <View style={styles.transactionList}>{shown.length ? shown.map((item, index) => <TransactionRow item={item} key={str(item, 'id', String(index))} onDelete={() => deleteTransaction(item)} />) : <View style={styles.empty}><MaterialIcon color="#a1aaa0" name="receipt_long" size={32} /><Text style={styles.emptyText}>ยังไม่มีรายการในช่วงนี้</Text></View>}</View>
       </>}
     </ScrollView><UserTabBar active="smartlife_finance_day" onNavigate={onNavigate} />

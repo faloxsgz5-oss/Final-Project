@@ -167,6 +167,7 @@ export type AssistantToolName =
   | 'get_pending_tasks'
   | 'get_user_notes'
   | 'get_user_schedule'
+  | 'get_wellbeing_summary'
   | 'save_preference'
   | 'update_note'
   | 'update_schedule_item';

@@ -88,8 +88,14 @@ if (-not $SkipFirebaseLogin) {
   if (-not $Npx) { throw 'npx is required but was not found.' }
 
   Write-Step "Checking Firebase team access"
+  # Firebase CLI writes progress updates to stderr even when the command succeeds.
+  # Do not let PowerShell treat those updates as terminating errors during setup.
+  $PreviousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   & $Npx -y firebase-tools@latest projects:list --json *> $null
-  if ($LASTEXITCODE -ne 0) {
+  $FirebaseProjectsExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $PreviousErrorActionPreference
+  if ($FirebaseProjectsExitCode -ne 0) {
     Write-Step "Sign in with the Google account that has access to smartlife-budget"
     Invoke-Checked $Npx @('-y', 'firebase-tools@latest', 'login') 'Firebase login failed.'
   }

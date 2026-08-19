@@ -32,6 +32,7 @@ import {
 import {adaptiveScheduling} from '@/services/adaptive-scheduling';
 import {activities, notes, scanLogs, schedules, transactions} from '@/services/firestore';
 import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
+import {activityForFreeSlot, TRUSTED_COACHING_SOURCES, WELLBEING_AI_DISCLAIMER} from '@/config/trusted-coaching-knowledge';
 import type {AssistantChatMessage, AssistantConversationState, AssistantConversationStatePatch, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantResponseMode, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, ScanLog, Schedule, Transaction, WithId} from '@/types/smartlife';
 
@@ -41,7 +42,8 @@ export const assistantToolSchemas: AssistantToolSchema[] = [
   {description: 'เสนอสร้างกิจกรรม งาน หรือนัดหมาย และรอผู้ใช้ยืนยันก่อนเขียน', mutates: true, name: 'add_event', parameters: {payload: 'SchedulePayload'}},
   {description: 'เสนอแก้ไขรายการตาราง ต้อง confirm ก่อนเขียน', mutates: true, name: 'update_schedule_item', parameters: {id: 'string', payload: 'partial SchedulePayload'}},
   {description: 'เสนอ delete รายการตาราง ต้อง confirm ก่อนเขียน', mutates: true, name: 'delete_schedule_item', parameters: {id: 'string'}},
-  {description: 'อ่านยอดคงเหลือ งบรายวัน และรายการการเงินจริงตามช่วงเวลา', mutates: false, name: 'get_financial_summary', parameters: {category: 'optional category', timeframe: ['today', 'week', 'month']}},
+  {description: 'อ่านยอดคงเหลือ งบรายสัปดาห์ สัดส่วนที่ใช้ไป และรายการการเงินจริงตามช่วงเวลา', mutates: false, name: 'get_financial_summary', parameters: {category: 'optional category', timeframe: ['today', 'week', 'month']}},
+  {description: 'ประเมินสัญญาณความเสี่ยงหมดไฟจากตาราง งานค้าง และกิจกรรมการนอนที่ผู้ใช้บันทึกจริง โดยไม่วินิจฉัยโรค', mutates: false, name: 'get_wellbeing_summary', parameters: {range: ['week']}},
   {description: 'เสนอเพิ่มรายรับหรือรายจ่าย และรอผู้ใช้ยืนยันก่อนเขียน', mutates: true, name: 'add_transaction', parameters: {payload: 'FinancePayload'}},
   {description: 'อ่านโน้ตล่าสุดจากข้อมูลจริงของผู้ใช้', mutates: false, name: 'get_user_notes', parameters: {tag: ['all', 'class', 'idea', 'task']}},
   {description: 'เสนอสร้างโน้ต และรอผู้ใช้ยืนยันก่อนเขียน', mutates: true, name: 'add_note', parameters: {payload: 'NotePayload'}},
@@ -361,6 +363,8 @@ async function loadAssistantContextSources(uid: string) {
   const today = rangeFor('day');
   const week = rangeFor('week');
   const month = rangeFor('month');
+  const wellbeingStart = new Date(today.start);
+  wellbeingStart.setDate(wellbeingStart.getDate() - 6);
   const upcomingEnd = new Date(today.start);
   // Look across a full semester so exam dates are not missed when they are
   // more than two months away.
@@ -378,6 +382,8 @@ async function loadAssistantContextSources(uid: string) {
     transactions.between(uid, month.start, monthQueryEnd),
     notes.list(uid),
     scanLogs.list(uid),
+    schedules.between(uid, wellbeingStart, today.end),
+    activities.between(uid, wellbeingStart, today.end),
   ]);
   return results;
 }
@@ -424,6 +430,8 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
     monthTransactionsResult,
     notesResult,
     scanLogsResult,
+    wellbeingSchedulesResult,
+    wellbeingActivitiesResult,
   ] = results;
   const todaySchedules = settledValue(todaySchedulesResult) as WithId<Schedule>[];
   const todayActivities = settledValue(todayActivitiesResult) as WithId<Activity>[];
@@ -436,6 +444,8 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
   const monthTransactions = settledValue(monthTransactionsResult) as WithId<Transaction>[];
   const noteList = settledValue(notesResult) as WithId<Note>[];
   const recentScanLogs = settledValue(scanLogsResult) as WithId<ScanLog>[];
+  const wellbeingSchedules = settledValue(wellbeingSchedulesResult) as WithId<Schedule>[];
+  const wellbeingActivities = settledValue(wellbeingActivitiesResult) as WithId<Activity>[];
   const monthIncome = monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
   const monthExpense = monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
   const monthlyBudget = await loadMonthlyBudget(uid, currentMonthKey());
@@ -444,9 +454,12 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
     : null;
   const dynamic: SmartLifeDynamicInsight = {
     burnout: calculateBurnoutDynamicInsight({
-      activities: [...todayActivities, ...pendingTasks],
+      activities: todayActivities,
       finance: financeDynamic,
+      pendingTasks,
       schedules: todaySchedules,
+      weekActivities: wellbeingActivities,
+      weekSchedules: wellbeingSchedules,
     }),
     ...(financeDynamic ? {finance: financeDynamic} : {}),
   };
@@ -462,6 +475,8 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
         weekActivitiesResult,
         upcomingSchedulesResult,
         upcomingActivitiesResult,
+        wellbeingSchedulesResult,
+        wellbeingActivitiesResult,
       ]),
       tasks: sourceAvailability([pendingTasksResult, notesResult]),
     },
@@ -592,30 +607,24 @@ function sameThailandDay(left: Date, right: Date) {
   return format.format(left) === format.format(right);
 }
 
-function buildBudgetGuard(context: AssistantContext, preferences: AssistantPreferences) {
-  const now = new Date();
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const daysLeft = Math.max(1, lastDay - now.getDate() + 1);
-  const dailyAllowance = Math.max(0, context.balance) / daysLeft;
+function buildBudgetGuard(context: AssistantContext, _preferences: AssistantPreferences) {
+  const finance = context.dynamic.finance;
   const categoryTotals = new Map<string, number>();
-  context.monthTransactions.filter((item) => item.type === 'expense').forEach((item) => {
+  context.weekTransactions.filter((item) => item.type === 'expense').forEach((item) => {
     categoryTotals.set(item.category, (categoryTotals.get(item.category) ?? 0) + item.amount);
   });
   const highestCategory = [...categoryTotals.entries()].sort((a, b) => b[1] - a[1])[0];
-  if (context.monthIncome <= 0 && context.monthExpense <= 0) return 'ตอนนี้ยังไม่มีรายการรายรับหรือรายจ่ายของเดือนนี้ให้วิเคราะห์ ลองบันทึกรายการแรกก่อน แล้วฉันจะช่วยดูแนวโน้มให้';
-  if (preferences.dailyBudget) {
-    const todaySpent = context.monthTransactions
-      .filter((item) => item.type === 'expense' && sameThailandDay(item.occurredAt.toDate(), now))
-      .reduce((sum, item) => sum + item.amount, 0);
-    const remaining = preferences.dailyBudget - todaySpent;
-    if (remaining < 0) return `วันนี้ใช้ไป ${todaySpent.toLocaleString('th-TH')} บาท เกินงบที่ตั้งไว้ ${Math.abs(remaining).toLocaleString('th-TH')} บาทแล้ว ลองพักรายจ่ายที่ไม่จำเป็นก่อนนะ`;
-    return `วันนี้ใช้ไป ${todaySpent.toLocaleString('th-TH')} บาท จากงบ ${preferences.dailyBudget.toLocaleString('th-TH')} บาท ยังใช้ได้อีก ${remaining.toLocaleString('th-TH')} บาท`;
+  if (!finance) {
+    const weekIncome = context.weekTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
+    const weekExpense = context.weekTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
+    if (weekIncome <= 0 && weekExpense <= 0) return 'ยังไม่มีงบและรายการการเงินของสัปดาห์นี้ให้วิเคราะห์ครับ ตั้งงบเดือนหนึ่งครั้งก่อน แล้วระบบจะกระจายเป็นกรอบรายสัปดาห์ให้';
+    return `สัปดาห์นี้บันทึกรายรับ ${weekIncome.toLocaleString('th-TH')} บาท และรายจ่าย ${weekExpense.toLocaleString('th-TH')} บาท แต่ยังไม่ได้ตั้งวงเงิน จึงยังคำนวณสัดส่วน 80% ไม่ได้ครับ`;
   }
-  if (context.balance < 0) return `งบเดือนนี้ติดลบ ${Math.abs(context.balance).toLocaleString('th-TH')} บาทแล้ว ลองชะลอรายจ่ายที่ไม่จำเป็นก่อน และเช็กยอดคงเหลือจริงในบัญชีด้วยนะ`;
-  const headline = `ตอนนี้เหลือ ${context.balance.toLocaleString('th-TH')} บาท สำหรับอีก ${daysLeft} วัน เฉลี่ยใช้ได้ประมาณ ${Math.floor(dailyAllowance).toLocaleString('th-TH')} บาทต่อวัน`;
-  if (context.monthIncome > 0 && context.monthExpense / context.monthIncome >= 0.85) return `${headline}\nใช้รายรับไปแล้วเกิน 85% ของเดือนนี้ ช่วงที่เหลือคุมรายจ่ายเพิ่มอีกนิดจะปลอดภัยกว่า`;
-  if (highestCategory) return `${headline}\nหมวดที่ใช้มากสุดคือ ${highestCategory[0]} ${highestCategory[1].toLocaleString('th-TH')} บาท`; 
-  return headline;
+  const headline = `งบสัปดาห์นี้ ${finance.weeklyBudget.toLocaleString('th-TH')} บาท ใช้ไป ${finance.weekSpent.toLocaleString('th-TH')} บาท (${finance.weeklyUsagePercent}%) เหลือ ${Math.max(0, finance.weeklyRemainingBudget).toLocaleString('th-TH')} บาท`;
+  if (finance.weeklyStatus === 'exceeded') return `${headline}\nใช้เกินกรอบสัปดาห์แล้ว ${Math.abs(finance.weeklyRemainingBudget).toLocaleString('th-TH')} บาท ลองชะลอรายจ่ายที่ไม่จำเป็นและรักษาค่าอาหารหรือค่าเดินทางที่จำเป็นไว้ก่อน`;
+  if (finance.weeklyStatus === 'warning') return `${headline}\nแตะระดับเตือน 80% แล้วครับ ช่วงที่เหลือของสัปดาห์ควรใช้เฉพาะรายการจำเป็นก่อน`;
+  if (highestCategory) return `${headline}\nหมวดที่ใช้มากที่สุดคือ ${highestCategory[0]} ${highestCategory[1].toLocaleString('th-TH')} บาท`;
+  return `${headline}\nสถานะยังอยู่ในกรอบรายสัปดาห์ครับ`;
 }
 
 function isFinanceLookupIntent(message: string) {
@@ -1707,7 +1716,7 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
     start.setMinutes(roundedMinutes, 0, 0);
     const end = new Date(start.getTime() + duration * 60_000);
     if (end.getTime() > gap.end.getTime()) return [];
-    return [{duration, end, start}];
+    return [{duration, end, gapEnd: gap.end, gapMinutes, start}];
   }).slice(0, 3);
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -1728,6 +1737,14 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
   }
 
   const best = slots[0];
+  const wantsSpecificWork = /(อ่าน|ทบทวน|ทำโจทย์|ทำการบ้าน|งาน|โปรเจกต์|โปรเจค|โฟกัส)/i.test(message);
+  if (!wantsSpecificWork && /(ว่าง|free time)/i.test(message)) {
+    return [
+      `${dayWord}มีช่วงว่าง ${formatTime(best.start)}-${formatTime(best.gapEnd)} รวมประมาณ ${best.gapMinutes} นาทีครับ`,
+      activityForFreeSlot(best.gapMinutes),
+      'ฉันเลือกจากช่องว่างจริงในตาราง และจะไม่สร้างงานให้จนกว่าคุณจะขอและกดยืนยัน',
+    ].join('\n');
+  }
   const alternatives = slots.slice(1).map((slot) =>
     `${formatTime(slot.start)}-${formatTime(slot.end)} (${slot.duration} นาที)`,
   );
@@ -1928,25 +1945,40 @@ function buildRecentOcrAnswer(context: AssistantContext) {
 function buildDynamicBurnoutAnswer(context: AssistantContext) {
   const insight = context.dynamic.burnout;
   const riskLabel = insight.riskLevel === 'high' ? 'สูง' : insight.riskLevel === 'medium' ? 'ปานกลาง' : 'ต่ำ';
-  const reasons = insight.reasons.length
-    ? ` เหตุผลหลักคือ ${insight.reasons.slice(0, 3).join(', ')}`
-    : ' วันนี้ยังมีช่องว่างพอจัดการงานแบบไม่กดดันมาก';
-  return `ความเสี่ยงหมดไฟวันนี้อยู่ระดับ${riskLabel} คะแนน ${insight.score}/100.${reasons} มีงานค้าง ${insight.pendingTaskCount} รายการ งานด่วน ${insight.urgentTaskCount} รายการ และช่วงว่างยาวสุดประมาณ ${insight.longestFreeSlotMinutes} นาทีครับ`;
+  const sleepLine = insight.sleepDataDays > 0
+    ? `ข้อมูลการนอน: มี ${insight.sleepDataDays} คืน${insight.averageSleepHours === null ? '' : ` เฉลี่ย ${insight.averageSleepHours} ชั่วโมง`}${insight.lateSleepStreak >= 2 ? ` และนอนหลังเที่ยงคืนต่อเนื่อง ${insight.lateSleepStreak} คืน` : ''}`
+    : 'ข้อมูลการนอน: ยังไม่มีการบันทึก จึงไม่นำเรื่องการนอนมาคาดเดาหรือคิดคะแนน';
+  const reasonLines = insight.reasons.length
+    ? insight.reasons.slice(0, 4).map((reason, index) => `${index + 1}. ${reason}`)
+    : ['1. จากข้อมูลที่มี ยังไม่พบสัญญาณภาระสูงที่เข้าเกณฑ์เตือน'];
+  const evidenceLabel = insight.evidenceCoverage === 'strong' ? 'ค่อนข้างครบ' : insight.evidenceCoverage === 'partial' ? 'บางส่วน' : 'ยังน้อย';
+  return [
+    `จากข้อมูลจริง 7 วัน ความเสี่ยงสภาวะหมดไฟอยู่ระดับ${riskLabel} (${insight.score}/100) นี่เป็นเพียงสัญญาณเตือน ไม่ใช่การวินิจฉัยครับ`,
+    `หลักฐานที่ใช้ (${evidenceLabel})`,
+    ...reasonLines,
+    `${reasonLines.length + 1}. งานค้าง ${insight.pendingTaskCount} รายการ งานด่วน ${insight.urgentTaskCount} รายการ`,
+    `${reasonLines.length + 2}. ${sleepLine}`,
+    ...(insight.studyWorkToSleepRatio === null ? [] : [`${reasonLines.length + 3}. สัดส่วนเวลาเรียน/งานเฉลี่ยต่อวันต่อเวลานอนที่บันทึกประมาณ ${insight.studyWorkToSleepRatio}:1`]),
+    `คำแนะนำตอนนี้: ${activityForFreeSlot(insight.longestFreeSlotMinutes)}`,
+    `อ้างอิงแนวทางทั่วไปจาก ${TRUSTED_COACHING_SOURCES.wellbeing.label} และไม่ใช้แทนการประเมินโดยผู้เชี่ยวชาญ`,
+    WELLBEING_AI_DISCLAIMER,
+  ].join('\n');
 }
 
 function buildDynamicBudgetAnswer(context: AssistantContext) {
   const finance = context.dynamic.finance;
-  if (!finance) return 'ยังไม่มีงบรายเดือนที่ใช้คำนวณ AI Dynamic ครับ ไปที่หน้าการเงิน > กำหนดงบรายเดือน แล้วบันทึกงบก่อน ระบบจะคำนวณงบต่อวันและแรงกดดันทางการเงินให้ทันที';
-  const pressureLabel = finance.financePressureLevel === 'critical'
-    ? 'เกินงบแล้ว'
-    : finance.financePressureLevel === 'high'
-      ? 'ตึงมาก'
-      : finance.financePressureLevel === 'medium'
-        ? 'เริ่มตึง'
-        : finance.financePressureLevel === 'low'
-          ? 'ยังพอไหวแต่ควรระวัง'
-          : 'ปกติ';
-  return `AI Dynamic คำนวณจากงบเดือนนี้ ${finance.monthlyBudget.toLocaleString('th-TH')} บาท หักรายจ่ายจริง ${finance.spentSoFar.toLocaleString('th-TH')} บาท เหลืองบ ${finance.remainingBudget.toLocaleString('th-TH')} บาท เฉลี่ยควรใช้ได้ประมาณวันละ ${finance.remainingDailyBudget.toLocaleString('th-TH')} บาท สถานะคือ ${pressureLabel} ครับ`;
+  if (!finance) return 'ยังไม่มีวงเงินที่ใช้คำนวณครับ ไปที่หน้าการเงินแล้วตั้งงบหนึ่งครั้ง ระบบจะกระจายเป็นกรอบรายสัปดาห์และเตือนเมื่อใช้ถึง 80% ให้';
+  const status = finance.weeklyStatus === 'exceeded'
+    ? 'เกินกรอบสัปดาห์แล้ว'
+    : finance.weeklyStatus === 'warning' ? 'แตะระดับเตือน 80% แล้ว' : 'ยังอยู่ในกรอบ';
+  return [
+    `งบสัปดาห์นี้ ${finance.weeklyBudget.toLocaleString('th-TH')} บาท ใช้จริง ${finance.weekSpent.toLocaleString('th-TH')} บาท (${finance.weeklyUsagePercent}%)`,
+    `เหลือ ${Math.max(0, finance.weeklyRemainingBudget).toLocaleString('th-TH')} บาท สถานะ: ${status}`,
+    finance.weeklyStatus === 'safe'
+      ? 'ยังไม่ต้องบังคับตัวเองเป็นงบรายวันครับ แค่รักษายอดรวมทั้งสัปดาห์ให้อยู่ในกรอบ'
+      : 'ช่วงที่เหลือให้กันค่าอาหาร ค่าเดินทาง และรายการจำเป็นก่อนรายจ่ายอื่นครับ',
+    `แนวทางการวางแผนมาจาก ${TRUSTED_COACHING_SOURCES.finance.label}`,
+  ].join('\n');
 }
 
 function contextAnswer(message: string, context: AssistantContext, preferences: AssistantPreferences) {
@@ -1955,10 +1987,10 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
   }
   const selfContainedAnswer = selfContainedAssistantFallback(message);
   if (selfContainedAnswer) return selfContainedAnswer;
-  if (/(หมดไฟ|burn\s*out|burnout|เครียด|เหนื่อย|ล้า)/i.test(message)) {
+  if (/(หมดไฟ|burn\s*out|burnout|เครียด|เหนื่อย|ล้า|ไม่ไหว|ท้อ|ข้อมูลการนอน|นอน.*กี่คืน|สุขภาพใจ)/i.test(message)) {
     return buildDynamicBurnoutAnswer(context);
   }
-  if (/(ai\s*dynamic|ไดนามิก|งบรายเดือน|งบต่อวัน|งบวันนี้|เงินพอไหม|ใช้เงินได้เท่าไร)/i.test(message)) {
+  if (/(ai\s*dynamic|ไดนามิก|งบรายเดือน|งบรายสัปดาห์|งบสัปดาห์|ใช้ไปกี่เปอร์เซ็นต์|เตือน.*80|เงินพอไหม|ใช้เงินได้เท่าไร)/i.test(message)) {
     return buildDynamicBudgetAnswer(context);
   }
   if (
@@ -2008,17 +2040,14 @@ function contextAnswer(message: string, context: AssistantContext, preferences: 
       const spentToday = context.monthTransactions
         .filter((item) => item.type === 'expense' && item.occurredAt.toMillis() >= today.start.getTime() && item.occurredAt.toMillis() < today.end.getTime())
         .reduce((sum, item) => sum + item.amount, 0);
-      const dailyBudget = preferences.dailyBudget;
-      if (dailyBudget) {
-        const remaining = Math.max(0, dailyBudget - spentToday);
-        return `วันนี้เหลืองบอีก ${remaining.toLocaleString('th-TH')} บาทครับ จากงบ ${dailyBudget.toLocaleString('th-TH')} บาท และใช้ไปแล้ว ${spentToday.toLocaleString('th-TH')} บาท`;
-      }
-      return `วันนี้ใช้ไปแล้ว ${spentToday.toLocaleString('th-TH')} บาทครับ ตอนนี้ยังไม่ได้ตั้งงบรายวัน ถ้าต้องการฉันช่วยตั้งให้ได้นะ`;
+      const weekly = context.dynamic.finance;
+      if (weekly) return `วันนี้ใช้ไป ${spentToday.toLocaleString('th-TH')} บาทครับ ส่วนกรอบสัปดาห์ใช้ไปแล้ว ${weekly.weekSpent.toLocaleString('th-TH')} จาก ${weekly.weeklyBudget.toLocaleString('th-TH')} บาท (${weekly.weeklyUsagePercent}%) เหลือ ${Math.max(0, weekly.weeklyRemainingBudget).toLocaleString('th-TH')} บาท`;
+      return `วันนี้ใช้ไปแล้ว ${spentToday.toLocaleString('th-TH')} บาทครับ ตั้งวงเงินในหน้าการเงินก่อน แล้วฉันจะช่วยติดตามเป็นงบรายสัปดาห์ให้`;
     }
     return `เดือนนี้มีรายรับ ${context.monthIncome.toLocaleString('th-TH')} บาท รายจ่าย ${context.monthExpense.toLocaleString('th-TH')} บาท ตอนนี้คงเหลือประมาณ ${context.balance.toLocaleString('th-TH')} บาทนะ`;
   }
   if (/(เครียด|เหนื่อย|หมดไฟ|ไม่ไหว|ท้อ)/i.test(message)) {
-    return 'ฟังดูหนักมากเลยนะ ขอบคุณที่บอกกันก่อน อย่างแรกขอให้หายใจช้าลงนิดหนึ่ง แล้วเลือกแค่งานเล็กที่สุด 1 อย่างพอ เดี๋ยวฉันช่วยดูตารางวันนี้ให้ได้ว่าอะไรควรเริ่มก่อน';
+    return buildDynamicBurnoutAnswer(context);
   }
   return '';
 }
