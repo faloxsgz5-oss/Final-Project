@@ -65,7 +65,7 @@ function categoryIcon(category: string) {
 
 export default function FinanceScreen({onNavigate, page, uid}: Props) {
   const [data, setData] = useState<Item | null>(null);
-  const [monthlyBudget, setMonthlyBudget] = useState<number | null>(null);
+  const [monthlyBudget, setMonthlyBudget] = useState<{amount: number; rolledOver: boolean} | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [referenceDate, setReferenceDate] = useState(() => new Date());
   const [period, setPeriod] = useState<Period>(() => periodForPage(page));
@@ -77,7 +77,7 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
       loadMonthlyBudget(uid, currentMonthKey()),
     ]);
     setData(pageData);
-    setMonthlyBudget(savedBudget?.amount ?? null);
+    setMonthlyBudget(savedBudget ? {amount: savedBudget.amount, rolledOver: Boolean(savedBudget.rolledOverFrom)} : null);
   }, [periodPage, referenceDate, uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
@@ -125,7 +125,7 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
             <View style={[styles.menuIcon, {backgroundColor: '#d89182'}]}><MaterialIcon color="#fff" name="savings" size={20} /></View>
             <View style={{flex: 1}}>
               <Text style={styles.menuTitle}>กำหนดงบและกรอบรายสัปดาห์</Text>
-              <Text style={styles.menuSubtitle}>{monthlyBudget ? `วงเงินเดือน ${money(monthlyBudget)} · AI แบ่งให้เป็นรายสัปดาห์` : 'ตั้งวงเงิน แล้ว AI คุมยอดรวมเป็นรายสัปดาห์'}</Text>
+              <Text style={styles.menuSubtitle}>{monthlyBudget ? `วงเงินเดือน ${money(monthlyBudget.amount)}${monthlyBudget.rolledOver ? ' (ต่อจากเดือนก่อน รอยืนยัน)' : ''} · AI แบ่งให้เป็นรายสัปดาห์` : 'ตั้งวงเงิน แล้ว AI คุมยอดรวมเป็นรายสัปดาห์'}</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Pressable>

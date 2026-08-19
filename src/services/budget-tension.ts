@@ -1,6 +1,6 @@
 import { loadMonthlyBudget, currentMonthKey } from '@/services/monthly-budget';
 import { transactions } from '@/services/firestore';
-import { thailandRange } from '@/lib/thailand-time';
+import { thailandDaysInMonth, thailandRange } from '@/lib/thailand-time';
 
 export type TensionLevel = 'safe' | 'caution' | 'tight' | 'very-tight' | 'over-budget';
 
@@ -25,7 +25,8 @@ export async function evaluateBudgetTension(uid: string): Promise<BudgetTension 
   const monthlyBudget = monthlyData.amount;
 
   const now = new Date();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  // Bangkok month length, to match the Bangkok day window used for `todaySpent`.
+  const daysInMonth = thailandDaysInMonth(now);
 
   const dailyLimit = Math.round(monthlyBudget / daysInMonth / 10) * 10;
 

@@ -1,5 +1,7 @@
 import {Timestamp} from 'firebase/firestore';
 
+import {thailandCalendarParts, thailandDateKey, thailandDaysInMonth, thailandMonthKey, thailandRange} from '@/lib/thailand-time';
+
 import type {Activity, Schedule, Transaction, WithId} from '@/types/smartlife';
 
 type TimeValue = Date | string | number | Timestamp | {seconds?: number; toDate?: () => Date; toMillis?: () => number} | null | undefined;
@@ -66,10 +68,7 @@ function toDate(value: TimeValue) {
 
 function startOfDay(date: Date) { const result = new Date(date); result.setHours(0, 0, 0, 0); return result; }
 function endOfDay(date: Date) { const result = startOfDay(date); result.setHours(23, 59, 59, 999); return result; }
-function startOfWeek(date: Date) { const result = startOfDay(date); const day = result.getDay(); result.setDate(result.getDate() - (day === 0 ? 6 : day - 1)); return result; }
-function monthKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`; }
 function localDateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
-function daysInMonth(date: Date) { return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate(); }
 function roundMoney(value: number) { return !Number.isFinite(value) || value <= 0 ? 0 : Math.round(value); }
 function clamp(value: number, min: number, max: number) { return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min; }
 
@@ -79,8 +78,11 @@ export function calculateFinanceBudgetInsight({monthlyBudget, now = new Date(), 
   transactions: Pick<Transaction, 'amount' | 'occurredAt' | 'type'>[];
 }): FinanceBudgetInsight | null {
   if (!Number.isFinite(monthlyBudget) || monthlyBudget <= 0) return null;
-  const totalDays = daysInMonth(now);
-  const currentDay = now.getDate();
+  // Every boundary below is anchored to Asia/Bangkok, because the spending it
+  // divides is queried with `thailandRange`. Reading the device clock here made
+  // the pacing math describe a different month than the transactions it used.
+  const totalDays = thailandDaysInMonth(now);
+  const currentDay = thailandCalendarParts(now).day;
   const daysRemainingIncludingToday = Math.max(1, totalDays - currentDay + 1);
   const expenses = transactions.filter((item) => item.type === 'expense');
   const spentSoFar = expenses.reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
@@ -91,7 +93,7 @@ export function calculateFinanceBudgetInsight({monthlyBudget, now = new Date(), 
   const overspendAmount = Math.max(0, spentSoFar - expectedSpentByToday);
   const dailyExpenses = expenses.reduce((map, item) => {
     const occurredAt = toDate(item.occurredAt);
-    if (occurredAt) map.set(localDateKey(occurredAt), (map.get(localDateKey(occurredAt)) ?? 0) + Number(item.amount ?? 0));
+    if (occurredAt) map.set(thailandDateKey(occurredAt), (map.get(thailandDateKey(occurredAt)) ?? 0) + Number(item.amount ?? 0));
     return map;
   }, new Map<string, number>());
   const averageActualDailyExpense = dailyExpenses.size
@@ -99,13 +101,11 @@ export function calculateFinanceBudgetInsight({monthlyBudget, now = new Date(), 
   const runwayDays = averageActualDailyExpense > 0 && remainingBudget > 0 ? Math.floor(remainingBudget / averageActualDailyExpense) : null;
 
   // Keep the saved monthly ceiling, but coach against a Monday-Sunday share.
-  const rawWeekStart = startOfWeek(now);
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  const {from: monthStart, to: monthEnd} = thailandRange('month', now);
+  const {from: rawWeekStart, to: rawWeekEnd} = thailandRange('week', now);
   const weekStart = rawWeekStart < monthStart ? monthStart : rawWeekStart;
-  const rawWeekEnd = new Date(rawWeekStart); rawWeekEnd.setDate(rawWeekEnd.getDate() + 6); rawWeekEnd.setHours(23, 59, 59, 999);
   const weekEnd = rawWeekEnd > monthEnd ? monthEnd : rawWeekEnd;
-  const daysInBudgetWeek = Math.max(1, Math.round((startOfDay(weekEnd).getTime() - startOfDay(weekStart).getTime()) / 86_400_000) + 1);
+  const daysInBudgetWeek = Math.max(1, Math.round((weekEnd.getTime() + 1 - weekStart.getTime()) / 86_400_000));
   const weeklyBudget = roundMoney(monthlyBudget / totalDays * daysInBudgetWeek);
   const weekSpent = expenses.reduce((sum, item) => {
     const occurredAt = toDate(item.occurredAt);
@@ -123,9 +123,9 @@ export function calculateFinanceBudgetInsight({monthlyBudget, now = new Date(), 
   return {
     averageDailyBudget, daysInMonth: totalDays, daysRemainingIncludingToday,
     expectedSpentByToday: Math.round(expectedSpentByToday), financePressureLevel,
-    monthKey: monthKey(now), monthlyBudget, overspendAmount: Math.round(overspendAmount),
+    monthKey: thailandMonthKey(now), monthlyBudget, overspendAmount: Math.round(overspendAmount),
     remainingBudget: Math.round(remainingBudget), remainingDailyBudget, runwayDays, spentSoFar,
-    weekEnd: localDateKey(weekEnd), weekSpent: Math.round(weekSpent), weekStart: localDateKey(weekStart),
+    weekEnd: thailandDateKey(weekEnd), weekSpent: Math.round(weekSpent), weekStart: thailandDateKey(weekStart),
     weeklyBudget, weeklyRemainingBudget, weeklyStatus, weeklyUsagePercent,
   };
 }

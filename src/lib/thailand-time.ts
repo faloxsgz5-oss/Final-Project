@@ -53,3 +53,39 @@ export function thailandRange(period: 'day' | 'month' | 'week', value = new Date
   const from = thailandMidnightUtc(parts.year, parts.month, startDay);
   return {from, to: new Date(from.getTime() + durationDays * 24 * 60 * 60 * 1000 - 1)};
 }
+
+/** Calendar fields of `value` as they read on a clock in Bangkok. */
+export function thailandCalendarParts(value: Date | number | string = new Date()) {
+  const shifted = new Date(new Date(value).getTime() + THAILAND_OFFSET_MS);
+  return {
+    day: shifted.getUTCDate(),
+    month: shifted.getUTCMonth(),
+    year: shifted.getUTCFullYear(),
+  };
+}
+
+/** `YYYY-MM` for the Bangkok month containing `value`. */
+export function thailandMonthKey(value: Date | number | string = new Date()) {
+  const {month, year} = thailandCalendarParts(value);
+  return `${year}-${String(month + 1).padStart(2, '0')}`;
+}
+
+/** `YYYY-MM-DD` for the Bangkok day containing `value`. */
+export function thailandDateKey(value: Date | number | string = new Date()) {
+  const {day, month, year} = thailandCalendarParts(value);
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** Steps a `YYYY-MM` key by whole months. Accepts and returns Bangkok month keys. */
+export function shiftMonthKey(monthKey: string, months: number) {
+  const [year, month] = monthKey.split('-').map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return monthKey;
+  const shifted = new Date(Date.UTC(year, month - 1 + months, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/** Number of days in the Bangkok month containing `value`. */
+export function thailandDaysInMonth(value: Date | number | string = new Date()) {
+  const {month, year} = thailandCalendarParts(value);
+  return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+}
