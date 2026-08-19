@@ -861,6 +861,10 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const scrollToBottomVisibleRef = useRef(false);
   const speechBaseInputRef = useRef('');
   const browserSpeechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  // Set when this browser exposes SpeechRecognition but its speech service is
+  // unusable (offline recogniser, blocked Google endpoint). The next mic press
+  // then records audio for Gemini instead of failing the same way again.
+  const browserSpeechUnusableRef = useRef(false);
   const browserMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const browserMediaStreamRef = useRef<MediaStream | null>(null);
   const browserVoiceChunksRef = useRef<Blob[]>([]);
@@ -1481,11 +1485,59 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     }
   };
 
+  // The browser recogniser writes straight into the input box with no server
+  // round trip, so it is preferred on web. Returns false when this browser has
+  // no SpeechRecognition support and the MediaRecorder fallback should run.
+  const startBrowserSpeechInput = () => {
+    if (browserSpeechUnusableRef.current) return false;
+    const recognition = createBrowserSpeechRecognition();
+    if (!recognition) return false;
+    speechBaseInputRef.current = input.trimEnd();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'th-TH';
+    recognition.onresult = (event) => {
+      const spokenParts: string[] = [];
+      for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
+        const spoken = event.results[index]?.[0]?.transcript?.trim();
+        if (spoken) spokenParts.push(spoken);
+      }
+      if (!spokenParts.length) return;
+      setInput([speechBaseInputRef.current, spokenParts.join(' ')].filter(Boolean).join(' '));
+    };
+    recognition.onerror = (event) => {
+      browserSpeechRecognitionRef.current = null;
+      setListening(false);
+      if (event.error === 'aborted') return;
+      if (event.error === 'not-allowed') {
+        appendAssistant('ยังไม่ได้รับสิทธิ์ไมโครโฟนครับ อนุญาตไมโครโฟนให้เว็บไซต์ SmartLife แล้วกดไมค์ใหม่ได้เลย');
+        return;
+      }
+      browserSpeechUnusableRef.current = true;
+      appendAssistant('ฟังเสียงไม่สำเร็จครับ กดไมค์อีกครั้งได้เลย ระบบจะสลับไปใช้การอัดเสียงแล้วถอดความให้อัตโนมัติ');
+    };
+    recognition.onend = () => {
+      browserSpeechRecognitionRef.current = null;
+      setListening(false);
+    };
+    browserSpeechRecognitionRef.current = recognition;
+    setListening(true);
+    try {
+      recognition.start();
+    } catch {
+      browserSpeechRecognitionRef.current = null;
+      setListening(false);
+      return false;
+    }
+    return true;
+  };
+
   const startVoiceInput = async () => {
     if (busy) return;
     setQuickAddOpen(false);
     setQuickAddCategory(null);
     if (Platform.OS === 'web') {
+      if (startBrowserSpeechInput()) return;
       if (typeof MediaRecorder !== 'undefined' && globalThis.navigator?.mediaDevices?.getUserMedia) {
         try {
           const stream = await globalThis.navigator.mediaDevices.getUserMedia({audio: true});
@@ -1553,45 +1605,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           return;
         }
       }
-      const recognition = createBrowserSpeechRecognition();
-      if (!recognition) {
-        appendAssistant('เบราว์เซอร์นี้ยังไม่รองรับการพิมพ์ด้วยเสียง กรุณาเปิด SmartLife ด้วย Chrome หรือ Edge รุ่นล่าสุด หรือพิมพ์ข้อความในช่องแชทได้เลย');
-        return;
-      }
-      speechBaseInputRef.current = input.trimEnd();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = 'th-TH';
-      recognition.onresult = (event) => {
-        const spokenParts: string[] = [];
-        for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
-          const spoken = event.results[index]?.[0]?.transcript?.trim();
-          if (spoken) spokenParts.push(spoken);
-        }
-        if (!spokenParts.length) return;
-        setInput([speechBaseInputRef.current, spokenParts.join(' ')].filter(Boolean).join(' '));
-      };
-      recognition.onerror = (event) => {
-        browserSpeechRecognitionRef.current = null;
-        setListening(false);
-        if (event.error === 'aborted') return;
-        appendAssistant(event.error === 'not-allowed'
-          ? 'ยังไม่ได้รับสิทธิ์ไมโครโฟนครับ อนุญาตไมโครโฟนให้เว็บไซต์ SmartLife แล้วกดไมค์ใหม่ได้เลย'
-          : 'ฟังเสียงไม่สำเร็จครับ ลองกดไมค์แล้วพูดใหม่ หรือพิมพ์ข้อความต่อเองได้เลย');
-      };
-      recognition.onend = () => {
-        browserSpeechRecognitionRef.current = null;
-        setListening(false);
-      };
-      browserSpeechRecognitionRef.current = recognition;
-      setListening(true);
-      try {
-        recognition.start();
-      } catch {
-        browserSpeechRecognitionRef.current = null;
-        setListening(false);
-        appendAssistant('เริ่มฟังเสียงบนเว็บไม่สำเร็จครับ ลองกดไมค์ใหม่อีกครั้ง หรือพิมพ์ข้อความต่อเองได้เลย');
-      }
+      appendAssistant('เบราว์เซอร์นี้ยังไม่รองรับการพิมพ์ด้วยเสียง กรุณาเปิด SmartLife ด้วย Chrome หรือ Edge รุ่นล่าสุด หรือพิมพ์ข้อความในช่องแชทได้เลย');
       return;
     }
     try {
