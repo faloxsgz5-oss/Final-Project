@@ -62,14 +62,14 @@
     "start:expo-go": "expo start --go",
     "start:tunnel": "expo start --dev-client --tunnel",
     "tunnel": "expo start --dev-client --tunnel",
-    "update:preview": "npx -y eas-cli@latest update --channel preview --environment preview --message \"SmartLife preview update\"",
-    "update:production": "npx -y eas-cli@latest update --channel production --environment production --message \"SmartLife production update\"",
+    "update:preview": "npx -y eas-cli@latest update --clear-cache --channel preview --environment preview --message \"SmartLife preview update\"",
+    "update:production": "npx -y eas-cli@latest update --clear-cache --channel production --environment production --message \"SmartLife production update\"",
     "setup:team": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup-team.ps1",
     "deploy:adaptive-backend": "npm --prefix functions run build && npx -y firebase-tools@latest deploy --only firestore:rules,firestore:indexes,functions:acceptSchedulingSuggestion,functions:activateAdaptiveScheduling,functions:calculateSchedulingPatterns,functions:chooseAlternativeSchedulingTime,functions:createAdaptiveActivity,functions:deleteSchedulingBehaviorHistory,functions:deleteSchedulingPattern,functions:generateAdaptiveSuggestion,functions:getAdaptiveSchedulingDashboard,functions:lockAdaptiveScheduleItem,functions:processNaturalLanguageScheduleCommand,functions:rebalanceUserDay,functions:rebalanceUserWeek,functions:recordSchedulingBehavior,functions:registerAdaptivePushToken,functions:rejectSchedulingSuggestion,functions:scheduledAdaptivePatternRecalculation,functions:scheduledAutomaticAdaptiveScheduling,functions:undoScheduleChange,functions:updateAdaptiveSchedulingPreferences --project smartlife-budget",
     "deploy:firestore-rules": "npx -y firebase-tools@latest deploy --only firestore:rules --project smartlife-budget",
     "doctor": "node ./scripts/check-runtime-config.cjs",
     "doctor:release": "node ./scripts/check-release-readiness.cjs",
-    "test": "node --experimental-strip-types ./src/dashboard/__tests__/run-dashboard-tests.mjs",
+    "test": "npm run test:dashboard-prioritization && npm run test:admin-dashboard",
     "test:dashboard-prioritization": "node --experimental-strip-types ./src/dashboard/__tests__/run-dashboard-tests.mjs",
     "test:line-import": "node --experimental-strip-types ./scripts/test-line-bank-parser.mjs",
     "migrate:html": "node ./scripts/migrate-html-to-tsx.mjs",
@@ -93,7 +93,8 @@
     "test:wellbeing": "node --experimental-strip-types ./scripts/test-wellbeing-insights.mjs",
     "test:adaptive": "npm --prefix functions run test:adaptive",
     "test:firestore-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-adaptive-scheduling.rules.test.cjs\"",
-    "test:adaptive-transactions": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:adaptive-transactions:local\""
+    "test:adaptive-transactions": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:adaptive-transactions:local\"",
+    "test:admin-dashboard": "node --experimental-strip-types ./src/admin/__tests__/run-admin-tests.mjs"
   },
   "private": true
 }
