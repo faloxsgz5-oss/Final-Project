@@ -9,6 +9,7 @@ import {
   isValidBudgetAmount,
   loadMonthlyBudget,
   MONTHLY_BUDGET_MAX,
+  parseBudgetAmount,
   saveMonthlyBudget,
 } from '../src/services/monthly-budget.ts';
 
@@ -110,5 +111,19 @@ const clipped = calculateFinanceBudgetInsight({
 assert.equal(clipped.weekStart, '2026-08-01', 'the week is clipped to the first of the month');
 assert.equal(clipped.weekEnd, '2026-08-02', 'the containing Mon-Sun week ends on Sunday 2 Aug');
 assert.equal(clipped.weeklyBudget, 200, '2 remaining days at 100/day');
+
+// --- Typed and pasted text becomes a whole-baht limit. A decimal separator
+// truncates instead of vanishing: dropping the dot turned a pasted "12.50"
+// into 1250, a hundredfold overstatement of the budget.
+assert.equal(parseBudgetAmount('12.50'), 12, 'a decimal amount truncates, it does not become 1250');
+assert.equal(parseBudgetAmount('0.99'), 0, 'a sub-baht amount is not a usable limit');
+assert.equal(parseBudgetAmount('007'), 7, 'leading zeros are normalised');
+assert.equal(parseBudgetAmount('5,000'), 5000, 'thousands separators are not decimal points');
+assert.equal(parseBudgetAmount('1,234.56'), 1234, 'separators and decimals combined');
+assert.equal(parseBudgetAmount('฿4500'), 4500, 'currency symbols are ignored');
+assert.equal(parseBudgetAmount('-500'), 500, 'a minus sign cannot make a negative limit');
+assert.equal(parseBudgetAmount(''), 0, 'empty text is zero');
+assert.equal(parseBudgetAmount('abc'), 0, 'text with no digits is zero');
+assert.equal(parseBudgetAmount('99999999999'), MONTHLY_BUDGET_MAX, 'an oversized amount clamps to the cap');
 
 console.log('SmartLife monthly budget tests passed');

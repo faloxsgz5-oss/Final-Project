@@ -31,6 +31,18 @@ export function currentMonthKey(date = new Date()) {
   return thailandMonthKey(date);
 }
 
+/**
+ * Turns typed or pasted text into a whole-baht limit. Thousands separators are
+ * dropped, but a decimal separator truncates rather than disappearing: simply
+ * deleting the dot turned a pasted "12.50" into 1250, a hundredfold
+ * overstatement. The number pad cannot produce a dot, so this mainly guards
+ * paste and hardware keyboards.
+ */
+export function parseBudgetAmount(value: string) {
+  const [whole] = String(value).replace(/[^\d.]/g, '').split('.');
+  return Math.min(MONTHLY_BUDGET_MAX, Number(whole) || 0);
+}
+
 /** Rejects amounts that cannot represent a usable spending limit. */
 export function isValidBudgetAmount(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MONTHLY_BUDGET_MAX;

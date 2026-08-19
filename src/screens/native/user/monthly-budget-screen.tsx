@@ -6,7 +6,7 @@ import {LinearGradient} from 'expo-linear-gradient';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
 import {loadLegacyPageData} from '@/services/legacy-data';
-import {currentMonthKey, loadMonthlyBudget, MONTHLY_BUDGET_MAX, saveMonthlyBudget, type MonthlyBudget} from '@/services/monthly-budget';
+import {currentMonthKey, loadMonthlyBudget, parseBudgetAmount, saveMonthlyBudget, type MonthlyBudget} from '@/services/monthly-budget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 
 type Item = Record<string, unknown>;
@@ -18,7 +18,7 @@ const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold
 
 function items(value: unknown) { return Array.isArray(value) ? value.filter((item): item is Item => Boolean(item) && typeof item === 'object') : []; }
 function money(value: number) { return `฿${Math.max(0, Math.round(value)).toLocaleString('th-TH')}`; }
-function parseMoney(value: string) { return Math.min(MONTHLY_BUDGET_MAX, Number(value.replace(/[^\d]/g, '')) || 0); }
+const parseMoney = parseBudgetAmount;
 function suggestedBudget(income: number) { return Math.max(0, Math.floor(income * .7 / 100) * 100); }
 function monthKeyLabel(monthKey: string) {
   const [year, month] = monthKey.split('-').map(Number);
