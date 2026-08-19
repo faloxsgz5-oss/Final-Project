@@ -69,7 +69,7 @@
     "deploy:firestore-rules": "npx -y firebase-tools@latest deploy --only firestore:rules --project smartlife-budget",
     "doctor": "node ./scripts/check-runtime-config.cjs",
     "doctor:release": "node ./scripts/check-release-readiness.cjs",
-    "test": "npm run test:dashboard-prioritization && npm run test:admin-dashboard && npm run test:monthly-budget",
+    "test": "npm run test:dashboard-prioritization && npm run test:admin-dashboard && npm run test:monthly-budget && npm run test:monthly-budget-sync",
     "test:dashboard-prioritization": "node --experimental-strip-types ./src/dashboard/__tests__/run-dashboard-tests.mjs",
     "test:line-import": "node --experimental-strip-types ./scripts/test-line-bank-parser.mjs",
     "migrate:html": "node ./scripts/migrate-html-to-tsx.mjs",
@@ -95,7 +95,9 @@
     "test:firestore-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-adaptive-scheduling.rules.test.cjs\"",
     "test:adaptive-transactions": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:adaptive-transactions:local\"",
     "test:admin-dashboard": "node --experimental-strip-types ./src/admin/__tests__/run-admin-tests.mjs",
-    "test:monthly-budget": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-monthly-budget.mjs"
+    "test:monthly-budget": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-monthly-budget.mjs",
+    "test:monthly-budget-sync": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-monthly-budget-sync.mjs",
+    "test:firestore-monthly-budget-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-monthly-budget.rules.test.cjs\""
   },
   "private": true
 }

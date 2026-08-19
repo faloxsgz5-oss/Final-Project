@@ -6,6 +6,7 @@ service cloud.firestore {
     // users/{uid}
     // users/{uid}/{schedules|activities|notes|transactions|pendingReview|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
     // users/{uid}/{schedulingBehaviorEvents|schedulingPatterns|schedulingSuggestions|scheduleChangeHistory|productivityInsights|pushTokens}/{documentId}
+    // users/{uid}/monthlyBudgets/{monthKey}
     // users/{uid}/settings/adaptiveScheduling
     // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
@@ -69,6 +70,19 @@ service cloud.firestore {
         && (!('lineConsentUpdatedAt' in data) || data.lineConsentUpdatedAt is timestamp)
         && (!('lineConsentVersion' in data) || (data.lineConsentVersion is int && data.lineConsentVersion == 1))
         && (!('lineListenerStatus' in data) || data.lineListenerStatus in ['active', 'not_applicable', 'permission_revoked'])
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function validMonthlyBudget(data, userId, monthKey) {
+      return data.keys().hasAll(['ownerId', 'amount', 'monthKey', 'source', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'amount', 'monthKey', 'source', 'createdAt', 'updatedAt'])
+        && monthKey.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && data.monthKey == monthKey
+        && data.amount is number
+        && data.amount > 0
+        && data.amount <= 10000000
+        && data.source in ['ai', 'manual']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -307,6 +321,17 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'updatedAt']);
       allow delete: if false;
+
+      match /monthlyBudgets/{monthKey} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId)
+          && validMonthlyBudget(request.resource.data, userId, monthKey)
+          && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && validMonthlyBudget(request.resource.data, userId, monthKey)
+          && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
 
       match /schedules/{scheduleId} {
         allow read: if isOwner(userId) || isAdmin();

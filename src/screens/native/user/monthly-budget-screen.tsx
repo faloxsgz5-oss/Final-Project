@@ -143,7 +143,9 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
     try {
       const next = await saveMonthlyBudget(uid, {amount: selectedAmount, monthKey, source: mode});
       setSaved(next);
-      setSuccessMessage(`บันทึกแล้ว ตั้งลิมิตค่าใช้จ่าย${monthLabel}ไว้ ${money(selectedAmount)}`);
+      setSuccessMessage(next.synced === false
+        ? `บันทึกไว้ในเครื่องนี้แล้ว ${money(selectedAmount)} จะซิงค์ไปเครื่องอื่นเมื่อกลับมาออนไลน์`
+        : `บันทึกแล้ว ตั้งลิมิตค่าใช้จ่าย${monthLabel}ไว้ ${money(selectedAmount)}`);
       navigateTimer.current = setTimeout(() => onNavigate('smartlife_finance_month'), 1200);
     } catch (error) {
       console.error('[MonthlyBudget] Save failed', error);
@@ -161,6 +163,11 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
           <MaterialIcon color={C.red} name="cloud_off" size={19} />
           <View style={{flex: 1}}><Text style={styles.errorTitle}>โหลดรายการเดือนนี้ไม่สำเร็จ</Text><Text style={styles.errorText}>ยอดรายรับและยอดใช้จ่ายจึงยังไม่แสดง ตรวจอินเทอร์เน็ตแล้วกดโหลดใหม่ ระหว่างนี้ยังกำหนดงบเองและบันทึกได้ตามปกติ</Text></View>
           <Pressable accessibilityLabel="โหลดข้อมูลใหม่" accessibilityRole="button" onPress={() => { load().catch(() => setLoading(false)); }} style={styles.retryButton}><Text style={styles.retryText}>โหลดใหม่</Text></Pressable>
+        </View> : null}
+
+        {saved && saved.synced === false ? <View style={styles.noticeBanner}>
+          <MaterialIcon color={C.amber} name="cloud_off" size={19} />
+          <View style={{flex: 1}}><Text style={styles.noticeTitle}>งบนี้ยังอยู่ในเครื่องนี้เท่านั้น</Text><Text style={styles.noticeText}>ยังซิงค์ขึ้นบัญชีไม่สำเร็จ จึงยังไม่เห็นบนเครื่องอื่น ต่ออินเทอร์เน็ตแล้วกดโหลดใหม่หรือกดบันทึกอีกครั้ง</Text></View>
         </View> : null}
 
         {rolledOverFrom ? <View style={styles.noticeBanner}>

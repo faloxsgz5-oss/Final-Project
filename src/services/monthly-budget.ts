@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {shiftMonthKey, thailandMonthKey} from '@/lib/thailand-time';
+import {readLatestRemoteBudgetBefore, readRemoteBudget, writeRemoteBudget} from '@/services/monthly-budget-remote';
 
 export type MonthlyBudget = {
   amount: number;
@@ -8,6 +9,8 @@ export type MonthlyBudget = {
   /** Month the amount was originally saved for, when it was carried forward. */
   rolledOverFrom?: string;
   source: 'ai' | 'manual';
+  /** False when the limit is only on this device because the sync write failed. */
+  synced?: boolean;
   updatedAt: string;
 };
 
@@ -57,6 +60,7 @@ function parseStored(raw: string | null, monthKey: string): MonthlyBudget | null
       amount: value.amount,
       monthKey,
       source: value.source === 'ai' ? 'ai' : 'manual',
+      synced: value.synced !== false,
       updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString(),
     };
   } catch {
@@ -64,14 +68,26 @@ function parseStored(raw: string | null, monthKey: string): MonthlyBudget | null
   }
 }
 
+function earliestRolloverKey(monthKey: string) {
+  return shiftMonthKey(monthKey, -ROLLOVER_LOOKBACK_MONTHS);
+}
+
+async function writeCache(uid: string, budget: MonthlyBudget) {
+  await AsyncStorage.setItem(storageKey(uid, budget.monthKey), JSON.stringify({
+    amount: budget.amount,
+    monthKey: budget.monthKey,
+    source: budget.source,
+    synced: budget.synced !== false,
+    updatedAt: budget.updatedAt,
+  }));
+}
+
 /**
- * Reads the limit for `monthKey`. When that month has none, the most recent
- * earlier limit is carried forward and flagged with `rolledOverFrom` so callers
- * can say the number came from a previous month. Without this the budget, the
- * daily tension read-out and the assistant's finance context all disappear
- * without explanation at midnight on the first of the month.
+ * Reads the device cache for `monthKey`, falling back to the most recent
+ * earlier month. Used offline, and as the source for the one-time migration
+ * of budgets saved before this feature moved to Firestore.
  */
-export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey()): Promise<MonthlyBudget | null> {
+async function readCache(uid: string, monthKey: string): Promise<MonthlyBudget | null> {
   const exact = parseStored(await AsyncStorage.getItem(storageKey(uid, monthKey)), monthKey);
   if (exact) return exact;
 
@@ -87,7 +103,65 @@ export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey(
   return null;
 }
 
-export async function saveMonthlyBudget(uid: string, budget: Omit<MonthlyBudget, 'rolledOverFrom' | 'updatedAt'>) {
+/**
+ * Reads the limit for `monthKey` from Firestore so it is the same on every
+ * device the user signs in on, keeping a device copy for offline use.
+ *
+ * When that month has none, the most recent earlier limit is carried forward
+ * and flagged with `rolledOverFrom`; without this the budget, the daily tension
+ * read-out and the assistant's finance context all disappeared without
+ * explanation at midnight on the first of the month.
+ *
+ * A budget saved before this moved to Firestore lives only on the device that
+ * saved it, so the first read that finds nothing stored remotely uploads the
+ * cached one rather than letting it silently disappear.
+ */
+export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey()): Promise<MonthlyBudget | null> {
+  const cached = await readCache(uid, monthKey).catch(() => null);
+
+  try {
+    const exact = await readRemoteBudget(uid, monthKey);
+    if (exact) {
+      const budget: MonthlyBudget = {...exact, monthKey, synced: true};
+      await writeCache(uid, budget).catch(() => undefined);
+      return budget;
+    }
+
+    const carried = await readLatestRemoteBudgetBefore(uid, monthKey, earliestRolloverKey(monthKey));
+    if (carried) {
+      return {...carried, monthKey, rolledOverFrom: carried.monthKey, synced: true};
+    }
+
+    // Nothing stored remotely for this month or the year before it. Anything in
+    // the device cache predates the move to Firestore, or failed to sync, so
+    // push it up now instead of losing it.
+    if (cached) {
+      const originMonth = cached.rolledOverFrom ?? cached.monthKey;
+      try {
+        await writeRemoteBudget(uid, {amount: cached.amount, monthKey: originMonth, source: cached.source});
+        const migrated = {...cached, synced: true};
+        await writeCache(uid, {...migrated, monthKey: originMonth}).catch(() => undefined);
+        return migrated;
+      } catch (error) {
+        console.error('[MonthlyBudget] Could not upload the device budget', error);
+        return {...cached, synced: false};
+      }
+    }
+    return null;
+  } catch (error) {
+    // Offline or rules failure: the cached limit is better than none, and is
+    // marked unsynced so the screen can say so.
+    console.error('[MonthlyBudget] Remote read failed, using the device copy', error);
+    return cached ? {...cached, synced: false} : null;
+  }
+}
+
+/**
+ * Stores the limit. The device copy is written first so an offline save is
+ * never lost, then the same value is synced. `synced` reports whether the
+ * other devices can see it yet.
+ */
+export async function saveMonthlyBudget(uid: string, budget: Omit<MonthlyBudget, 'rolledOverFrom' | 'synced' | 'updatedAt'>) {
   if (!isValidBudgetAmount(budget.amount)) {
     throw new Error(`Monthly budget must be between 1 and ${MONTHLY_BUDGET_MAX}.`);
   }
@@ -95,8 +169,16 @@ export async function saveMonthlyBudget(uid: string, budget: Omit<MonthlyBudget,
     amount: budget.amount,
     monthKey: budget.monthKey,
     source: budget.source,
+    synced: true,
     updatedAt: new Date().toISOString(),
   };
-  await AsyncStorage.setItem(storageKey(uid, budget.monthKey), JSON.stringify(next));
+
+  try {
+    await writeRemoteBudget(uid, {amount: next.amount, monthKey: next.monthKey, source: next.source});
+  } catch (error) {
+    console.error('[MonthlyBudget] Sync failed, keeping the budget on this device', error);
+    next.synced = false;
+  }
+  await writeCache(uid, next);
   return next;
 }
