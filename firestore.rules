@@ -77,6 +77,7 @@ service cloud.firestore {
     function validMonthlyBudget(data, userId, monthKey) {
       return data.keys().hasAll(['ownerId', 'amount', 'monthKey', 'source', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'amount', 'monthKey', 'source', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
         && monthKey.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
         && data.monthKey == monthKey
         && data.amount is number
