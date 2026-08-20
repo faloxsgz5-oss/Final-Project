@@ -111,7 +111,7 @@ service cloud.firestore {
           'ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source',
           'note', 'reminder', 'category', 'priority', 'attendees',
           'actualDurationMinutes', 'actualEnd', 'actualStart', 'aiConfidence', 'aiReason', 'aiScheduled',
-          'allowAiReschedule', 'deadline', 'estimatedDurationMinutes', 'googleCalendarId', 'googleEventId',
+          'allowAiReschedule', 'clientRequestId', 'deadline', 'estimatedDurationMinutes', 'googleCalendarId', 'googleEventId',
           'googleSyncStatus', 'isFlexible', 'isLocked', 'originalScheduledStart', 'scheduleVersion',
           'createdAt', 'updatedAt'
         ])
@@ -131,6 +131,7 @@ service cloud.firestore {
         && (!('aiConfidence' in data) || data.aiConfidence == null || (data.aiConfidence is number && data.aiConfidence >= 0 && data.aiConfidence <= 1))
         && (!('aiReason' in data) || data.aiReason == null || (data.aiReason is string && data.aiReason.size() <= 600))
         && (!('aiScheduled' in data) || data.aiScheduled is bool)
+        && (!('clientRequestId' in data) || (data.clientRequestId is string && data.clientRequestId.size() <= 256))
         && (!('allowAiReschedule' in data) || data.allowAiReschedule is bool)
         && (!('deadline' in data) || data.deadline == null || data.deadline is timestamp)
         && (!('estimatedDurationMinutes' in data) || (data.estimatedDurationMinutes is int && data.estimatedDurationMinutes >= 15 && data.estimatedDurationMinutes <= 720))
@@ -226,7 +227,11 @@ service cloud.firestore {
     }
 
     function validActivityClientCreate(data) {
-      return (!('actualDurationMinutes' in data) || data.actualDurationMinutes == null)
+      // Only createAdaptiveActivity sets clientRequestId, and it does so through
+      // the Admin SDK. Keeping it out of client creates stops a forged key from
+      // colliding with that callable's idempotency check.
+      return !('clientRequestId' in data)
+        && (!('actualDurationMinutes' in data) || data.actualDurationMinutes == null)
         && (!('actualEnd' in data) || data.actualEnd == null)
         && (!('actualStart' in data) || data.actualStart == null)
         && (!('aiConfidence' in data) || data.aiConfidence == null)

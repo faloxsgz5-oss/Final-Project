@@ -98,7 +98,8 @@
     "test:monthly-budget": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-monthly-budget.mjs",
     "test:monthly-budget-sync": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-monthly-budget-sync.mjs",
     "test:notification-feed": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-notification-feed.mjs",
-    "test:firestore-monthly-budget-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-monthly-budget.rules.test.cjs\""
+    "test:firestore-monthly-budget-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-monthly-budget.rules.test.cjs\"",
+    "test:firestore-mark-done-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-mark-done.rules.test.cjs\""
   },
   "private": true
 }
