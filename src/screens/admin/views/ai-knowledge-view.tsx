@@ -319,7 +319,7 @@ export default function AdminAiKnowledgeView({data}: AdminViewProps) {
                     <Text style={styles.metaLine}>
                       {`ช่วงข้อมูลที่ตรวจ: ${dateTimeFromMillis(audit.window.fromMillis)} — ${dateTimeFromMillis(audit.window.toMillis)}`}
                     </Text>
-                    <Text style={styles.metaLine}>{`เหตุผลที่ AI ให้ไว้: ${text(audit.recommendation.explanation as string)}`}</Text>
+                    <Text style={styles.metaLine}>{`เหตุผลที่ AI ให้ไว้: ${explanationOf(audit.recommendation)}`}</Text>
                   </View>
 
                   {audit.contextGroups.length ? audit.contextGroups.map((group) => (
