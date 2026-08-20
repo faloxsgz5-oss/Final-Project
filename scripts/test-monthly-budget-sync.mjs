@@ -132,6 +132,45 @@ const localKey = (monthKey) => `smartlife:monthly-budget:${UID}:${monthKey}`;
   assert.equal((await loadMonthlyBudget(UID, AUG)).amount, 2800, 'and reaches the other platform');
 }
 
+// --- A save that could not sync is not thrown away by the next successful
+// read. The month already had a limit on the server, so reading it back over
+// the pending local one made confirming the AI recommendation look like a
+// no-op: the old amount returned on reload, on every platform.
+{
+  fresh();
+  __useDevice('phone');
+  await saveMonthlyBudget(UID, {amount: 3500, monthKey: AUG, source: 'ai'});
+
+  __setOffline({reads: false, writes: true});
+  const pending = await saveMonthlyBudget(UID, {amount: 5600, monthKey: AUG, source: 'ai'});
+  assert.equal(pending.amount, 5600);
+  assert.equal(pending.synced, false);
+
+  __setOffline({reads: false, writes: false});
+  const reloaded = await loadMonthlyBudget(UID, AUG);
+  assert.equal(reloaded.amount, 5600, 'the confirmed limit survives the reload rather than reverting to 3500');
+  assert.equal(reloaded.synced, true, 'and is pushed on the way through');
+  assert.deepEqual(__dump().map((row) => [row.monthKey, row.amount]), [[AUG, 5600]]);
+
+  __useDevice('web');
+  assert.equal((await loadMonthlyBudget(UID, AUG)).amount, 5600, 'and reaches the other platform');
+}
+
+// --- While it still cannot sync, the pending amount keeps showing instead of
+// the server's older one, flagged so the screen can say it has not travelled.
+{
+  fresh();
+  __useDevice('phone');
+  await saveMonthlyBudget(UID, {amount: 3500, monthKey: AUG, source: 'ai'});
+  __setOffline({reads: false, writes: true});
+  await saveMonthlyBudget(UID, {amount: 5600, monthKey: AUG, source: 'ai'});
+
+  const stillPending = await loadMonthlyBudget(UID, AUG);
+  assert.equal(stillPending.amount, 5600, 'the user keeps seeing what they confirmed');
+  assert.equal(stillPending.synced, false, 'and is told it has not synced yet');
+  assert.deepEqual(__dump().map((row) => [row.monthKey, row.amount]), [[AUG, 3500]], 'the server is untouched until a write lands');
+}
+
 // --- A device with no budget anywhere still reports nothing.
 {
   fresh();

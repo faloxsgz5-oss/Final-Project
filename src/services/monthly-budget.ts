@@ -120,6 +120,19 @@ export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey(
   const cached = await readCache(uid, monthKey).catch(() => null);
 
   try {
+    // A cached limit flagged unsynced is a save the user already confirmed on
+    // this device that never reached the server. Push it before reading, or the
+    // server's older amount is read back over it and a save that could not sync
+    // is indistinguishable from a save that never happened: the screen returns
+    // to the previous limit with nothing to explain why.
+    if (cached && cached.synced === false) {
+      const originMonth = cached.rolledOverFrom ?? cached.monthKey;
+      await writeRemoteBudget(uid, {amount: cached.amount, monthKey: originMonth, source: cached.source});
+      const restored: MonthlyBudget = {...cached, synced: true};
+      await writeCache(uid, {...restored, monthKey: originMonth}).catch(() => undefined);
+      return restored;
+    }
+
     const exact = await readRemoteBudget(uid, monthKey);
     if (exact) {
       const budget: MonthlyBudget = {...exact, monthKey, synced: true};
@@ -151,7 +164,7 @@ export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey(
   } catch (error) {
     // Offline or rules failure: the cached limit is better than none, and is
     // marked unsynced so the screen can say so.
-    console.error('[MonthlyBudget] Remote read failed, using the device copy', error);
+    console.error('[MonthlyBudget] Sync unavailable, using the device copy', error);
     return cached ? {...cached, synced: false} : null;
   }
 }

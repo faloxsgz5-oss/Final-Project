@@ -40,7 +40,11 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
   const [saving, setSaving] = useState(false);
   const [income, setIncome] = useState(0);
   const [expense, setExpense] = useState(0);
-  const [mode, setMode] = useState<BudgetMode>('ai');
+  // `panel` is only which card is on screen. `source` records where the amount
+  // in `amountText` actually came from, so browsing the AI card never relabels
+  // a hand-typed limit as an AI one, and vice versa.
+  const [panel, setPanel] = useState<BudgetMode>('ai');
+  const [source, setSource] = useState<BudgetMode>('ai');
   const [amountText, setAmountText] = useState('');
   const [transactions, setTransactions] = useState<Item[]>([]);
   const [saved, setSaved] = useState<MonthlyBudget | null>(null);
@@ -54,7 +58,7 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
   const navigateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const recommendation = suggestedBudget(income);
-  // One source of truth for both modes. `mode` only records where the number
+  // One source of truth for both cards. `source` only records where the number
   // came from; it must never make this screen evaluate a different amount than
   // the one that is stored and used by the finance page, the daily tension
   // read-out and the AI assistant.
@@ -65,6 +69,7 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
   const budgetStatus = selectedAmount <= 0 ? 'unset' : usedPercent >= 100 ? 'over' : usedPercent >= 80 ? 'warning' : 'safe';
   const rolledOverFrom = saved?.rolledOverFrom;
   const unsavedChange = Boolean(saved) && selectedAmount > 0 && selectedAmount !== saved?.amount;
+  const recommendationApplied = recommendation > 0 && selectedAmount === recommendation;
 
   const financeInsight = useMemo(() => (dataError ? null : calculateFinanceBudgetInsight({
     monthlyBudget: selectedAmount,
@@ -106,7 +111,8 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
 
     setSaved(savedBudget);
     if (savedBudget) {
-      setMode(savedBudget.source);
+      setPanel(savedBudget.source);
+      setSource(savedBudget.source);
       setAmountText(String(savedBudget.amount));
     }
     setLoading(false);
@@ -115,8 +121,17 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
   useEffect(() => { load().catch((error) => { console.error('[MonthlyBudget] Load failed', error); setDataError(true); setLoading(false); }); }, [load]);
   useEffect(() => () => { if (navigateTimer.current) clearTimeout(navigateTimer.current); }, []);
 
+  // Switching cards is a view change only: it must never rewrite the amount, or
+  // simply looking at the recommendation would replace a limit the user is
+  // still using. Adopting the recommendation is the separate, explicit action
+  // below.
+  const showPanel = (next: BudgetMode) => {
+    setPanel(next);
+    setFormError('');
+    setSuccessMessage('');
+  };
+
   const applyRecommendation = () => {
-    setMode('ai');
     setSuccessMessage('');
     // Never let an unavailable recommendation blank out a limit the user
     // already has. Keep the existing number and explain why.
@@ -127,21 +142,22 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
       return;
     }
     setFormError('');
+    setSource('ai');
     setAmountText(String(recommendation));
   };
 
   const save = async () => {
     setSuccessMessage('');
     if (selectedAmount <= 0) {
-      setFormError(mode === 'ai'
-        ? 'ยังไม่มีลิมิตที่จะบันทึก กดปุ่ม AI แนะนำ เพื่อดึงตัวเลข หรือเลือก กำหนดเอง แล้วพิมพ์จำนวนเงิน'
+      setFormError(panel === 'ai'
+        ? 'ยังไม่มีลิมิตที่จะบันทึก กดปุ่ม ใช้ลิมิตนี้ ในการ์ดคำแนะนำ หรือเลือก กำหนดเอง แล้วพิมพ์จำนวนเงิน'
         : 'กรุณาระบุจำนวนงบประมาณที่มากกว่า 0');
       return;
     }
     setFormError('');
     setSaving(true);
     try {
-      const next = await saveMonthlyBudget(uid, {amount: selectedAmount, monthKey, source: mode});
+      const next = await saveMonthlyBudget(uid, {amount: selectedAmount, monthKey, source});
       setSaved(next);
       setSuccessMessage(next.synced === false
         ? `บันทึกไว้ในเครื่องนี้แล้ว ${money(selectedAmount)} จะซิงค์ไปเครื่องอื่นเมื่อกลับมาออนไลน์`
@@ -176,7 +192,7 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
         </View> : null}
 
         <LinearGradient colors={['#6674ac', '#8d96c2']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.hero}>
-          <View style={styles.heroGlow} /><Text style={styles.heroEyebrow}>งบเดือน{monthLabel}</Text><Text style={styles.heroAmount}>{selectedAmount > 0 ? money(selectedAmount) : 'ยังไม่ได้ตั้ง'}</Text><Text style={styles.heroText}>{selectedAmount <= 0 ? 'เลือกวิธีกำหนดงบด้านล่าง' : mode === 'ai' ? 'ลิมิตจากคำแนะนำของ AI ตามรายรับเดือนนี้' : 'ลิมิตค่าใช้จ่ายที่คุณกำหนดเอง'}</Text>
+          <View style={styles.heroGlow} /><Text style={styles.heroEyebrow}>งบเดือน{monthLabel}</Text><Text style={styles.heroAmount}>{selectedAmount > 0 ? money(selectedAmount) : 'ยังไม่ได้ตั้ง'}</Text><Text style={styles.heroText}>{selectedAmount <= 0 ? 'เลือกวิธีกำหนดงบด้านล่าง' : source === 'ai' ? 'ลิมิตจากคำแนะนำของ AI ตามรายรับเดือนนี้' : 'ลิมิตค่าใช้จ่ายที่คุณกำหนดเอง'}</Text>
           <View style={styles.heroStatRow}><HeroStat label="รายรับเดือนนี้" value={dataError ? '—' : money(income)} /><HeroStat label="ใช้ไปแล้ว" value={dataError ? '—' : money(expense)} /></View>
         </LinearGradient>
 
@@ -204,14 +220,25 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
           <Text style={styles.inputHint}>ช่วง {financeInsight.weekStart} ถึง {financeInsight.weekEnd} • ระบบเตือนเมื่อใช้ถึง 80%</Text>
         </View> : null}
 
-        <View style={styles.modeBar}><ModeButton active={mode === 'ai'} icon="auto_awesome" label="AI แนะนำ" onPress={applyRecommendation} /><ModeButton active={mode === 'manual'} icon="edit" label="กำหนดเอง" onPress={() => { setMode('manual'); setFormError(''); setSuccessMessage(''); }} /></View>
+        <View style={styles.modeBar}><ModeButton active={panel === 'ai'} icon="auto_awesome" label="AI แนะนำ" onPress={() => showPanel('ai')} /><ModeButton active={panel === 'manual'} icon="edit" label="กำหนดเอง" onPress={() => showPanel('manual')} /></View>
 
-        {mode === 'ai' ? <View style={styles.card}><View style={styles.cardHeader}><View style={styles.cardIcon}><MaterialIcon color={C.accent} name="auto_awesome" size={20} /></View><View style={{flex: 1}}><Text style={styles.cardTitle}>คำแนะนำสำหรับเดือนนี้</Text><Text style={styles.cardSub}>กันไว้ 70% ของรายรับ เพื่อเหลือเงินสำรอง 30%</Text></View></View>
+        {panel === 'ai' ? <View style={styles.card}><View style={styles.cardHeader}><View style={styles.cardIcon}><MaterialIcon color={C.accent} name="auto_awesome" size={20} /></View><View style={{flex: 1}}><Text style={styles.cardTitle}>คำแนะนำสำหรับเดือนนี้</Text><Text style={styles.cardSub}>กันไว้ 70% ของรายรับ เพื่อเหลือเงินสำรอง 30%</Text></View></View>
           {dataError ? <View style={styles.emptySuggestion}><MaterialIcon color={C.muted} name="cloud_off" size={25} /><Text style={styles.emptySuggestionText}>ยังคำนวณคำแนะนำไม่ได้เพราะโหลดข้อมูลการเงินไม่สำเร็จ กดโหลดใหม่ด้านบน หรือเลือกกำหนดเอง</Text></View>
             : income > 0 ? <><View style={styles.recommendation}><Text style={styles.recommendationLabel}>ลิมิตที่แนะนำ</Text><Text style={styles.recommendationAmount}>{money(recommendation)}</Text></View><BudgetSplit amount={recommendation * .45} color="#71936e" label="ค่าอาหาร" percent={45} /><BudgetSplit amount={recommendation * .25} color="#828dbb" label="การเดินทาง" percent={25} /><BudgetSplit amount={recommendation * .15} color="#d49a88" label="เรียน / ของใช้" percent={15} /><BudgetSplit amount={recommendation * .15} color="#a8b794" label="สำรอง" percent={15} /></>
               : <View style={styles.emptySuggestion}><MaterialIcon color={C.muted} name="account_balance_wallet" size={25} /><Text style={styles.emptySuggestionText}>เพิ่มรายรับของเดือนนี้ แล้ว AI จะคำนวณงบที่เหมาะสมให้</Text></View>}
-          {selectedAmount > 0 && recommendation > 0 && selectedAmount !== recommendation ? <Text style={styles.inputHint}>ตอนนี้ใช้ลิมิต {money(selectedAmount)} อยู่ กดปุ่ม AI แนะนำ อีกครั้งเพื่อเปลี่ยนเป็น {money(recommendation)}</Text> : null}
-        </View> : <View style={styles.card}><Text style={styles.fieldLabel}>กำหนดลิมิตค่าใช้จ่ายเดือนนี้</Text><View style={styles.inputShell}><Text style={styles.currency}>฿</Text><TextInput accessibilityLabel="จำนวนงบรายเดือน" keyboardType="number-pad" onChangeText={(value) => { const parsed = parseMoney(value); setAmountText(parsed > 0 ? String(parsed) : ''); setFormError(''); setSuccessMessage(''); }} placeholder="เช่น 5,000" placeholderTextColor="#a5ada1" style={styles.amountInput} value={amountText} /></View><Text style={styles.inputHint}>คุณสามารถเปลี่ยนงบใหม่ได้ตลอดเดือน ยอดที่ใช้ไปแล้วจะถูกคิดเทียบกับลิมิตใหม่ทันที</Text></View>}
+          {/* Adopting the recommendation is its own labelled action. It used to
+              be a second press on the already-selected "AI แนะนำ" tab, which
+              looks like a no-op and left people believing the save had failed. */}
+          {!dataError && recommendation > 0 ? <>
+            <Pressable accessibilityRole="button" disabled={recommendationApplied} onPress={applyRecommendation} style={[styles.applyButton, recommendationApplied && styles.applyButtonDone]}>
+              <MaterialIcon color={recommendationApplied ? C.sage : '#fff'} name={recommendationApplied ? 'check_circle' : 'auto_awesome'} size={18} />
+              <Text style={[styles.applyText, recommendationApplied && styles.applyTextDone]}>{recommendationApplied ? 'ใช้ลิมิตนี้อยู่ • กดบันทึกเพื่อยืนยัน' : `ใช้ลิมิตนี้ ${money(recommendation)}`}</Text>
+            </Pressable>
+            <Text style={styles.inputHint}>{recommendationApplied
+              ? 'กด บันทึกงบเดือนนี้ ด้านล่างเพื่อให้ลิมิตนี้มีผลกับหน้าการเงินและผู้ช่วย AI'
+              : `ตอนนี้ใช้ลิมิต ${selectedAmount > 0 ? money(selectedAmount) : 'ยังไม่ได้ตั้ง'} อยู่ การดูคำแนะนำนี้ยังไม่เปลี่ยนลิมิตจนกว่าจะกดปุ่มด้านบนแล้วบันทึก`}</Text>
+          </> : null}
+        </View> : <View style={styles.card}><Text style={styles.fieldLabel}>กำหนดลิมิตค่าใช้จ่ายเดือนนี้</Text><View style={styles.inputShell}><Text style={styles.currency}>฿</Text><TextInput accessibilityLabel="จำนวนงบรายเดือน" keyboardType="number-pad" onChangeText={(value) => { const parsed = parseMoney(value); setAmountText(parsed > 0 ? String(parsed) : ''); setSource('manual'); setFormError(''); setSuccessMessage(''); }} placeholder="เช่น 5,000" placeholderTextColor="#a5ada1" style={styles.amountInput} value={amountText} /></View><Text style={styles.inputHint}>คุณสามารถเปลี่ยนงบใหม่ได้ตลอดเดือน ยอดที่ใช้ไปแล้วจะถูกคิดเทียบกับลิมิตใหม่ทันที</Text></View>}
 
         {formError ? <View style={styles.formErrorBox}><MaterialIcon color={C.red} name="error" size={17} /><Text style={styles.formErrorText}>{formError}</Text></View> : null}
         {successMessage ? <View style={styles.formSuccessBox}><MaterialIcon color={C.sage} name="check_circle" size={17} /><Text style={styles.formSuccessText}>{successMessage}</Text></View> : null}
@@ -229,7 +256,9 @@ function BudgetSplit({amount, color, label, percent}: {amount: number; color: st
 
 const shadow = {shadowColor: '#29351f', shadowOffset: {height: 8, width: 0}, shadowOpacity: .07, shadowRadius: 18};
 const styles = StyleSheet.create({
-  amountInput: {color: C.ink, flex: 1, fontFamily: F.x, fontSize: 25, minHeight: 52, padding: 0}, back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 19, height: 42, justifyContent: 'center', width: 42}, card: {...shadow, backgroundColor: '#fff', borderRadius: 21, marginTop: 14, padding: 16}, cardHeader: {alignItems: 'center', flexDirection: 'row', gap: 10}, cardIcon: {alignItems: 'center', backgroundColor: C.accentSoft, borderRadius: 15, height: 42, justifyContent: 'center', width: 42}, cardSub: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2}, cardTitle: {color: C.ink, fontFamily: F.b, fontSize: 13}, content: {padding: 20, paddingBottom: 26}, currency: {color: C.sage, fontFamily: F.x, fontSize: 25, marginRight: 7}, disabled: {opacity: .6}, emptySuggestion: {alignItems: 'center', gap: 7, paddingVertical: 23}, emptySuggestionText: {color: C.muted, fontFamily: F.r, fontSize: 10, lineHeight: 16, maxWidth: 245, textAlign: 'center'},
+  amountInput: {color: C.ink, flex: 1, fontFamily: F.x, fontSize: 25, minHeight: 52, padding: 0},
+  applyButton: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 15, flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 15, minHeight: 48}, applyButtonDone: {backgroundColor: C.sageSoft}, applyText: {color: '#fff', fontFamily: F.b, fontSize: 12}, applyTextDone: {color: C.sage},
+  back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 19, height: 42, justifyContent: 'center', width: 42}, card: {...shadow, backgroundColor: '#fff', borderRadius: 21, marginTop: 14, padding: 16}, cardHeader: {alignItems: 'center', flexDirection: 'row', gap: 10}, cardIcon: {alignItems: 'center', backgroundColor: C.accentSoft, borderRadius: 15, height: 42, justifyContent: 'center', width: 42}, cardSub: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2}, cardTitle: {color: C.ink, fontFamily: F.b, fontSize: 13}, content: {padding: 20, paddingBottom: 26}, currency: {color: C.sage, fontFamily: F.x, fontSize: 25, marginRight: 7}, disabled: {opacity: .6}, emptySuggestion: {alignItems: 'center', gap: 7, paddingVertical: 23}, emptySuggestionText: {color: C.muted, fontFamily: F.r, fontSize: 10, lineHeight: 16, maxWidth: 245, textAlign: 'center'},
   errorBanner: {alignItems: 'flex-start', backgroundColor: C.redSoft, borderRadius: 16, flexDirection: 'row', gap: 9, marginTop: 14, padding: 13}, errorText: {color: '#8c5a55', fontFamily: F.r, fontSize: 9, lineHeight: 15, marginTop: 2}, errorTitle: {color: C.red, fontFamily: F.b, fontSize: 11},
   eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 9}, fieldLabel: {color: C.ink, fontFamily: F.b, fontSize: 11},
   formErrorBox: {alignItems: 'center', backgroundColor: C.redSoft, borderRadius: 13, flexDirection: 'row', gap: 8, marginTop: 13, padding: 11}, formErrorText: {color: C.red, flex: 1, fontFamily: F.m, fontSize: 10, lineHeight: 16},
