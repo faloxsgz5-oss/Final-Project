@@ -3,7 +3,7 @@
 // than inheriting the machine's clock.
 import assert from 'node:assert/strict';
 
-import {calculateFinanceBudgetInsight} from '../src/services/dynamic-insights.ts';
+import {calculateDailyAllowance, calculateFinanceBudgetInsight} from '../src/services/dynamic-insights.ts';
 import {
   currentMonthKey,
   isValidBudgetAmount,
@@ -125,5 +125,56 @@ assert.equal(parseBudgetAmount('-500'), 500, 'a minus sign cannot make a negativ
 assert.equal(parseBudgetAmount(''), 0, 'empty text is zero');
 assert.equal(parseBudgetAmount('abc'), 0, 'text with no digits is zero');
 assert.equal(parseBudgetAmount('99999999999'), MONTHLY_BUDGET_MAX, 'an oversized amount clamps to the cap');
+
+// --- The dashboard tile and the assistant's instant answer used a single day's
+// income minus expenses, which is ฿0 for anyone who does not record income
+// daily, whatever limit they had set. The figure they show now comes from the
+// monthly limit and moves with it.
+{
+  const spendable = calculateDailyAllowance({
+    monthlyBudget: 6200, // 200/day across 31 days
+    now,                 // Wed 19 Aug, 12:00 Bangkok -- 13 days left including today
+    transactions: [tx(1000, '2026-08-05T06:00:00Z')],
+  });
+  assert.equal(spendable.remainingBudget, 5200);
+  assert.equal(spendable.amount, 400, '5,200 left over the 13 remaining days, today included');
+  assert.equal(spendable.overBudget, false);
+  assert.equal(spendable.spentSoFar, 1000);
+  assert.equal(spendable.monthlyBudget, 6200);
+
+  // No income recorded is exactly the case that always read ฿0 before.
+  const withoutIncome = calculateDailyAllowance({
+    monthlyBudget: 6200,
+    now,
+    transactions: [tx(1000, '2026-08-05T06:00:00Z'), tx(500, '2026-08-06T06:00:00Z', 'income')],
+  });
+  assert.equal(withoutIncome.amount, 400, 'income does not enter the allowance; only the limit and the spending do');
+
+  // Raising the limit must move the number the tile shows.
+  assert.equal(
+    calculateDailyAllowance({monthlyBudget: 12_400, now, transactions: [tx(1000, '2026-08-05T06:00:00Z')]}).amount, 877,
+    'doubling the monthly limit raises the daily allowance',
+  );
+
+  // Spending today tightens it, rather than leaving a flat monthly average.
+  assert.ok(
+    calculateDailyAllowance({monthlyBudget: 6200, now, transactions: [tx(1000, '2026-08-05T06:00:00Z'), tx(650, '2026-08-19T05:00:00Z')]}).amount < 400,
+    'money spent today comes off what is left to spend today',
+  );
+}
+
+// --- Over budget is reported as over budget, not as a bare zero the surfaces
+// cannot tell apart from having no limit at all.
+{
+  const spent = calculateDailyAllowance({monthlyBudget: 5000, now, transactions: [tx(6200, '2026-08-10T06:00:00Z')]});
+  assert.equal(spent.amount, 0, 'nothing is left to spend today');
+  assert.equal(spent.overBudget, true);
+  assert.equal(spent.remainingBudget, -1200, 'and by how much, for the over-budget wording');
+}
+
+// --- No limit set yields no figure, so the surfaces prompt for one instead of
+// showing a ฿0 that reads as "you have nothing left".
+assert.equal(calculateDailyAllowance({monthlyBudget: 0, now, transactions: [tx(300, '2026-08-05T06:00:00Z')]}), null);
+assert.equal(calculateDailyAllowance({monthlyBudget: Number.NaN, now, transactions: []}), null);
 
 console.log('SmartLife monthly budget tests passed');

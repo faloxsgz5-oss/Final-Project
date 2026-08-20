@@ -130,6 +130,43 @@ export function calculateFinanceBudgetInsight({monthlyBudget, now = new Date(), 
   };
 }
 
+export type DailyAllowance = {
+  /** Baht still spendable today at a pace that finishes the month on budget. */
+  amount: number;
+  monthlyBudget: number;
+  /** True once the month's spending has passed the limit, so `amount` is 0. */
+  overBudget: boolean;
+  /** Negative once over budget, which is what the over-budget copy reports. */
+  remainingBudget: number;
+  spentSoFar: number;
+};
+
+/**
+ * The one number the dashboard surfaces answer with: what is left to spend
+ * today under the monthly limit. It is the month's remaining budget spread over
+ * the days remaining including today, so spending earlier in the month tightens
+ * it rather than leaving a flat figure that ignores the pace.
+ *
+ * Null when no limit is set, so those surfaces can prompt for one instead of
+ * showing a ฿0 that reads as "you have nothing left" -- which is what the tile
+ * and the assistant chip did while they showed a day's income minus expenses.
+ */
+export function calculateDailyAllowance({monthlyBudget, now = new Date(), transactions}: {
+  monthlyBudget: number;
+  now?: Date;
+  transactions: Pick<Transaction, 'amount' | 'occurredAt' | 'type'>[];
+}): DailyAllowance | null {
+  const insight = calculateFinanceBudgetInsight({monthlyBudget, now, transactions});
+  if (!insight) return null;
+  return {
+    amount: insight.remainingDailyBudget,
+    monthlyBudget: insight.monthlyBudget,
+    overBudget: insight.remainingBudget <= 0,
+    remainingBudget: insight.remainingBudget,
+    spentSoFar: insight.spentSoFar,
+  };
+}
+
 function itemRange(item: {actualEnd?: TimeValue; actualStart?: TimeValue; endAt?: TimeValue; startAt?: TimeValue}) {
   const actualStart = toDate(item.actualStart);
   const actualEnd = toDate(item.actualEnd);

@@ -7,6 +7,8 @@ import {LinearGradient} from 'expo-linear-gradient';
 import {Timestamp} from 'firebase/firestore';
 
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
+import {calculateDailyAllowance, type DailyAllowance} from '@/services/dynamic-insights';
+import {loadMonthlyBudget} from '@/services/monthly-budget';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 
@@ -60,7 +62,7 @@ function SoftPress({children, onPress, style}: {children: React.ReactNode; onPre
 }
 
 function StatCard({icon, value, label, tint = colors.sageSoft}: {icon: string; value: string | number; label: string; tint?: string}) {
-  return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View><Text style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
+  return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View><Text adjustsFontSizeToFit minimumFontScale={.7} numberOfLines={1} style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
 }
 
 export default function DashboardScreen({onNavigate, uid}: Props) {
@@ -68,7 +70,27 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [completingId, setCompletingId] = useState('');
-  const load = useCallback(async () => setData(await loadLegacyPageData(uid, 'user/index') as Item), [uid]);
+  const [allowance, setAllowance] = useState<DailyAllowance | null>(null);
+  // `user/index` is a one-day window, so its transactions cannot answer what is
+  // left of the monthly limit. The month's spending and the saved limit are
+  // fetched alongside it, and neither failing may stop the dashboard loading.
+  const load = useCallback(async () => {
+    const [pageData, monthData, savedBudget] = await Promise.all([
+      loadLegacyPageData(uid, 'user/index') as Promise<Item>,
+      (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>)
+        .catch((error) => { console.error('[Dashboard] Month transactions load failed', error); return null; }),
+      loadMonthlyBudget(uid).catch((error) => { console.error('[Dashboard] Saved budget load failed', error); return null; }),
+    ]);
+    setAllowance(calculateDailyAllowance({
+      monthlyBudget: savedBudget?.amount ?? 0,
+      transactions: items(monthData?.transactions).map((item) => ({
+        amount: Number(item.amount ?? 0),
+        occurredAt: item.occurredAt as never,
+        type: item.type === 'income' ? 'income' : 'expense',
+      })),
+    }));
+    setData(pageData);
+  }, [uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
   const seedAiDynamicData = useCallback(async () => {
@@ -99,6 +121,12 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const expense = transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   const income = transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   const balance = Math.max(income - expense, 0);
+  // Both budget surfaces read from the same allowance, so the tile and the
+  // assistant's instant answer can never quote different numbers.
+  const allowanceValue = allowance ? money(allowance.amount) : '—';
+  const allowanceAnswer = !allowance ? 'ตั้งงบเดือนนี้ก่อน'
+    : allowance.overBudget ? `เกินงบแล้ว ${money(Math.abs(allowance.remainingBudget))}`
+    : `ตอบทันที: วันนี้ใช้ได้อีก ${money(allowance.amount)}`;
   const unread = notifications.filter((item) => item.read !== true).length;
   const urgent = [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2);
   const markComplete = useCallback(async (item: Item) => {
@@ -130,7 +158,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
         <SoftPress onPress={() => onNavigate('smartlife_ai_assistant')} style={styles.aiCard}><LinearGradient colors={['#769674', '#8fa69a', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View><View style={styles.mic}><MaterialIcon name="mic" size={21} /></View></View>
           <View style={styles.prompt}><Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} /></View>
-          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>ตอบทันที: {money(balance)}</Text></View>
+          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>{allowanceAnswer}</Text></View>
         </SoftPress>
         <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>
 
@@ -143,7 +171,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           <View style={styles.collapsed}><MaterialIcon color="#7e8979" name="inventory_2" size={15} /><Text style={styles.collapsedText}>ข้อมูลรองถูกย่อไว้ชั่วคราว: งบอาหาร โน้ตทั่วไป และรายการไม่เร่งด่วน</Text></View>
         </View>
 
-        <View style={styles.stats}><StatCard icon="calendar_today" label="คลาสเรียน" value={schedules.length} /><StatCard icon="task_alt" label="งานที่ต้องทำ" tint={colors.noteSoft} value={pending.length} /><StatCard icon="account_balance_wallet" label="งบวันนี้" tint={colors.financeSoft} value={money(balance)} /></View>
+        <View style={styles.stats}><StatCard icon="calendar_today" label="คลาสเรียน" value={schedules.length} /><StatCard icon="task_alt" label="งานที่ต้องทำ" tint={colors.noteSoft} value={pending.length} /><StatCard icon="account_balance_wallet" label={allowance ? 'งบวันนี้' : 'ยังไม่ได้ตั้งงบ'} tint={colors.financeSoft} value={allowanceValue} /></View>
 
         <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>ตารางวันนี้</Text><SoftPress onPress={() => onNavigate('smartlife_calendar_day')}><Text style={styles.seeAll}>ดูทั้งหมด</Text></SoftPress></View>
         <View style={styles.scheduleCard}>{schedules.length ? schedules.slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={[styles.classRow, index > 0 && styles.classBorder]}><View style={styles.timePill}><Text style={styles.classTime}>{time(item.startAt)}</Text></View><View style={[styles.courseLine, {backgroundColor: string(item, 'color', index % 2 ? colors.finance : colors.sage)}]} /><View style={styles.courseCopy}><Text style={styles.courseTitle}>{string(item, 'title')}</Text><View style={styles.roomRow}><MaterialIcon color="#899284" name="location_on" size={14} /><Text style={styles.roomText}>{string(item, 'location', string(item, 'courseCode'))}</Text></View></View></View>) : <View style={styles.empty}><MaterialIcon color="#a4ada0" name="event_available" size={30} /><Text style={styles.emptyText}>วันนี้ยังไม่มีคลาสเรียน</Text></View>}</View>
