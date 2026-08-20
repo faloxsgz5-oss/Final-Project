@@ -98,15 +98,19 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     ...activities.filter((item) => item.status !== 'completed').map((item): Item => ({...item, __entity: 'activity'})),
     ...workNotes.map((item): Item => ({...item, __entity: 'note'})),
   ];
-  const expense = transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  const income = transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  const balance = Math.max(income - expense, 0);
   // Both budget surfaces read from the same allowance, so the tile and the
   // assistant's instant answer can never quote different numbers.
   const allowanceValue = allowance ? money(allowance.amount) : '—';
   const allowanceAnswer = !allowance ? 'ตั้งงบเดือนนี้ก่อน'
     : allowance.overBudget ? `เกินงบแล้ว ${money(Math.abs(allowance.remainingBudget))}`
     : `ตอบทันที: วันนี้ใช้ได้อีก ${money(allowance.amount)}`;
+  // The card headlines the same allowance as the tile above it -- it used to
+  // show a day's income minus expenses, which sat at ฿0 next to a tile saying
+  // ฿392. The bar behind it is the share of the month's limit still unspent,
+  // rather than the old balance-over-income ratio that measured nothing.
+  const monthBudgetLeftPercent = allowance && allowance.monthlyBudget > 0
+    ? Math.min(100, Math.max(0, allowance.remainingBudget / allowance.monthlyBudget * 100))
+    : 0;
   const unread = unreadCount(feed);
   const urgent = [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2);
   const markComplete = useCallback(async (item: Item) => {
@@ -159,7 +163,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
         <Text style={styles.sectionTitle}>โฟกัสวันนี้</Text>
         <View style={styles.focusGrid}>
           <SoftPress onPress={() => onNavigate('smartlife_add_task')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.note} name="check_box" size={17} /><Text style={styles.panelTitle}>โฟกัสวันนี้</Text></View>{pending.length ? pending.slice(0, 2).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.taskRow}><View style={styles.taskCheck}><MaterialIcon color="#fff" name="check" size={11} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.taskTitle}>{string(item, 'title')}</Text><Text style={styles.taskTime}>{time(item.startAt)}</Text></View></View>) : <Text style={styles.panelEmpty}>ยังไม่มีงานที่ต้องทำ</Text>}</SoftPress>
-          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบคงเหลือ</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{money(balance)}</Text><Text style={styles.budgetUnit}>/ วันนี้</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(balance / Math.max(income, 1) * 100, 100)}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
+          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบคงเหลือ</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{allowanceValue}</Text><Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
         </View>
 
         {notes[0] ? <SoftPress onPress={() => onNavigate('smartlife_notes_study')} style={styles.noteLink}><View style={styles.noteIcon}><MaterialIcon color={colors.note} name="note_alt" size={20} /></View><View style={{flex: 1}}><Text style={styles.noteEyebrow}>โน้ตที่เชื่อมกับตารางวันนี้</Text><Text numberOfLines={1} style={styles.noteTitle}>{string(notes[0], 'title')}</Text></View><MaterialIcon color={colors.sageDark} name="chevron_right" size={23} /></SoftPress> : null}
