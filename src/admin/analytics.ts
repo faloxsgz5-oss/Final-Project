@@ -405,3 +405,131 @@ export function buildUserSeries(
     total: sorted.reduce((sum, entry) => sum + entry.count, 0),
   };
 }
+
+/**
+ * Lifecycle states an AI recommendation can report.
+ *
+ * `seen` and `expired` are declared here because the admin monitor renders the
+ * whole vocabulary, but nothing in SmartLife writes them yet — see
+ * `summarizeRecommendations`, which reports coverage rather than guessing.
+ */
+export const RECOMMENDATION_STATUSES = ['new', 'seen', 'accepted', 'dismissed', 'expired'] as const;
+
+export type RecommendationStatus = (typeof RECOMMENDATION_STATUSES)[number];
+
+/**
+ * Tags seen on `aiRecommendations.contextSources` in production.
+ *
+ * `activity` is not in the `AiRecommendation` TypeScript union but real
+ * documents carry it, so it is treated as a first-class source rather than
+ * being written off as untagged.
+ */
+export const RECOMMENDATION_SOURCES = ['schedule', 'activity', 'finance', 'note', 'behavior'] as const;
+
+export type RecommendationSource = (typeof RECOMMENDATION_SOURCES)[number];
+
+export type AdminRecommendationInput = {
+  contextSources?: unknown;
+  createdAt?: string | null;
+  id: string;
+  kind?: string | null;
+  /** `read` exists on some documents; absent means the app never recorded it. */
+  read?: unknown;
+  status?: string | null;
+  title?: string | null;
+};
+
+export type RecommendationSummary = {
+  /**
+   * Share of decided recommendations that were accepted, or `null` when no
+   * recommendation has ever been accepted or dismissed. `null` means "not
+   * measurable", and the UI must say that instead of rendering 0%.
+   */
+  acceptanceRate: number | null;
+  /** Recommendations carrying a decided status (accepted or dismissed). */
+  decidedCount: number;
+  dismissalRate: number | null;
+  /**
+   * Documents with no readable `status` field at all. These are NOT folded
+   * into `new`, because assuming a lifecycle state the writer never set is
+   * exactly the kind of invented status this page must avoid.
+   */
+  missingStatusCount: number;
+  /** Real `read` flag coverage, the only per-user signal present today. */
+  readCoverage: {missing: number; read: number; unread: number};
+  /** Counts per `contextSources` tag; one item can add to several buckets. */
+  sourceCounts: Record<RecommendationSource, number>;
+  statusCounts: Record<RecommendationStatus, number>;
+  /** Statuses that never appear in the data, so the UI can flag the gap. */
+  statusesWithoutData: RecommendationStatus[];
+  total: number;
+  /** Items whose `contextSources` is empty or unrecognised. */
+  untaggedCount: number;
+};
+
+function normalizeStatus(value: unknown): RecommendationStatus | null {
+  const candidate = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (RECOMMENDATION_STATUSES as readonly string[]).includes(candidate)
+    ? candidate as RecommendationStatus
+    : null;
+}
+
+/**
+ * Counts active recommendations by context source and lifecycle status.
+ *
+ * Anything unrecognised is counted separately rather than silently folded into
+ * a real bucket, so the admin can tell a genuinely empty source apart from
+ * schema drift, and an absent status apart from a deliberate `new`.
+ */
+export function summarizeRecommendations(
+  recommendations: AdminRecommendationInput[],
+): RecommendationSummary {
+  const sourceCounts = Object.fromEntries(
+    RECOMMENDATION_SOURCES.map((source) => [source, 0]),
+  ) as Record<RecommendationSource, number>;
+  const statusCounts = Object.fromEntries(
+    RECOMMENDATION_STATUSES.map((status) => [status, 0]),
+  ) as Record<RecommendationStatus, number>;
+  const readCoverage = {missing: 0, read: 0, unread: 0};
+  let missingStatusCount = 0;
+  let untaggedCount = 0;
+
+  recommendations.forEach((item) => {
+    const tags = Array.isArray(item.contextSources)
+      ? item.contextSources.filter((tag): tag is string => typeof tag === 'string')
+      : [];
+    const known = tags.filter(
+      (tag): tag is RecommendationSource =>
+        (RECOMMENDATION_SOURCES as readonly string[]).includes(tag),
+    );
+    if (!known.length) untaggedCount += 1;
+    // A single recommendation can cite several sources, so it counts once per
+    // distinct tag it actually carries.
+    [...new Set(known)].forEach((tag) => { sourceCounts[tag] += 1; });
+
+    const status = normalizeStatus(item.status);
+    if (status) statusCounts[status] += 1;
+    else missingStatusCount += 1;
+
+    if (item.read === true) readCoverage.read += 1;
+    else if (item.read === false) readCoverage.unread += 1;
+    else readCoverage.missing += 1;
+  });
+
+  const accepted = statusCounts.accepted;
+  const dismissed = statusCounts.dismissed;
+  const decidedCount = accepted + dismissed;
+
+  return {
+    acceptanceRate: decidedCount > 0 ? round(accepted / decidedCount, 3) : null,
+    decidedCount,
+    dismissalRate: decidedCount > 0 ? round(dismissed / decidedCount, 3) : null,
+    missingStatusCount,
+    readCoverage,
+    sourceCounts,
+    statusCounts,
+    statusesWithoutData: RECOMMENDATION_STATUSES.filter((status) => statusCounts[status] === 0),
+    total: recommendations.length,
+    untaggedCount,
+  };
+}

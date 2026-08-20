@@ -30,6 +30,22 @@ import {buildCourseTableLookup, mergeCourseTableNames} from "./schedule-parsers/
 import {mergeExamFields, parseOptionalExamTable} from "./schedule-parsers/vision-exam-table";
 import {parseSpatialScheduleGrid} from "./schedule-parsers/vision-grid-table";
 import {createAdaptiveSchedulingFunctions} from "./adaptive-scheduling/functions";
+import {
+  appCheckHealth,
+  type AppCheckClientReport,
+  probeCloudMessaging,
+  probeFirebaseAuth,
+  probeFirebaseHosting,
+  probeFirebaseStorage,
+  probeGeminiKey,
+  probeGoogleCalendar,
+  probeIappOcr,
+  probeVision,
+  redact,
+  registerSecretForRedaction,
+  signInProviderHealth,
+  type ServiceHealth,
+} from "./health/service-probes";
 
 export {
   cleanupExpiredLinePendingReviews,
@@ -1690,7 +1706,7 @@ export const adminSeedDemoData = onCall({region}, async (request) => {
   }, {merge: true});
   batch.set(marker, {
     name: "Demo data", detail: "Initial Firebase data created for SmartLife Admin", status: "operational",
-    latencyMs: 0, checkedAt: now,
+    latencyMs: 0, checkedAt: now, sortOrder: 900,
   });
   await batch.commit();
   return {seeded: true};
@@ -2542,6 +2558,126 @@ export const adminMonitoringData = onCall({region}, async (request) => {
   throw new HttpsError("invalid-argument", "Unsupported admin monitoring view.");
 });
 
+/**
+ * Collections that back each `contextSources` tag on an AI recommendation, and
+ * the timestamp field each one is ordered by.
+ */
+const RECOMMENDATION_CONTEXT_SOURCES: Record<string, {
+  collection: string;
+  label: string;
+  timeField: string;
+}[]> = {
+  // `activity` is absent from the AiRecommendation type union but real
+  // documents carry it, so it is mapped rather than silently ignored.
+  activity: [{collection: "activities", label: "กิจกรรม", timeField: "startAt"}],
+  behavior: [
+    {collection: "schedulingBehavior", label: "พฤติกรรมการจัดตาราง", timeField: "createdAt"},
+    {collection: "activities", label: "กิจกรรม", timeField: "startAt"},
+  ],
+  finance: [{collection: "transactions", label: "รายการการเงิน", timeField: "occurredAt"}],
+  note: [{collection: "notes", label: "โน้ต", timeField: "createdAt"}],
+  schedule: [
+    {collection: "schedules", label: "ตารางเรียน", timeField: "startAt"},
+    {collection: "activities", label: "กิจกรรม", timeField: "startAt"},
+  ],
+};
+
+/** Window either side of a recommendation that counts as its context. */
+const AUDIT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * Rebuilds the data an AI recommendation was drawn from.
+ *
+ * `aiRecommendations` documents record only their `contextSources` category
+ * tags, never a snapshot of the rows that produced them, so a genuine audit
+ * has to go back to the owner's real collections and read what was there
+ * around the time the recommendation was written. The response says so
+ * explicitly via `reconstructed: true` — the admin UI must not present this as
+ * a stored prompt.
+ */
+export const adminRecommendationAudit = onCall({region}, async (request) => {
+  requireAdmin(request);
+  const path = requireString(request.data?.path, "path");
+  const segments = path.split("/");
+  if (segments.length !== 4 || segments[0] !== "users" || segments[2] !== "aiRecommendations") {
+    throw new HttpsError("invalid-argument", "path must be users/{uid}/aiRecommendations/{id}.");
+  }
+
+  const snapshot = await db.doc(path).get();
+  if (!snapshot.exists) throw new HttpsError("not-found", "Recommendation not found.");
+  const recommendation = snapshot.data() ?? {};
+  const ownerId = segments[1];
+
+  const createdAt = recommendation.createdAt instanceof Timestamp ?
+    recommendation.createdAt.toMillis() :
+    Date.now();
+  const from = Timestamp.fromMillis(createdAt - AUDIT_WINDOW_MS);
+  const to = Timestamp.fromMillis(createdAt + AUDIT_WINDOW_MS);
+
+  const tags: string[] = Array.isArray(recommendation.contextSources) ?
+    recommendation.contextSources.filter((tag: unknown): tag is string => typeof tag === "string") :
+    [];
+
+  // One tag can map to several collections, and two tags can share one, so
+  // read each collection at most once.
+  const planned = new Map<string, {collection: string; label: string; tag: string; timeField: string}>();
+  tags.forEach((tag) => {
+    (RECOMMENDATION_CONTEXT_SOURCES[tag] ?? []).forEach((source) => {
+      if (!planned.has(source.collection)) planned.set(source.collection, {...source, tag});
+    });
+  });
+
+  const owner = db.collection("users").doc(ownerId);
+  const groups = await Promise.all([...planned.values()].map(async (source) => {
+    try {
+      const rows = await owner.collection(source.collection)
+        .where(source.timeField, ">=", from)
+        .where(source.timeField, "<=", to)
+        .orderBy(source.timeField, "desc")
+        .limit(12)
+        .get();
+      return {
+        collection: source.collection,
+        items: serializeDocuments(rows),
+        label: source.label,
+        tag: source.tag,
+        timeField: source.timeField,
+      };
+    } catch (error) {
+      // A missing composite index or an empty subcollection must not blank the
+      // whole audit — report the group as unreadable and keep the rest.
+      return {
+        collection: source.collection,
+        error: error instanceof Error ? error.message.slice(0, 160) : "อ่านข้อมูลไม่สำเร็จ",
+        items: [],
+        label: source.label,
+        tag: source.tag,
+        timeField: source.timeField,
+      };
+    }
+  }));
+
+  const ownerSnapshot = await owner.get();
+  const ownerData = ownerSnapshot.data() ?? {};
+
+  return {
+    contextGroups: groups,
+    contextStoredOnDocument: false,
+    owner: {
+      displayName: typeof ownerData.displayName === "string" ? ownerData.displayName : "",
+      email: typeof ownerData.email === "string" ? ownerData.email : "",
+      uid: ownerId,
+    },
+    reconstructed: true,
+    recommendation: {
+      id: snapshot.id,
+      path,
+      ...serializeFirestoreValue(recommendation) as Record<string, unknown>,
+    },
+    window: {fromMillis: from.toMillis(), toMillis: to.toMillis()},
+  };
+});
+
 export const adminSetUserDisabled = onCall({region}, async (request) => {
   requireAdmin(request);
   const uid = requireString(request.data?.uid, "uid");
@@ -2560,27 +2696,162 @@ export const adminCreatePasswordResetLink = onCall({region}, async (request) => 
   return {link};
 });
 
-export const adminRefreshSystemStatus = onCall({region}, async (request) => {
-  requireAdmin(request);
+/**
+ * Reads a secret without letting a missing binding abort the whole health
+ * refresh — an unset secret is a reportable state, not a crash.
+ */
+function secretValue(secret: ReturnType<typeof defineSecret>) {
+  try {
+    return secret.value() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Normalises the caller's self-reported App Check attestation result.
+ *
+ * Returns null when the caller sent nothing, which is what marks the check as
+ * "not exercised" rather than failed. The payload is only ever used for
+ * diagnostics — `request.app` alone decides whether the check can be green.
+ */
+function readAppCheckReport(value: unknown): AppCheckClientReport | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.platform !== "string") return null;
+  return {
+    applicable: candidate.applicable !== false,
+    ok: candidate.ok === true,
+    platform: candidate.platform.slice(0, 24),
+    reason: typeof candidate.reason === "string" ? candidate.reason.slice(0, 160) : "",
+  };
+}
+
+/** Probes Firestore with a real read so a broken database surfaces. */
+async function probeFirestore(sortOrder: number): Promise<ServiceHealth> {
   const startedAt = Date.now();
-  await db.collection("users").limit(1).get();
-  const latencyMs = Date.now() - startedAt;
-  const statuses = [
-    {id: "firestore", name: "Cloud Firestore", detail: "Database query completed", status: "operational", latencyMs},
-    {id: "functions", name: "Cloud Functions", detail: "Admin health function responded", status: "operational", latencyMs: 0},
-    {id: "ocr", name: "Cloud Vision OCR", detail: "Vision API configured for Thai and English", status: "operational", latencyMs: 0},
-    {id: "calendar", name: "Google Calendar Sync", detail: "Waiting for OAuth connection checks", status: "degraded", latencyMs: 0},
-  ];
-  const batch = db.batch();
-  statuses.forEach(({id, ...status}) => {
-    batch.set(db.collection("systemStatus").doc(id), {
-      ...status,
-      checkedAt: FieldValue.serverTimestamp(),
+  try {
+    await db.collection("users").limit(1).get();
+    return {
+      detail: "อ่านคอลเลกชัน users สำเร็จ",
+      id: "firestore",
+      latencyMs: Date.now() - startedAt,
+      name: "Cloud Firestore",
+      sortOrder,
+      status: "operational",
+    };
+  } catch (error) {
+    return {
+      detail: `อ่าน Firestore ไม่สำเร็จ: ${redact(error instanceof Error ? error.message : String(error)).slice(0, 140)}`,
+      id: "firestore",
+      latencyMs: Date.now() - startedAt,
+      name: "Cloud Firestore",
+      sortOrder,
+      status: "outage",
+    };
+  }
+}
+
+export const adminRefreshSystemStatus = onCall(
+  {region, secrets: [geminiApiKey, geminiOcrApiKey, iappApiKey], timeoutSeconds: 60},
+  async (request) => {
+    requireAdmin(request);
+    const invokedAt = Date.now();
+
+    const assistantKey = secretValue(geminiApiKey);
+    const ocrReviewKey = secretValue(geminiOcrApiKey);
+    const iappKey = secretValue(iappApiKey);
+    [assistantKey, ocrReviewKey, iappKey].forEach(registerSecretForRedaction);
+
+    const projectId = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT ?? "";
+
+    const [
+      firestoreHealth,
+      authProbe,
+      storageHealth,
+      hostingHealth,
+      messagingHealth,
+      visionHealth,
+      iappHealth,
+      assistantGeminiHealth,
+      ocrGeminiHealth,
+      calendarHealth,
+    ] = await Promise.all([
+      probeFirestore(10),
+      probeFirebaseAuth(30),
+      probeFirebaseStorage(() => bucket.getMetadata(), bucket.name, 40),
+      probeFirebaseHosting(projectId, 50),
+      probeCloudMessaging(70),
+      probeVision(() => vision.getProjectId(), 80),
+      probeIappOcr(iappKey, 90),
+      probeGeminiKey({
+        apiKey: assistantKey,
+        id: "gemini-assistant",
+        name: "Gemini — Assistant",
+        purpose: "GEMINI_API_KEY",
+        sortOrder: 100,
+      }),
+      probeGeminiKey({
+        apiKey: ocrReviewKey,
+        id: "gemini-ocr-review",
+        name: "Gemini — OCR review",
+        purpose: "GEMINI_OCR_API_KEY",
+        sortOrder: 110,
+      }),
+      probeGoogleCalendar(120),
+    ]);
+
+    const statuses: ServiceHealth[] = [
+      firestoreHealth,
+      {
+        detail: `ฟังก์ชัน adminRefreshSystemStatus ทำงานในภูมิภาค ${region}`,
+        id: "functions",
+        latencyMs: Date.now() - invokedAt,
+        name: "Cloud Functions",
+        sortOrder: 20,
+        status: "operational",
+      },
+      authProbe.health,
+      storageHealth,
+      hostingHealth,
+      appCheckHealth({
+        clientReport: readAppCheckReport(request.data?.appCheck),
+        serverVerified: Boolean(request.app),
+        sortOrder: 60,
+      }),
+      messagingHealth,
+      visionHealth,
+      iappHealth,
+      assistantGeminiHealth,
+      ocrGeminiHealth,
+      calendarHealth,
+      signInProviderHealth({
+        authReachable: authProbe.reachable,
+        id: "google-signin",
+        linkedUsers: authProbe.googleUsers,
+        name: "Google Sign-In",
+        sortOrder: 130,
+      }),
+      signInProviderHealth({
+        authReachable: authProbe.reachable,
+        id: "facebook-signin",
+        linkedUsers: authProbe.facebookUsers,
+        name: "Facebook Login",
+        sortOrder: 140,
+      }),
+    ];
+
+    const batch = db.batch();
+    statuses.forEach(({id, ...status}) => {
+      batch.set(db.collection("systemStatus").doc(id), {
+        ...status,
+        checkedAt: FieldValue.serverTimestamp(),
+      });
     });
-  });
-  await batch.commit();
-  return {statuses};
-});
+    await batch.commit();
+    return {statuses};
+  },
+);
 
 export const fanOutAnnouncement = onDocumentCreated(
   {document: "announcements/{announcementId}", region},
