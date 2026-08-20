@@ -167,6 +167,47 @@ export function calculateDailyAllowance({monthlyBudget, now = new Date(), transa
   };
 }
 
+export type TensionLevel = 'safe' | 'caution' | 'tight' | 'very-tight' | 'over-budget';
+
+export type BudgetTension = {
+  dailyLimit: number;
+  label: string;
+  level: TensionLevel;
+  monthlyBudget: number;
+  percentUsed: number;
+  todayRemaining: number;
+  todaySpent: number;
+};
+
+/**
+ * Today's pressure against the monthly limit, given spending already gathered.
+ * It lives beside the other budget maths rather than in `budget-tension.ts`
+ * because that module reaches Firestore, and both the notification feed and the
+ * dashboard need this without a network round trip. `evaluateBudgetTension`
+ * re-exports it and remains the loading front door.
+ */
+export function calculateBudgetTension({monthlyBudget, now = new Date(), todaySpent}: {
+  monthlyBudget: number;
+  now?: Date;
+  todaySpent: number;
+}): BudgetTension | null {
+  if (!Number.isFinite(monthlyBudget) || monthlyBudget <= 0) return null;
+
+  // Bangkok month length, to match the Bangkok day window used for `todaySpent`.
+  const dailyLimit = Math.round(monthlyBudget / thailandDaysInMonth(now) / 10) * 10;
+  const todayRemaining = dailyLimit - todaySpent;
+  const percentUsed = dailyLimit > 0 ? (todaySpent / dailyLimit) * 100 : (todaySpent > 0 ? 100 : 0);
+
+  const [level, label]: [TensionLevel, string] =
+    percentUsed < 60 ? ['safe', 'ปลอดภัย']
+    : percentUsed < 80 ? ['caution', 'ควรระวัง']
+    : percentUsed < 95 ? ['tight', 'เริ่มตึง']
+    : percentUsed <= 100 ? ['very-tight', 'ตึงมาก']
+    : ['over-budget', 'เกินงบแล้ว'];
+
+  return {dailyLimit, label, level, monthlyBudget, percentUsed, todayRemaining, todaySpent};
+}
+
 function itemRange(item: {actualEnd?: TimeValue; actualStart?: TimeValue; endAt?: TimeValue; startAt?: TimeValue}) {
   const actualStart = toDate(item.actualStart);
   const actualEnd = toDate(item.actualEnd);
