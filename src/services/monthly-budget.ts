@@ -20,6 +20,70 @@ export const MONTHLY_BUDGET_MAX = 10_000_000;
 /** How many past months are searched for a budget to carry forward. */
 const ROLLOVER_LOOKBACK_MONTHS = 12;
 
+/**
+ * How long a Firestore round trip is given before the device copy is treated as
+ * the answer. Offline, the SDK does not reject a write: it queues it and only
+ * settles the promise once a server acknowledges it, which never comes. Without
+ * a bound the save screen sat on "กำลังบันทึก…" forever instead of falling
+ * through to the local path a failed write already takes.
+ */
+export const SYNC_TIMEOUT_MS = 6_000;
+
+type SyncOptions = {syncTimeoutMs?: number};
+
+class SyncTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Firestore did not answer within ${timeoutMs}ms`);
+    this.name = 'SyncTimeoutError';
+  }
+}
+
+/**
+ * True only when the platform positively reports having no connection. The web
+ * build answers instantly, so an offline save there never waits out the timeout
+ * at all; React Native leaves `navigator.onLine` undefined, and the timeout
+ * covers the phone.
+ */
+function knownOffline() {
+  const {onLine} = (globalThis.navigator ?? {}) as {onLine?: unknown};
+  return onLine === false;
+}
+
+function withSyncTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new SyncTimeoutError(timeoutMs)), timeoutMs);
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+/**
+ * Starts the sync without waiting on it. The returned promise is pre-handled,
+ * because a queued write that is still unacknowledged when the caller gives up
+ * would otherwise surface as an unhandled rejection.
+ */
+function startSync(uid: string, budget: Pick<MonthlyBudget, 'amount' | 'monthKey' | 'source'>) {
+  const pending = writeRemoteBudget(uid, {amount: budget.amount, monthKey: budget.monthKey, source: budget.source});
+  pending.catch(() => undefined);
+  return pending;
+}
+
+/**
+ * Clears the unsynced flag if the queued write lands after the caller stopped
+ * waiting, so a save made offline becomes shared the moment the connection is
+ * back rather than at the next reload. A newer save wins: only the exact copy
+ * this write belongs to is upgraded.
+ */
+function markSyncedWhenItLands(uid: string, budget: MonthlyBudget, pending: Promise<void>) {
+  void pending
+    .then(async () => {
+      const stored = parseStored(await AsyncStorage.getItem(storageKey(uid, budget.monthKey)), budget.monthKey);
+      if (stored?.updatedAt === budget.updatedAt && stored.synced === false) {
+        await writeCache(uid, {...budget, synced: true});
+      }
+    })
+    .catch(() => undefined);
+}
+
 function storageKey(uid: string, monthKey: string) {
   return `smartlife:monthly-budget:${uid}:${monthKey}`;
 }
@@ -116,8 +180,19 @@ async function readCache(uid: string, monthKey: string): Promise<MonthlyBudget |
  * saved it, so the first read that finds nothing stored remotely uploads the
  * cached one rather than letting it silently disappear.
  */
-export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey()): Promise<MonthlyBudget | null> {
+export async function loadMonthlyBudget(
+  uid: string,
+  monthKey = currentMonthKey(),
+  {syncTimeoutMs = SYNC_TIMEOUT_MS}: SyncOptions = {},
+): Promise<MonthlyBudget | null> {
   const cached = await readCache(uid, monthKey).catch(() => null);
+  // Every remote call below is bounded: offline, the SDK answers reads from its
+  // own cache but leaves writes queued indefinitely, which would hang the
+  // screen on its loading state instead of showing the device copy.
+  const bounded = <T>(work: Promise<T>) => {
+    if (knownOffline()) return Promise.reject(new SyncTimeoutError(0));
+    return withSyncTimeout(work, syncTimeoutMs);
+  };
 
   try {
     // A cached limit flagged unsynced is a save the user already confirmed on
@@ -127,20 +202,26 @@ export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey(
     // to the previous limit with nothing to explain why.
     if (cached && cached.synced === false) {
       const originMonth = cached.rolledOverFrom ?? cached.monthKey;
-      await writeRemoteBudget(uid, {amount: cached.amount, monthKey: originMonth, source: cached.source});
+      const pending = startSync(uid, {amount: cached.amount, monthKey: originMonth, source: cached.source});
+      try {
+        await bounded(pending);
+      } catch (error) {
+        markSyncedWhenItLands(uid, {...cached, monthKey: originMonth}, pending);
+        throw error;
+      }
       const restored: MonthlyBudget = {...cached, synced: true};
       await writeCache(uid, {...restored, monthKey: originMonth}).catch(() => undefined);
       return restored;
     }
 
-    const exact = await readRemoteBudget(uid, monthKey);
+    const exact = await bounded(readRemoteBudget(uid, monthKey));
     if (exact) {
       const budget: MonthlyBudget = {...exact, monthKey, synced: true};
       await writeCache(uid, budget).catch(() => undefined);
       return budget;
     }
 
-    const carried = await readLatestRemoteBudgetBefore(uid, monthKey, earliestRolloverKey(monthKey));
+    const carried = await bounded(readLatestRemoteBudgetBefore(uid, monthKey, earliestRolloverKey(monthKey)));
     if (carried) {
       return {...carried, monthKey, rolledOverFrom: carried.monthKey, synced: true};
     }
@@ -150,13 +231,16 @@ export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey(
     // push it up now instead of losing it.
     if (cached) {
       const originMonth = cached.rolledOverFrom ?? cached.monthKey;
+      const pending = startSync(uid, {amount: cached.amount, monthKey: originMonth, source: cached.source});
       try {
-        await writeRemoteBudget(uid, {amount: cached.amount, monthKey: originMonth, source: cached.source});
+        await bounded(pending);
         const migrated = {...cached, synced: true};
         await writeCache(uid, {...migrated, monthKey: originMonth}).catch(() => undefined);
         return migrated;
       } catch (error) {
         console.error('[MonthlyBudget] Could not upload the device budget', error);
+        await writeCache(uid, {...cached, monthKey: originMonth, synced: false}).catch(() => undefined);
+        markSyncedWhenItLands(uid, {...cached, monthKey: originMonth, synced: false}, pending);
         return {...cached, synced: false};
       }
     }
@@ -170,11 +254,17 @@ export async function loadMonthlyBudget(uid: string, monthKey = currentMonthKey(
 }
 
 /**
- * Stores the limit. The device copy is written first so an offline save is
- * never lost, then the same value is synced. `synced` reports whether the
- * other devices can see it yet.
+ * Stores the limit. The device copy is written before the sync is attempted, so
+ * a save made with no connection is durable the moment the user presses the
+ * button and never waits on the network to be usable. `synced` reports whether
+ * the other devices can see it yet; when it is false the write stays queued in
+ * the SDK and the flag clears itself as soon as it lands.
  */
-export async function saveMonthlyBudget(uid: string, budget: Omit<MonthlyBudget, 'rolledOverFrom' | 'synced' | 'updatedAt'>) {
+export async function saveMonthlyBudget(
+  uid: string,
+  budget: Omit<MonthlyBudget, 'rolledOverFrom' | 'synced' | 'updatedAt'>,
+  {syncTimeoutMs = SYNC_TIMEOUT_MS}: SyncOptions = {},
+) {
   if (!isValidBudgetAmount(budget.amount)) {
     throw new Error(`Monthly budget must be between 1 and ${MONTHLY_BUDGET_MAX}.`);
   }
@@ -186,11 +276,18 @@ export async function saveMonthlyBudget(uid: string, budget: Omit<MonthlyBudget,
     updatedAt: new Date().toISOString(),
   };
 
+  await writeCache(uid, {...next, synced: false});
+  const pending = startSync(uid, next);
+
   try {
-    await writeRemoteBudget(uid, {amount: next.amount, monthKey: next.monthKey, source: next.source});
+    // An offline device is not worth a wait it cannot win, so skip straight to
+    // the local path where the platform already knows there is no connection.
+    if (knownOffline()) throw new SyncTimeoutError(0);
+    await withSyncTimeout(pending, syncTimeoutMs);
   } catch (error) {
     console.error('[MonthlyBudget] Sync failed, keeping the budget on this device', error);
-    next.synced = false;
+    markSyncedWhenItLands(uid, next, pending);
+    return {...next, synced: false};
   }
   await writeCache(uid, next);
   return next;

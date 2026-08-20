@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 
 import AsyncStorage, {__reset as resetDevices, __useDevice} from '@react-native-async-storage/async-storage';
-import {__dump, __reset as resetServer, __setOffline} from '@/services/monthly-budget-remote';
+import {__dump, __flushQueuedWrites, __queuedWriteCount, __reset as resetServer, __setOffline} from '@/services/monthly-budget-remote';
 import {loadMonthlyBudget, saveMonthlyBudget} from '../src/services/monthly-budget.ts';
 
 const UID = 'student-1';
@@ -189,6 +189,94 @@ const localKey = (monthKey) => `smartlife:monthly-budget:${UID}:${monthKey}`;
   __useDevice('phone');
   const refreshed = await loadMonthlyBudget(UID, AUG);
   assert.equal(refreshed.amount, 9000, 'the phone does not keep showing its stale local 1000');
+}
+
+// --- Genuinely offline is not the same as a failed write. Firestore accepts
+// the write, holds it, and leaves the promise pending until a server answers,
+// so awaiting it offline never returns: the screen sat on "กำลังบันทึก…"
+// forever. The save must give up on the wait, not on the save.
+{
+  fresh();
+  __useDevice('phone');
+  __setOffline({queueWrites: true});
+
+  const startedAt = Date.now();
+  const pending = await saveMonthlyBudget(UID, {amount: 4200, monthKey: AUG, source: 'ai'}, {syncTimeoutMs: 40});
+  const elapsed = Date.now() - startedAt;
+
+  assert.ok(elapsed < 2000, `the save returned in ${elapsed}ms rather than waiting on a write that never lands`);
+  assert.equal(pending.amount, 4200, 'the amount the user confirmed comes straight back');
+  assert.equal(pending.synced, false, 'flagged so the screen shows the pending-sync wording');
+  assert.equal(__queuedWriteCount(), 1, 'the write is still held by the SDK, not abandoned');
+  assert.deepEqual(__dump(), [], 'and nothing reached the server yet');
+
+  // The local copy is written before the sync is attempted, so closing the app
+  // here does not lose the limit.
+  assert.deepEqual(
+    JSON.parse(await AsyncStorage.getItem(localKey(AUG))),
+    {amount: 4200, monthKey: AUG, source: 'ai', synced: false, updatedAt: pending.updatedAt},
+    'the device copy is durable the moment the button is pressed',
+  );
+
+  // Reading it back while still offline keeps showing the pending amount
+  // instead of hanging on the queued write it has to push first.
+  const startedReadAt = Date.now();
+  const offlineRead = await loadMonthlyBudget(UID, AUG, {syncTimeoutMs: 40});
+  assert.ok(Date.now() - startedReadAt < 2000, 'the load gives up on the wait too');
+  assert.equal(offlineRead.amount, 4200);
+  assert.equal(offlineRead.synced, false);
+
+  // Back online: the held writes land on their own, and the flag clears without
+  // the user saving again or the screen being reloaded.
+  await __flushQueuedWrites();
+  assert.deepEqual(__dump().map((row) => [row.monthKey, row.amount]), [[AUG, 4200]], 'the queued write reaches the server');
+  assert.equal(
+    JSON.parse(await AsyncStorage.getItem(localKey(AUG))).synced, true,
+    'and the device copy stops claiming it is unsynced',
+  );
+
+  __useDevice('web');
+  assert.equal((await loadMonthlyBudget(UID, AUG)).amount, 4200, 'so the other platform sees it');
+}
+
+// --- A newer save must not be overwritten by an older queued write landing
+// late; only the copy that write belongs to may be marked synced.
+{
+  fresh();
+  __useDevice('phone');
+  __setOffline({queueWrites: true});
+  await saveMonthlyBudget(UID, {amount: 4200, monthKey: AUG, source: 'ai'}, {syncTimeoutMs: 40});
+
+  __setOffline({writes: true});
+  const newer = await saveMonthlyBudget(UID, {amount: 7100, monthKey: AUG, source: 'manual'}, {syncTimeoutMs: 40});
+
+  __setOffline({});
+  await __flushQueuedWrites();
+  const stored = JSON.parse(await AsyncStorage.getItem(localKey(AUG)));
+  assert.equal(stored.amount, 7100, 'the later limit is the one on the device');
+  assert.equal(stored.updatedAt, newer.updatedAt);
+  assert.equal(stored.synced, false, 'and it is still pending, because its own write never went out');
+}
+
+// --- Where the platform says outright that it is offline, the save skips the
+// wait entirely rather than burning the full timeout on a lost cause.
+{
+  fresh();
+  __useDevice('phone');
+  __setOffline({queueWrites: true});
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {onLine: false}});
+
+  const startedAt = Date.now();
+  const saved = await saveMonthlyBudget(UID, {amount: 3300, monthKey: AUG, source: 'manual'}, {syncTimeoutMs: 60_000});
+  const elapsed = Date.now() - startedAt;
+
+  assert.ok(elapsed < 1000, `an offline device returned in ${elapsed}ms instead of waiting out the timeout`);
+  assert.equal(saved.amount, 3300);
+  assert.equal(saved.synced, false);
+
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {onLine: true}});
+  await __flushQueuedWrites();
+  assert.deepEqual(__dump().map((row) => [row.monthKey, row.amount]), [[AUG, 3300]], 'the skipped wait still queued the write');
 }
 
 console.log('SmartLife monthly budget sync tests passed');
