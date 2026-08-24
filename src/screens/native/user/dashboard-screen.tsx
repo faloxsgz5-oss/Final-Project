@@ -11,7 +11,18 @@ import {calculateDailyAllowance, type DailyAllowance} from '@/services/dynamic-i
 import {loadMonthlyBudget} from '@/services/monthly-budget';
 import {buildNotificationFeed, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
+import {recordTaskCompleted} from '@/services/behavior-tracking';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+
+/**
+ * Page data arrives already serialised to ISO strings, so the slot times the
+ * adaptive engine learns from have to be parsed back rather than read as
+ * Firestore timestamps.
+ */
+function dateOf(value: unknown) {
+  const parsed = new Date(String(value ?? ''));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 type Props = {onNavigate: (page: string) => void; uid: string};
 type Item = Record<string, unknown>;
@@ -122,7 +133,12 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     setData((current) => current ? {...current, [key]: items(current[key]).map((entry) => string(entry, 'id', '') === id ? {...entry, completedAt: new Date().toISOString(), status: 'completed'} : entry)} : current);
     try {
       if (entity === 'note') await notesStore.update(uid, id, {completedAt: Timestamp.fromDate(new Date()), status: 'completed'});
-      else await activitiesStore.update(uid, id, {status: 'completed'});
+      else {
+        await activitiesStore.update(uid, id, {status: 'completed'});
+        // Only activities live in the adaptive engine's schedule; notes have no
+        // slot for it to learn a preferred hour from.
+        void recordTaskCompleted(id, {scheduledEndAt: dateOf(item.endAt), scheduledStartAt: dateOf(item.startAt)});
+      }
     } catch (error) {
       await load().catch(() => undefined);
       Alert.alert('อัปเดตงานไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');

@@ -202,4 +202,69 @@ assert.ok(fridayNoonSlots.every((slot) => {
   return hour === 12;
 }), 'noon requests must default to 12:00 PM and never fall back to 06:00');
 
+// --- The proposal document's own example, run through both halves of the loop.
+//
+// "If the user often postpones their morning reading, the system shifts
+// tomorrow's schedule to the afternoon." Until the behaviour hooks existed this
+// could never happen, because nothing wrote the postponements that
+// calculateSchedulingPatterns turns into a preferred hour. These assertions
+// pin the whole chain: observations in -> pattern -> a different slot out.
+const bangkokHour = (value) => Number(new Intl.DateTimeFormat('en-GB', {hour: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(new Date(value)));
+// Same weekday as the day being scheduled, which is how patterns are keyed.
+const sameWeekdayBefore = (weeks) => ms('2026-08-05T00:00:00+07:00') - weeks * 7 * day;
+const readingObservation = (weeksAgo, eventType, startHour, movedToHour) => ({
+  actualDurationMinutes: 60,
+  actualStartMs: null,
+  category: 'reading',
+  eventType,
+  originalStartMs: sameWeekdayBefore(weeksAgo) + startHour * 60 * minute,
+  updatedStartMs: sameWeekdayBefore(weeksAgo) + (movedToHour ?? startHour) * 60 * minute,
+});
+
+const readingRequest = request({
+  category: 'reading',
+  earliestStartMs: ms('2026-08-05T06:00:00+07:00'),
+  latestEndMs: ms('2026-08-05T22:00:00+07:00'),
+});
+
+// Before: no behaviour has ever been recorded, which is the state every real
+// user was permanently stuck in. Nothing distinguishes one free hour from
+// another, so the engine just takes the earliest one.
+const coldSlots = findAdaptiveTimeSlots({...readingRequest, patterns: []}, 8);
+assert.ok(coldSlots.length > 0, 'the cold-start request must still find slots');
+assert.ok(bangkokHour(coldSlots[0].startMs) < 12, 'with no learned pattern the engine should still pick the earliest free hour');
+
+// After: three mornings pushed to the afternoon, plus two afternoons actually
+// finished. Five outcome events clears lowObservationCount, so the pattern
+// carries real confidence rather than being discarded as insufficient.
+const readingPatterns = calculateSchedulingPatterns([
+  readingObservation(4, 'task_postponed', 8, 14),
+  readingObservation(3, 'task_postponed', 8, 14),
+  readingObservation(2, 'task_postponed', 8, 15),
+  readingObservation(2, 'task_completed', 14),
+  readingObservation(1, 'task_completed', 15),
+], DEFAULT_ADAPTIVE_PREFERENCES.thresholds, 'Asia/Bangkok');
+const readingPattern = readingPatterns.find((item) => item.activityCategory === 'reading');
+assert.ok(readingPattern, 'postponed reading must produce a reading pattern');
+assert.equal(readingPattern.observationCount, 5, 'every completion and postponement is an outcome');
+assert.equal(readingPattern.completionRate, 0.4, 'two of five reading outcomes were completions');
+assert.equal(readingPattern.postponementRate, 0.6, 'three of five reading outcomes were postponements');
+assert.notEqual(readingPattern.confidenceLevel, 'insufficient', 'five outcomes must clear the low-confidence threshold');
+assert.ok(readingPattern.preferredStartHour >= 13, 'the learned hour must follow where the reading actually happened');
+
+const learnedSlots = findAdaptiveTimeSlots({...readingRequest, patterns: readingPatterns}, 8);
+assert.ok(learnedSlots.length > 0, 'the learned request must still find slots');
+assert.ok(bangkokHour(learnedSlots[0].startMs) >= 13, 'after repeated morning postponements the top slot must move into the afternoon');
+assert.notEqual(learnedSlots[0].startMs, coldSlots[0].startMs, 'the learned suggestion must differ from the cold-start one');
+
+// The two events nobody presses a button for have to count as postponements as
+// well, otherwise the sweep would write rows the rates ignore.
+const sweptPattern = calculateSchedulingPatterns([
+  readingObservation(3, 'task_skipped', 8),
+  readingObservation(2, 'reminder_ignored', 8),
+  readingObservation(1, 'task_completed', 8),
+], DEFAULT_ADAPTIVE_PREFERENCES.thresholds, 'Asia/Bangkok').find((item) => item.activityCategory === 'reading');
+assert.equal(sweptPattern.observationCount, 3, 'skips and ignored reminders are outcomes, not noise');
+assert.equal(sweptPattern.postponementRate, Number((2 / 3).toFixed(3)), 'task_skipped and reminder_ignored must raise the postponement rate');
+
 console.log('Adaptive Scheduling deterministic tests passed.');

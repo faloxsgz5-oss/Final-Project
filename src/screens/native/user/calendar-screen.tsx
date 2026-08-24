@@ -13,12 +13,14 @@ import {
   View,
 } from 'react-native';
 import {CalendarList, CalendarProvider, WeekCalendar, type DateData} from 'react-native-calendars';
+import {Timestamp} from 'firebase/firestore';
 
 import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-locale';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
+import {recordTaskCompleted, recordTaskPostponed} from '@/services/behavior-tracking';
 import {MaterialIcon, UserTabBar} from './user-ui';
 
 type Page = 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month';
@@ -63,6 +65,24 @@ function toDate(value: unknown) {
   if (value && typeof value === 'object' && 'toDate' in value && typeof (value as {toDate?: unknown}).toDate === 'function') return (value as {toDate: () => Date}).toDate();
   const date = new Date(String(value ?? ''));
   return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+/**
+ * Until now the app had no way to move a scheduled activity at all: the
+ * calendar could only complete or delete one, and the activity form only
+ * creates. That gap is the reason `task_postponed` had never been recorded by
+ * anything -- the action it names did not exist for the user to take. These
+ * three offsets cover the postpones the adaptive proposal is actually about (a
+ * morning slot pushed into the afternoon, or to the next day) without demanding
+ * a full date picker.
+ */
+const POSTPONE_OPTIONS: {hint: string; label: string; shift: (from: Date) => Date}[] = [
+  {hint: 'เลื่อนสั้น ๆ ให้ทำต่อทีหลัง', label: 'อีก 1 ชั่วโมง', shift: (from) => new Date(from.getTime() + 3600000)},
+  {hint: 'ย้ายงานเช้าไปทำช่วงบ่าย', label: 'บ่ายนี้ 13:00', shift: (from) => atBangkokHour(from, 13)},
+  {hint: 'ยกไปวันถัดไปเวลาเดิม', label: 'พรุ่งนี้เวลาเดิม', shift: (from) => new Date(from.getTime() + 86400000)},
+];
+function atBangkokHour(from: Date, hour: number) {
+  const parts = bangkokParts(from);
+  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), hour - 7));
 }
 function bangkokParts(value: Date) {
   const parts = new Intl.DateTimeFormat('en-US', {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).formatToParts(value);
@@ -130,6 +150,8 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   const [refreshing, setRefreshing] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [completingId, setCompletingId] = useState('');
+  const [postponing, setPostponing] = useState<EventItem | null>(null);
+  const [postponeBusy, setPostponeBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,6 +175,15 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     return result;
   }, {}), [events]);
   const selectedEvents = grouped[selectedDate] ?? [];
+  // Only offer moves that are genuinely later than the slot being moved -- an
+  // option that lands before the current start would not be a postpone.
+  const postponeChoices = useMemo(() => {
+    if (!postponing) return [];
+    const from = toDate(postponing.startAt);
+    return POSTPONE_OPTIONS
+      .map((option) => ({hint: option.hint, label: option.label, startAt: option.shift(from)}))
+      .filter((option) => option.startAt.getTime() > from.getTime());
+  }, [postponing]);
   const dayStrip = useMemo(() => [-3, -2, -1, 0, 1, 2, 3].map((offset) => offsetDate(selectedDate, offset)), [selectedDate]);
   const yearMonths = useMemo(() => {
     const year = Number(visibleDate.slice(0, 4));
@@ -201,6 +232,10 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     setEvents((current) => current.filter((item) => item.id !== id));
     try {
       await activities.update(uid, id, {status: 'completed'});
+      // Adaptive scheduling learns which hours this user actually finishes work
+      // in. Without this call `completionRate` stays at 0 forever and every
+      // suggestion is generated from defaults instead of from the user.
+      void recordTaskCompleted(id, {scheduledEndAt: toDate(event.endAt), scheduledStartAt: toDate(event.startAt)});
     } catch (error) {
       await load().catch(() => undefined);
       Alert.alert('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
@@ -208,6 +243,29 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       setCompletingId('');
     }
   }, [completingId, load, uid]);
+
+  const postponeEvent = useCallback(async (event: EventItem, toStart: Date) => {
+    const id = event.id;
+    if (!id || event.entityType !== 'activity' || postponeBusy) return;
+    const fromStart = toDate(event.startAt);
+    const durationMs = Math.max(900000, toDate(event.endAt).getTime() - fromStart.getTime());
+    setPostponeBusy(true);
+    try {
+      await activities.update(uid, id, {
+        endAt: Timestamp.fromDate(new Date(toStart.getTime() + durationMs)),
+        startAt: Timestamp.fromDate(toStart),
+      });
+      // Recorded only after the move commits, so a rejected write never teaches
+      // the engine a postponement that did not happen.
+      void recordTaskPostponed(id, fromStart, toStart);
+      setPostponing(null);
+      await load();
+    } catch (error) {
+      Alert.alert('เลื่อนไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setPostponeBusy(false);
+    }
+  }, [load, postponeBusy, uid]);
 
   const DayCell = ({date, state}: {date?: DateData; state?: string}) => {
     if (!date) return null;
@@ -328,7 +386,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             {loading ? <View style={styles.calendarLoading}><ActivityIndicator color={C.accent} /><Text style={styles.loadingText}>กำลังโหลดปฏิทิน…</Text></View> : null}
           </View>
 
-          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onOpen={() => setDetailsOpen(true)} /></View> : null}
+          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onOpen={() => setDetailsOpen(true)} onPostpone={setPostponing} /></View> : null}
         </ScrollView>
 
         <Pressable accessibilityLabel="เพิ่มกิจกรรมใหม่" accessibilityRole="button" onPress={() => onNavigate('smartlife_add_activity')} style={({pressed}) => [styles.fab, pressed && styles.fabPressed]}><MaterialIcon color={C.accent} name="add" size={30} /></Pressable>
@@ -340,8 +398,42 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             <View style={styles.sheet}>
               <View style={styles.handle} />
               <View style={styles.sheetHead}><View><Text style={styles.sheetTitle}>{formatLongDate(selectedDate)}</Text><Text style={styles.sheetSub}>{selectedEvents.length} รายการ</Text></View><Pressable onPress={() => setDetailsOpen(false)} style={styles.close}><MaterialIcon color={C.secondary} name="close" size={20} /></Pressable></View>
-              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => void completeEvent(event) : undefined} onDelete={() => deleteEvent(event)} />) : <EmptyAgenda />}</ScrollView>
+              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => void completeEvent(event) : undefined} onDelete={() => deleteEvent(event)} onPostpone={event.entityType === 'activity' ? () => setPostponing(event) : undefined} />) : <EmptyAgenda />}</ScrollView>
               <Pressable onPress={() => { setDetailsOpen(false); onNavigate('smartlife_add_activity'); }} style={styles.sheetAdd}><MaterialIcon color="#fff" name="add" size={20} /><Text style={styles.sheetAddText}>เพิ่มกิจกรรม</Text></Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal animationType="slide" onRequestClose={() => setPostponing(null)} transparent visible={Boolean(postponing)}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.handle} />
+              <View style={styles.sheetHead}>
+                <View style={styles.postponeHeadCopy}>
+                  <Text numberOfLines={1} style={styles.sheetTitle}>เลื่อน {postponing ? eventTitle(postponing) : ''}</Text>
+                  <Text style={styles.sheetSub}>{postponing ? `เวลาเดิม ${formatTime(postponing.startAt)} น.` : ''}</Text>
+                </View>
+                <Pressable onPress={() => setPostponing(null)} style={styles.close}><MaterialIcon color={C.secondary} name="close" size={20} /></Pressable>
+              </View>
+              <View style={styles.postponeList}>
+                {postponeChoices.map((choice) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={postponeBusy}
+                    key={choice.label}
+                    onPress={() => { if (postponing) void postponeEvent(postponing, choice.startAt); }}
+                    style={({pressed}) => [styles.postponeChoice, postponeBusy && styles.postponeChoiceDisabled, pressed && styles.pressed]}
+                  >
+                    <View style={styles.postponeChoiceCopy}>
+                      <Text style={styles.postponeChoiceLabel}>{choice.label}</Text>
+                      <Text style={styles.postponeChoiceHint}>{choice.hint} · {formatTime(choice.startAt)} น.</Text>
+                    </View>
+                    <MaterialIcon color={C.secondary} name="chevron_right" size={20} />
+                  </Pressable>
+                ))}
+                {postponeChoices.length ? null : <Text style={styles.postponeEmpty}>ช่วงเวลาที่เลือกได้ผ่านไปแล้วทั้งหมด</Text>}
+              </View>
+              <Text style={styles.postponeNote}>ระบบจะจดจำว่าคุณเลื่อนงานประเภทนี้ไปช่วงไหน เพื่อเสนอเวลาที่ตรงกับคุณมากขึ้นในครั้งถัดไป</Text>
             </View>
           </View>
         </Modal>
@@ -350,9 +442,9 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   );
 }
 
-function AgendaList({completingId, events, onComplete, onOpen}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onOpen: () => void}) {
+function AgendaList({completingId, events, onComplete, onOpen, onPostpone}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onOpen: () => void; onPostpone: (event: EventItem) => void}) {
   if (!events.length) return <EmptyAgenda />;
-  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onPress={onOpen} />)}</View>;
+  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onPostpone={event.entityType === 'activity' ? () => onPostpone(event) : undefined} onPress={onOpen} />)}</View>;
 }
 
 const HOUR_HEIGHT = 62;
@@ -399,7 +491,7 @@ function DayTimeline({date, events, isToday, onOpen}: {date: string; events: Eve
   </View>;
 }
 
-function EventRow({completing = false, event, onComplete, onDelete, onPress}: {completing?: boolean; event: EventItem; onComplete?: () => void; onDelete?: () => void; onPress?: () => void}) {
+function EventRow({completing = false, event, onComplete, onDelete, onPostpone, onPress}: {completing?: boolean; event: EventItem; onComplete?: () => void; onDelete?: () => void; onPostpone?: () => void; onPress?: () => void}) {
   const color = typeof event.color === 'string' ? event.color : event.entityType === 'schedule' ? C.green : C.blue;
   const priority = priorityInfo(event.priority);
   return (
@@ -407,7 +499,7 @@ function EventRow({completing = false, event, onComplete, onDelete, onPress}: {c
       <View style={[styles.eventColor, {backgroundColor: color}]} />
       <View style={styles.eventTime}><Text style={styles.eventStart}>{formatTime(event.startAt)}</Text><Text style={styles.eventEnd}>{formatTime(event.endAt)}</Text></View>
       <View style={styles.eventCopy}><Text numberOfLines={1} style={styles.eventTitle}>{eventTitle(event)}</Text><View style={styles.eventMetaRow}><Text numberOfLines={1} style={styles.eventMeta}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text>{priority ? <View style={[styles.priorityBadge, {backgroundColor: priority.backgroundColor}]}><Text style={[styles.priorityBadgeText, {color: priority.color}]}>{priority.label}</Text></View> : null}</View></View>
-      <View style={styles.eventActions}>{onComplete ? <Pressable accessibilityLabel={`ทำ ${eventTitle(event)} ให้เสร็จ`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onComplete(); }} style={styles.completeEventButton}>{completing ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeEventText}>เสร็จ</Text></Pressable> : null}{onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={(pressEvent) => { pressEvent.stopPropagation(); onDelete(); }} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : !onComplete ? <MaterialIcon color={C.tertiary} name="chevron_right" size={20} /> : null}</View>
+      <View style={styles.eventActions}>{onPostpone ? <Pressable accessibilityLabel={`เลื่อน ${eventTitle(event)}`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onPostpone(); }} style={styles.postponeEventButton}><MaterialIcon color={C.secondary} name="schedule" size={15} /><Text style={styles.postponeEventText}>เลื่อน</Text></Pressable> : null}{onComplete ? <Pressable accessibilityLabel={`ทำ ${eventTitle(event)} ให้เสร็จ`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onComplete(); }} style={styles.completeEventButton}>{completing ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeEventText}>เสร็จ</Text></Pressable> : null}{onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={(pressEvent) => { pressEvent.stopPropagation(); onDelete(); }} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : !onComplete ? <MaterialIcon color={C.tertiary} name="chevron_right" size={20} /> : null}</View>
     </Pressable>
   );
 }
@@ -526,5 +618,16 @@ const styles = StyleSheet.create({
   sheetAddText: {color: '#fff', fontFamily: F.b, fontSize: 11},
   fab: {alignItems: 'center', backgroundColor: '#fff', borderColor: C.line, borderRadius: 28, borderWidth: 1, bottom: 78, boxShadow: '0 10px 22px rgba(55,86,54,.18)', height: 58, justifyContent: 'center', position: 'absolute', right: 20, width: 58, zIndex: 20},
   fabPressed: {opacity: .86, transform: [{scale: .96}]},
+  postponeChoice: {alignItems: 'center', backgroundColor: '#f6f8f4', borderRadius: 14, flexDirection: 'row', gap: 10, minHeight: 58, paddingHorizontal: 13},
+  postponeChoiceCopy: {flex: 1, minWidth: 0},
+  postponeChoiceDisabled: {opacity: .55},
+  postponeChoiceHint: {color: C.tertiary, fontFamily: F.s, fontSize: 10, marginTop: 2},
+  postponeChoiceLabel: {color: C.label, fontFamily: F.b, fontSize: 13},
+  postponeEmpty: {color: C.tertiary, fontFamily: F.s, fontSize: 11, paddingVertical: 12, textAlign: 'center'},
+  postponeEventButton: {alignItems: 'center', backgroundColor: '#eef2ea', borderRadius: 11, flexDirection: 'row', gap: 3, minHeight: 30, paddingHorizontal: 9},
+  postponeEventText: {color: C.secondary, fontFamily: F.b, fontSize: 10},
+  postponeHeadCopy: {flex: 1, minWidth: 0, paddingRight: 10},
+  postponeList: {gap: 8, marginTop: 12},
+  postponeNote: {color: C.tertiary, fontFamily: F.s, fontSize: 10, lineHeight: 15, marginTop: 14},
   pressed: {opacity: .62},
 });

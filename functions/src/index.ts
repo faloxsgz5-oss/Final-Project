@@ -83,6 +83,7 @@ export const {
   recordSchedulingBehavior,
   registerAdaptivePushToken,
   rejectSchedulingSuggestion,
+  scheduledAdaptiveOutcomeSweep,
   scheduledAdaptivePatternRecalculation,
   scheduledAutomaticAdaptiveScheduling,
   undoScheduleChange,

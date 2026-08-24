@@ -36,6 +36,10 @@ import {validateGeminiNaturalLanguageIntent, ValidatedNaturalLanguageIntent} fro
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 const PENDING_SUGGESTION_TTL_MS = 7 * DAY_MS;
+/** How far back the outcome sweep looks for slots that quietly went by. */
+const OUTCOME_SWEEP_WINDOW_MS = 3 * DAY_MS;
+/** A slot is not "skipped" the second it ends; the user may still be finishing. */
+const OUTCOME_SWEEP_GRACE_MS = 30 * MINUTE_MS;
 const SUGGESTION_MINIMUM_LEAD_MS = 10 * MINUTE_MS;
 const GEMINI_EXPLANATION_TIMEOUT_MS = 4_500;
 
@@ -1038,6 +1042,14 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const item = activityFromDocument({id: activity.id, data: () => activity.data() ?? {}});
     const actualStartMs = timestampMs(data.actualStart) ?? timestampMs(activity.data()?.actualStart);
     const updatedStartMs = timestampMs(data.updatedScheduledStart) ?? item.startMs;
+    // A postpone moves the activity first, so by the time this runs the document
+    // already holds the new start. The caller has to say what the slot was
+    // before it moved, or every postpone would record a move from the new time
+    // to itself and the engine would learn nothing from it.
+    const claimedOriginalMs = timestampMs(data.originalScheduledStart);
+    const originalStartMs = claimedOriginalMs !== null && Math.abs(claimedOriginalMs - Date.now()) <= 366 * DAY_MS
+      ? claimedOriginalMs
+      : item.startMs;
     const referenceMs = actualStartMs ?? updatedStartMs;
     const reference = userRef(uid).collection("schedulingBehaviorEvents").doc();
     await reference.set({
@@ -1050,7 +1062,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       estimatedDurationMinutes: item.estimatedDurationMinutes,
       eventType,
       metadata: plainMetadata(data.metadata),
-      originalScheduledStart: Timestamp.fromMillis(item.startMs),
+      originalScheduledStart: Timestamp.fromMillis(originalStartMs),
       ownerId: uid,
       scheduleItemId,
       source: ["ai_suggestion", "automatic_scheduler"].includes(text(data.source, 30)) ? text(data.source, 30) : "user",
@@ -1101,6 +1113,116 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     }, {merge: true});
     await batch.commit();
     return {patterns: patterns.length};
+  }
+
+  /**
+   * Records the two outcomes nobody presses a button for.
+   *
+   * `task_skipped` and `reminder_ignored` are the behaviour events that by
+   * definition have no user action behind them: the user let a scheduled slot
+   * pass, or let a suggestion lapse without answering it. They can only be
+   * observed by looking backwards, which is why they are swept here instead of
+   * being hooked to a screen the way `task_completed` and `task_postponed` are.
+   *
+   * Both writes use a document id derived from the thing being judged, so a
+   * re-run - a retry, an overlapping schedule, a manual invocation - restates
+   * the same event rather than inflating the user's postponement rate. The
+   * already-recorded ids are read back first so a repeat run does not push
+   * `createdAt` forward and keep the same skip alive in the 2-day window the
+   * pattern recalculation reads.
+   */
+  async function sweepUserOutcomes(uid: string, nowMs: number) {
+    const setting = await preferences(uid);
+    const fromMs = nowMs - OUTCOME_SWEEP_WINDOW_MS;
+    const toMs = nowMs - OUTCOME_SWEEP_GRACE_MS;
+    const [activitySnapshot, pendingSnapshot] = await Promise.all([
+      userRef(uid).collection("activities")
+        .where("endAt", ">=", Timestamp.fromMillis(fromMs))
+        .where("endAt", "<", Timestamp.fromMillis(toMs))
+        .limit(200).get(),
+      userRef(uid).collection("schedulingSuggestions").where("status", "==", "pending").limit(200).get(),
+    ]);
+
+    const skipped = activitySnapshot.docs
+      .map(activityFromDocument)
+      .filter((item) => !["cancelled", "completed"].includes(item.status));
+    const lapsed = pendingSnapshot.docs.filter((document) => {
+      const expiresAtMs = timestampMs(document.data().expiresAt) ?? timestampMs(document.data().validUntil);
+      return expiresAtMs !== null && expiresAtMs <= nowMs;
+    });
+
+    const events = userRef(uid).collection("schedulingBehaviorEvents");
+    const candidates = [
+      ...skipped.map((item) => events.doc(`skipped-${item.id}`)),
+      ...lapsed.map((document) => events.doc(`ignored-${document.id}`)),
+    ];
+    const recorded = candidates.length
+      ? new Set((await db.getAll(...candidates)).filter((document) => document.exists).map((document) => document.id))
+      : new Set<string>();
+
+    const batch = db.batch();
+    let written = 0;
+    skipped.forEach((item) => {
+      if (recorded.has(`skipped-${item.id}`)) return;
+      batch.set(events.doc(`skipped-${item.id}`), {
+        activityCategory: item.category,
+        actualDurationMinutes: null,
+        actualEnd: null,
+        actualStart: null,
+        createdAt: FieldValue.serverTimestamp(),
+        dayOfWeek: dayOfWeek(item.startMs, setting.timeZone),
+        estimatedDurationMinutes: item.estimatedDurationMinutes,
+        eventType: "task_skipped",
+        metadata: {detectedBy: "outcome_sweep", scheduledEndAt: new Date(item.endMs).toISOString()},
+        originalScheduledStart: Timestamp.fromMillis(item.startMs),
+        ownerId: uid,
+        scheduleItemId: item.id,
+        source: "automatic_scheduler",
+        timePeriod: adaptiveTimePeriod(localHour(item.startMs, setting.timeZone)),
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedScheduledStart: Timestamp.fromMillis(item.startMs),
+      });
+      written += 1;
+    });
+    lapsed.forEach((document) => {
+      const data = document.data();
+      const suggestedStartMs = timestampMs(data.suggestedStartAt) ?? nowMs;
+      const expiresAtMs = timestampMs(data.expiresAt) ?? timestampMs(data.validUntil) ?? nowMs;
+      batch.update(document.ref, {
+        expiredAt: FieldValue.serverTimestamp(),
+        invalidatedReason: "time_elapsed",
+        status: "expired",
+        updatedAt: FieldValue.serverTimestamp(),
+        validUntil: Timestamp.fromMillis(expiresAtMs),
+      });
+      if (recorded.has(`ignored-${document.id}`)) return;
+      batch.set(events.doc(`ignored-${document.id}`), {
+        activityCategory: category(data.activityCategory),
+        actualDurationMinutes: null,
+        actualEnd: null,
+        actualStart: null,
+        createdAt: FieldValue.serverTimestamp(),
+        dayOfWeek: dayOfWeek(suggestedStartMs, setting.timeZone),
+        estimatedDurationMinutes: Math.max(15, Math.round(((timestampMs(data.suggestedEndAt) ?? suggestedStartMs) - suggestedStartMs) / MINUTE_MS)),
+        eventType: "reminder_ignored",
+        metadata: {detectedBy: "outcome_sweep", suggestionId: document.id},
+        originalScheduledStart: data.originalStartAt ?? Timestamp.fromMillis(suggestedStartMs),
+        ownerId: uid,
+        scheduleItemId: text(data.scheduleItemId, 128),
+        source: "ai_suggestion",
+        timePeriod: adaptiveTimePeriod(localHour(suggestedStartMs, setting.timeZone)),
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedScheduledStart: data.suggestedStartAt ?? Timestamp.fromMillis(suggestedStartMs),
+      });
+      written += 1;
+    });
+    if (!written && !lapsed.length) return {expired: 0, recorded: 0};
+    await batch.commit();
+    // Nothing else would fold these into completionRate until the next nightly
+    // recalculation, and a skip that only counts tomorrow is a skip the user
+    // cannot see the effect of.
+    if (written) await calculateUserPatterns(uid).catch((error) => console.warn("Pattern recalculation after the outcome sweep failed.", {error, uid}));
+    return {expired: lapsed.length, recorded: written};
   }
 
   async function suggestionTransaction(uid: string, suggestionId: string, automatic: boolean) {
@@ -1273,7 +1395,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     if (startMs < Date.now() + SUGGESTION_MINIMUM_LEAD_MS) {
       throw new HttpsError("failed-precondition", "กรุณาเลือกเวลาอย่างน้อย 10 นาทีจากเวลาปัจจุบัน");
     }
-    const {request} = await schedulingRequest(uid, activity, startMs);
+    const {request, setting} = await schedulingRequest(uid, activity, startMs);
     const endMs = startMs + activity.estimatedDurationMinutes * MINUTE_MS;
     const validation = validateCandidateSlot(request, startMs, endMs);
     if (!validation.ok) throw new HttpsError("failed-precondition", validation.message ?? "ช่วงเวลานี้ใช้ไม่ได้");
@@ -1309,6 +1431,27 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         updatedAt: FieldValue.serverTimestamp(),
         userModified: true,
         validUntil: Timestamp.fromMillis(validUntilMs),
+      });
+      // Overriding the proposed time is neither accepting nor rejecting it, and
+      // it is not the user postponing their own work either - it only tells the
+      // engine the hour it picked was not the hour the user wanted.
+      transaction.set(userRef(uid).collection("schedulingBehaviorEvents").doc(`modified-${suggestionId}`), {
+        activityCategory: activity.category,
+        actualDurationMinutes: null,
+        actualEnd: null,
+        actualStart: null,
+        createdAt: FieldValue.serverTimestamp(),
+        dayOfWeek: dayOfWeek(startMs, setting.timeZone),
+        estimatedDurationMinutes: activity.estimatedDurationMinutes,
+        eventType: "suggestion_modified",
+        metadata: {suggestionId},
+        originalScheduledStart: Timestamp.fromMillis(timestampMs(freshSuggestionData.suggestedStartAt) ?? activity.startMs),
+        ownerId: uid,
+        scheduleItemId: activityId,
+        source: "user",
+        timePeriod: adaptiveTimePeriod(localHour(startMs, setting.timeZone)),
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedScheduledStart: Timestamp.fromMillis(startMs),
       });
     });
     return {endAt: new Date(endMs).toISOString(), startAt: new Date(startMs).toISOString()};
@@ -1695,10 +1838,25 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   const recordSchedulingBehavior = onCall(callableOptions, async (request) => {
     const uid = requiredUid(request);
-    return {id: await recordEvent(uid, request.data ?? {})};
+    const id = await recordEvent(uid, request.data ?? {});
+    // The learned rates have to move on the action that caused them, not at
+    // 03:15 tomorrow. Recalculating here is what makes marking a task done or
+    // postponing it visibly change the next suggestion; the nightly job stays
+    // as the backstop for events nobody was present for.
+    const {patterns} = await calculateUserPatterns(uid)
+      .catch((error) => { console.warn("Pattern recalculation after a behaviour event failed.", {error, uid}); return {patterns: -1}; });
+    return {id, patterns};
   });
 
-  const calculateSchedulingPatterns = onCall(callableOptions, async (request) => calculateUserPatterns(requiredUid(request)));
+  // "Recalculate now" has to see the slots that quietly went by as well as the
+  // ones the user pressed a button on, otherwise the number it produces is only
+  // ever the optimistic half of the user's week.
+  const calculateSchedulingPatterns = onCall(callableOptions, async (request) => {
+    const uid = requiredUid(request);
+    const swept = await sweepUserOutcomes(uid, Date.now())
+      .catch((error) => { console.warn("Outcome sweep before an on-demand recalculation failed.", {error, uid}); return {expired: 0, recorded: 0}; });
+    return {...await calculateUserPatterns(uid), ...swept};
+  });
 
   const generateAdaptiveSuggestion = onCall({...callableOptions, secrets: [geminiApiKey]}, async (request) => {
     const uid = requiredUid(request);
@@ -1979,6 +2137,24 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     return {suggestions: await createWeekRebalanceSuggestions(uid, targetMs)};
   });
 
+  /**
+   * Runs before the 03:15 recalculation so the skips and ignored suggestions it
+   * finds are already in the window that job reads.
+   */
+  const scheduledAdaptiveOutcomeSweep = onSchedule({region, schedule: "every day 02:45", timeZone: "Asia/Bangkok"}, async () => {
+    const nowMs = Date.now();
+    const settings = await db.collectionGroup("settings").limit(500).get();
+    for (const document of settings.docs.filter((item) => item.id === "adaptiveScheduling")) {
+      const uid = document.ref.parent.parent?.id;
+      if (!uid) continue;
+      try {
+        await sweepUserOutcomes(uid, nowMs);
+      } catch (error) {
+        console.error("Adaptive outcome sweep failed.", {error, uid});
+      }
+    }
+  });
+
   const scheduledAdaptivePatternRecalculation = onSchedule({region, schedule: "every day 03:15", timeZone: "Asia/Bangkok"}, async () => {
     const recent = await db.collectionGroup("schedulingBehaviorEvents")
       .where("createdAt", ">=", Timestamp.fromMillis(Date.now() - 2 * DAY_MS)).limit(1000).get();
@@ -2029,6 +2205,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     recordSchedulingBehavior,
     registerAdaptivePushToken,
     rejectSchedulingSuggestion,
+    scheduledAdaptiveOutcomeSweep,
     scheduledAdaptivePatternRecalculation,
     scheduledAutomaticAdaptiveScheduling,
     undoScheduleChange,
