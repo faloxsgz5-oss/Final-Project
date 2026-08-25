@@ -289,6 +289,38 @@ assert.equal(relativeDay('read a book this afternoon').earliestLocalStartTime, n
 assert.equal(relativeDay('work at noon on Friday').preferredPeriod, 'noon', 'a real noon request must still be exact');
 assert.equal(relativeDay('work at noon on Friday').earliestLocalStartTime, '12:00');
 assert.equal(relativeDay('อ่านหนังสือวันศุกร์').requestedLocalDate, '2026-08-28', 'a named weekday still wins over relative wording');
+
+// Resolving only the date of a "this <part of day>" phrase left "คืนนี้"
+// scheduled at six in the morning: the right day, but nothing claimed the
+// evening and the model does not fill the period reliably either.
+assert.equal(relativeDay('อ่านหนังสือคืนนี้').preferredPeriod, 'night', '"คืนนี้" means tonight, not any hour of today');
+assert.equal(relativeDay('อ่านหนังสือค่ำนี้').preferredPeriod, 'night');
+assert.equal(relativeDay('อ่านหนังสือเย็นนี้').preferredPeriod, 'evening');
+assert.equal(relativeDay('อ่านหนังสือเช้านี้').preferredPeriod, 'morning');
+assert.equal(relativeDay('อ่านหนังสือสายนี้').preferredPeriod, 'late_morning');
+assert.equal(relativeDay('อ่านหนังสือวันนี้').preferredPeriod, null, 'a bare day word names no hour');
+assert.equal(relativeDay('อ่านหนังสือพรุ่งนี้').preferredPeriod, null);
+
+// The server must supply the period itself rather than depending on whatever
+// the model happened to return, which is what production actually exposed.
+const modelLeftPeriodEmpty = (message) => applyDeterministicTemporalSemantics(
+  naturalIntent({intent: 'create_activity', preferredPeriod: null, taskTitle: 'อ่านหนังสือ'}),
+  message,
+  {localDate: '2026-08-25'},
+);
+assert.equal(modelLeftPeriodEmpty('อ่านหนังสือคืนนี้').preferredPeriod, 'night');
+assert.equal(modelLeftPeriodEmpty('อ่านหนังสือคืนนี้').requestedLocalDate, '2026-08-25');
+assert.equal(modelLeftPeriodEmpty('read a book tonight').preferredPeriod, 'night');
+
+// An explicit clock the user gave outranks the broad part of day.
+const clockWithDayPart = applyDeterministicTemporalSemantics(
+  naturalIntent({earliestLocalStartTime: '21:00', intent: 'create_activity', latestLocalStartTime: '21:00', preferredPeriod: null, taskTitle: 'อ่านหนังสือ'}),
+  'อ่านหนังสือคืนนี้ตอน 3 ทุ่ม',
+  {localDate: '2026-08-25'},
+);
+assert.equal(clockWithDayPart.earliestLocalStartTime, '21:00', 'a stated clock must survive the day-part rule');
+assert.equal(clockWithDayPart.latestLocalStartTime, '21:00');
+assert.equal(relativeDay('อ่านหนังสือเที่ยงคืนนี้').earliestLocalStartTime, '00:00', 'midnight stays exact rather than becoming a broad night');
 assert.equal(relativeDay('อ่านหนังสือ').requestedLocalDate, null, 'a request with no day word must stay unconstrained');
 assert.equal(relativeDay('อ่านหนังสือวันนี้').taskTitle, 'อ่านหนังสือ', 'the day word must not survive into the saved activity title');
 assert.equal(relativeDay('อ่านหนังสือบ่ายนี้').taskTitle, 'อ่านหนังสือ');

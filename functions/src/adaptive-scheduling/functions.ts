@@ -209,6 +209,22 @@ const RELATIVE_DAY_PATTERNS: {offset: number; pattern: RegExp}[] = [
   {offset: 0, pattern: /วันนี้|today|tonight|this\s+(?:morning|afternoon|evening|noon|night)|(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|ดึก)นี้|(?<!เที่ยง)คืนนี้/i},
 ];
 
+/**
+ * The hour half of the same "this <part of day>" phrases.
+ *
+ * Resolving only their date left "อ่านหนังสือคืนนี้" landing at six in the
+ * morning: the day was right, but nothing on the server claimed the evening,
+ * and the model does not reliably fill the period in either. The server owns
+ * this the same way it owns weekdays and relative dates.
+ */
+const RELATIVE_PERIOD_PATTERNS: {pattern: RegExp; period: RequestedPeriod}[] = [
+  {pattern: /เช้านี้|this\s+morning/i, period: "morning"},
+  {pattern: /สายนี้/i, period: "late_morning"},
+  {pattern: /บ่ายนี้|this\s+afternoon/i, period: "afternoon"},
+  {pattern: /เย็นนี้|this\s+evening/i, period: "evening"},
+  {pattern: /ค่ำนี้|ดึกนี้|tonight|this\s+night|(?<!เที่ยง)คืนนี้/i, period: "night"},
+];
+
 function requestedDateFromMessage(message: string, localDate?: string) {
   if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
   const weekdayPatterns: {day: number; pattern: RegExp}[] = [
@@ -266,9 +282,15 @@ export function applyDeterministicTemporalSemantics(
 ): NaturalLanguageIntent {
   const requestedLocalDate = requestedDateFromMessage(message, temporalContext?.localDate);
   const namedClock = namedClockSemantics(message);
+  // An exact clock the user gave always beats a broad part of day, so this only
+  // fills the gap the model left rather than overruling a stated time.
+  const hasExplicitClock = Boolean(intent.earliestLocalStartTime || intent.latestLocalStartTime);
+  const relativePeriod = namedClock || hasExplicitClock ? undefined :
+    RELATIVE_PERIOD_PATTERNS.find((entry) => entry.pattern.test(message))?.period;
   return {
     ...intent,
     ...(requestedLocalDate ? {requestedLocalDate} : {}),
+    ...(relativePeriod ? {preferredPeriod: relativePeriod} : {}),
     ...(namedClock ? {
       earliestLocalStartExclusive: namedClock.relation === "after" && namedClock.exclusive,
       earliestLocalStartTime: namedClock.relation === "before" ? null : namedClock.clock,
@@ -286,7 +308,9 @@ export function fallbackAdaptiveNaturalLanguageIntent(message: string, temporalC
   const durationHasHalfHour = durationIsHours && /(?:ชั่วโมง|ชม\.?|hours?)\s*(?:ครึ่ง|and a half)/i.test(normalizedMessage);
   const durationMinutes = durationMatch ? Math.round(Number(durationMatch[1]) * (durationIsHours ? 60 : 1) + (durationHasHalfHour ? 30 : 0)) : null;
   const namedClock = namedClockSemantics(message);
-  const preferredPeriod = namedClock?.period ?? (/บ่าย|afternoon/i.test(message) ? "afternoon" : /เย็น|evening/i.test(message) ? "evening" : /กลางคืน|ดึก|night/i.test(message) ? "night" : /เช้า|morning/i.test(message) ? "morning" : null);
+  // "คืนนี้" belongs in the night branch: /night/ only ever matched it through
+  // the English "tonight", so the Thai wording alone produced no period at all.
+  const preferredPeriod = namedClock?.period ?? (/บ่าย|afternoon/i.test(message) ? "afternoon" : /เย็น|evening/i.test(message) ? "evening" : /กลางคืน|ดึก|ค่ำ|(?<!เที่ยง)คืนนี้|night/i.test(message) ? "night" : /เช้า|morning/i.test(message) ? "morning" : null);
   const earliestLocalStartTime = relationClock(message, "after") ?? (namedClock?.relation === "after" ? namedClock.clock : null);
   const latestLocalStartTime = relationClock(message, "before") ?? (namedClock?.relation === "before" ? namedClock.clock : null);
   const exactLocalStartTime = earliestLocalStartTime || latestLocalStartTime ? null : relationClock(message, "at") ?? (namedClock?.relation === "exact" ? namedClock.clock : null);
