@@ -267,4 +267,55 @@ const sweptPattern = calculateSchedulingPatterns([
 assert.equal(sweptPattern.observationCount, 3, 'skips and ignored reminders are outcomes, not noise');
 assert.equal(sweptPattern.postponementRate, Number((2 / 3).toFixed(3)), 'task_skipped and reminder_ignored must raise the postponement rate');
 
+// Relative day words used to be dropped entirely: only weekday names produced a
+// requestedLocalDate, so "อ่านหนังสือวันนี้" left the engine free to range over
+// the whole 14-day window and answer with a slot days away.
+const relativeDay = (message, localDate = '2026-08-25') =>
+  applyDeterministicTemporalSemantics(fallbackAdaptiveNaturalLanguageIntent(message, {localDate}), message, {localDate});
+
+assert.equal(relativeDay('อ่านหนังสือวันนี้').requestedLocalDate, '2026-08-25', '"วันนี้" must resolve to the local date the server verified');
+assert.equal(relativeDay('อ่านหนังสือบ่ายนี้').requestedLocalDate, '2026-08-25', '"บ่ายนี้" names an afternoon of today, not of some later day');
+assert.equal(relativeDay('อ่านหนังสือบ่ายนี้').preferredPeriod, 'afternoon', 'the day part must still narrow the window');
+assert.equal(relativeDay('อ่านหนังสือเย็นนี้').requestedLocalDate, '2026-08-25');
+assert.equal(relativeDay('อ่านหนังสือพรุ่งนี้').requestedLocalDate, '2026-08-26');
+assert.equal(relativeDay('อ่านหนังสือมะรืนนี้').requestedLocalDate, '2026-08-27', 'มะรืนนี้ ends in นี้ but is two days out, not today');
+assert.equal(relativeDay('read a book today').requestedLocalDate, '2026-08-25');
+assert.equal(relativeDay('read a book tomorrow').requestedLocalDate, '2026-08-26');
+assert.equal(relativeDay('read a book this afternoon').requestedLocalDate, '2026-08-25');
+// "afternoon" contains "noon", which used to match the named-noon rule and pin
+// the request to 12:00 sharp instead of the afternoon window.
+assert.equal(relativeDay('read a book this afternoon').preferredPeriod, 'afternoon', 'the noon rule must not fire inside the word afternoon');
+assert.equal(relativeDay('read a book this afternoon').earliestLocalStartTime, null, 'a broad afternoon must not be reduced to an exact clock');
+assert.equal(relativeDay('work at noon on Friday').preferredPeriod, 'noon', 'a real noon request must still be exact');
+assert.equal(relativeDay('work at noon on Friday').earliestLocalStartTime, '12:00');
+assert.equal(relativeDay('อ่านหนังสือวันศุกร์').requestedLocalDate, '2026-08-28', 'a named weekday still wins over relative wording');
+assert.equal(relativeDay('อ่านหนังสือ').requestedLocalDate, null, 'a request with no day word must stay unconstrained');
+assert.equal(relativeDay('อ่านหนังสือวันนี้').taskTitle, 'อ่านหนังสือ', 'the day word must not survive into the saved activity title');
+assert.equal(relativeDay('อ่านหนังสือบ่ายนี้').taskTitle, 'อ่านหนังสือ');
+assert.equal(relativeDay('ทำงานตอนบ่ายนี้').taskTitle, 'ทำงาน', 'the connector in front of the day part must go with it');
+assert.equal(relativeDay('อ่านหนังสือช่วงเย็นนี้').taskTitle, 'อ่านหนังสือ');
+assert.equal(relativeDay('ออกกำลังกายพรุ่งนี้เช้า').taskTitle, 'ออกกำลังกาย', 'a day part trailing the day word must go too');
+assert.equal(relativeDay('read a book this afternoon').taskTitle, 'read a book');
+
+// The point of the date: two phrasings of "today" must not collapse onto one
+// slot on an unrelated day.
+const todayRequest = (intent) => request({
+  category: 'reading',
+  durationMinutes: 60,
+  earliestStartMs: ms('2026-08-25T02:00:00Z'), // 09:00 Bangkok
+  latestEndMs: ms('2026-08-25T02:00:00Z') + 14 * day,
+  patterns: [],
+  requiredLocalDate: intent.requestedLocalDate ?? undefined,
+  requiredLocalTimeWindow: intent.preferredPeriod === 'afternoon' ? {endTime: '17:00', startTime: '13:00'} : undefined,
+  scheduleItems: [],
+});
+const todayTop = findAdaptiveTimeSlots(todayRequest(relativeDay('อ่านหนังสือวันนี้')), 1)[0];
+const afternoonTop = findAdaptiveTimeSlots(todayRequest(relativeDay('อ่านหนังสือบ่ายนี้')), 1)[0];
+assert.ok(todayTop && afternoonTop, 'both phrasings must still find a slot on a free day');
+const bangkokDate = (value) => new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Bangkok'}).format(new Date(value));
+assert.equal(bangkokDate(todayTop.startMs), '2026-08-25', '"วันนี้" must be scheduled today');
+assert.equal(bangkokDate(afternoonTop.startMs), '2026-08-25', '"บ่ายนี้" must be scheduled today');
+assert.ok(bangkokHour(afternoonTop.startMs) >= 13, '"บ่ายนี้" must land in the afternoon window');
+assert.notEqual(todayTop.startMs, afternoonTop.startMs, 'two different phrasings must not collapse onto one identical slot');
+
 console.log('Adaptive Scheduling deterministic tests passed.');

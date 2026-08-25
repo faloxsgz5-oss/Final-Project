@@ -150,6 +150,8 @@ function adaptiveTitleFromMessage(value: string) {
     .replace(/[๐-๙\d]+(?:\.[๐-๙\d]+)?\s*(?:ชั่วโมง|ชม\.?|hours?|นาที|minutes?)(?:\s*(?:ครึ่ง|and a half))?(?=\s|$)/gi, " ")
     .replace(/(?:ก่อน|ภายใน|ไม่เกิน)\s*(?:วัน|วันที่|พรุ่งนี้|มะรืน|สัปดาห์|อาทิตย์).*$/i, " ")
     .replace(/(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:นี้|หน้า)?/gi, " ")
+    .replace(/(?:(?:วัน)?มะรืน(?:นี้)?|พรุ่งนี้|วันนี้|day\s*after\s*tomorrow|tomorrow|today|tonight|this\s+(?:morning|afternoon|evening|noon|night))(?:\s*(?:ตอน|ช่วง)?\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|คืน|ดึก))?/gi, " ")
+    .replace(/(?:ตอน|ช่วง|ช่อง)?\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|คืน|ดึก)นี้/gi, " ")
     .replace(/^\s*(?:ช่วย|อยาก|จะ|ขอ|please)?\s*(?:ให้)?\s*(?:หาเวลา|จัดเวลา|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)?\s*/i, "")
     .replace(/(?:ตอน|ช่วง|ช่อง)\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|กลางคืน|ดึก).*$/i, " ")
     .replace(/(?:หลัง|ตั้งแต่|ไม่ก่อน|ก่อน|ไม่เกิน|ไม่หลัง|เวลา|ตอน)\s*(?:เวลา)?\s*(?:ตี|บ่าย|เที่ยง)?\s*(?:[๐-๙\d]{1,2}|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|สิบเอ็ด|สิบสอง)(?:[:.][๐-๙\d]{2})?\s*(?:โมงเช้า|โมงเย็น|โมง|ทุ่ม|นาฬิกา|น\.|am|pm)?/gi, " ")
@@ -193,6 +195,20 @@ function isExclusiveAfterClock(message: string) {
   return /(?:หลัง|after)\s*(?:เวลา)?\s*(?:ตี|บ่าย|เที่ยง)?\s*(?:\d{1,2}|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|สิบเอ็ด|สิบสอง)/i.test(normalized);
 }
 
+/**
+ * Day words that name a calendar day relative to today instead of by weekday.
+ *
+ * "บ่ายนี้", "เย็นนี้" and the rest name a part of *today*, so they resolve to
+ * the same day as a bare "วันนี้"; the part of day is handled separately as a
+ * preferred period. Longer offsets are listed first because "มะรืนนี้" also
+ * ends in "นี้" and must not be mistaken for one of the today forms.
+ */
+const RELATIVE_DAY_PATTERNS: {offset: number; pattern: RegExp}[] = [
+  {offset: 2, pattern: /(?:วัน)?มะรืน(?:นี้)?|day\s*after\s*tomorrow/i},
+  {offset: 1, pattern: /พรุ่งนี้|tomorrow/i},
+  {offset: 0, pattern: /วันนี้|today|tonight|this\s+(?:morning|afternoon|evening|noon|night)|(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|ดึก)นี้|(?<!เที่ยง)คืนนี้/i},
+];
+
 function requestedDateFromMessage(message: string, localDate?: string) {
   if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
   const weekdayPatterns: {day: number; pattern: RegExp}[] = [
@@ -204,12 +220,21 @@ function requestedDateFromMessage(message: string, localDate?: string) {
     {day: 5, pattern: /(?:วัน)?ศุกร์|friday/i},
     {day: 6, pattern: /(?:วัน)?เสาร์|saturday/i},
   ];
-  const requestedDay = weekdayPatterns.find((entry) => entry.pattern.test(message))?.day;
-  if (requestedDay === undefined) return null;
   const base = new Date(`${localDate}T12:00:00Z`);
   if (Number.isNaN(base.getTime())) return null;
-  let dayOffset = (requestedDay - base.getUTCDay() + 7) % 7;
-  if (/(?:สัปดาห์หน้า|อาทิตย์หน้า|next week)/i.test(message)) dayOffset += 7;
+  const requestedDay = weekdayPatterns.find((entry) => entry.pattern.test(message))?.day;
+  let dayOffset: number;
+  if (requestedDay !== undefined) {
+    dayOffset = (requestedDay - base.getUTCDay() + 7) % 7;
+    if (/(?:สัปดาห์หน้า|อาทิตย์หน้า|next week)/i.test(message)) dayOffset += 7;
+  } else {
+    // Without this the day word is simply dropped and the engine is free to
+    // range over the whole 14-day search window, which is how "วันนี้" used to
+    // come back as a slot two days out.
+    const relative = RELATIVE_DAY_PATTERNS.find((entry) => entry.pattern.test(message));
+    if (!relative) return null;
+    dayOffset = relative.offset;
+  }
   base.setUTCDate(base.getUTCDate() + dayOffset);
   return base.toISOString().slice(0, 10);
 }
@@ -217,9 +242,11 @@ function requestedDateFromMessage(message: string, localDate?: string) {
 function namedClockSemantics(message: string) {
   const normalized = normalizeThaiDigits(message).toLowerCase();
   const isMidnight = /เที่ยงคืน|midnight/.test(normalized);
-  const isNoon = !isMidnight && /เที่ยง(?!คืน)|noon|midday/.test(normalized);
+  // Word boundaries matter here: without them the "noon" inside "afternoon"
+  // matched, and "this afternoon" was scheduled at 12:00 sharp.
+  const isNoon = !isMidnight && /เที่ยง(?!คืน)|\bnoon\b|\bmidday\b/.test(normalized);
   if (!isMidnight && !isNoon) return null;
-  const phrase = isMidnight ? "(?:เที่ยงคืน|midnight)" : "(?:เที่ยง(?!คืน)|noon|midday)";
+  const phrase = isMidnight ? "(?:เที่ยงคืน|midnight)" : "(?:เที่ยง(?!คืน)|\\bnoon\\b|\\bmidday\\b)";
   if (new RegExp(`(?:หลัง|after)\\s*(?:เวลา)?\\s*${phrase}`, "i").test(normalized)) {
     return {clock: isMidnight ? "00:00" : "12:00", exclusive: true, period: isMidnight ? "night" as const : "noon" as const, relation: "after" as const};
   }
@@ -786,7 +813,13 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const {request} = await schedulingRequest(uid, activity, undefined, requestedWindow, intent.requestedLocalDate ?? undefined);
     const slot = findAdaptiveTimeSlots(request, 1)[0];
     if (!slot) {
-      return {message: "ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้ ลองลดระยะเวลา ขยายกำหนดเสร็จ หรือปรับเวลาที่พร้อมใช้งาน"};
+      // A requested day that is genuinely full has to say so. Staying silent is
+      // how "วันนี้" used to come back as a slot on some other day entirely.
+      const requestedScope = intent.requestedLocalDate ?
+        ` ในวันที่ ${intent.requestedLocalDate}${requestedWindow ? ` ช่วง ${requestedWindow.startTime}-${requestedWindow.endTime}` : ""}` : "";
+      return {message: requestedScope ?
+        `ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้${requestedScope} ลองลดระยะเวลา เลือกวันอื่น หรือปรับเวลาที่พร้อมใช้งาน` :
+        "ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้ ลองลดระยะเวลา ขยายกำหนดเสร็จ หรือปรับเวลาที่พร้อมใช้งาน"};
     }
     const defaultNote = durationWasDefaulted ? ` ใช้เวลาเริ่มต้น ${durationMinutes} นาทีเพราะยังไม่ได้ระบุระยะเวลา` : "";
     return {
@@ -1493,7 +1526,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
             type: "text",
           },
           store: false,
-          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate. The server deterministically recalculates named weekdays, noon, and midnight after model output, so do not guess dates. Never move a requested weekday to another day merely because another slot scores higher. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
+          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate, and resolve relative day words the same way: วันนี้/today and any 'this morning/afternoon/evening/tonight' form such as เช้านี้, บ่ายนี้, เย็นนี้ or คืนนี้ are verifiedTemporalContext.localDate itself, พรุ่งนี้/tomorrow is the next day, and มะรืนนี้ is two days later. The server deterministically recalculates named weekdays, relative day words, noon, and midnight after model output, so do not guess dates. Never move a requested weekday or a requested relative day to another day merely because another slot scores higher. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
         }),
         headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
         method: "POST",
