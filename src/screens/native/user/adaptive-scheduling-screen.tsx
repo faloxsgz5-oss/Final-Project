@@ -30,6 +30,8 @@ type ConfirmationFlow = {
 };
 type ActionFeedback = {
   error?: string;
+  /** Only a failed action offers a retry; a plain answer has nothing to redo. */
+  retryable?: boolean;
   message: string;
   status: AsyncActionStatus;
   title: string;
@@ -150,6 +152,19 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
   const [proposalEditorOpen, setProposalEditorOpen] = useState(false);
   const [proposalTimeDraft, setProposalTimeDraft] = useState('');
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback>({message: '', status: 'idle', title: ''});
+  const pendingPreferencePatchRef = useRef<Partial<AdaptivePreferences> | null>(null);
+
+  /**
+   * Shows the assistant's own answer.
+   *
+   * These used to be Alert.alert, which react-native-web implements as an empty
+   * function, so a web user who asked for a time the schedule could not take
+   * saw the input clear and nothing else at all. The screen already renders an
+   * overlay for every other outcome; these go through it too.
+   */
+  const announce = useCallback((title: string, message: string, status: 'success' | 'error' = 'success') => {
+    setActionFeedback(status === 'error' ? {error: message, message: '', status, title} : {message, status, title});
+  }, []);
   const actionInFlightRef = useRef(false);
   const commandInFlightRef = useRef(false);
   const createActivityInFlightRef = useRef(false);
@@ -193,7 +208,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
       await load();
       setActionFeedback({message: success ?? 'ดำเนินการเรียบร้อยแล้ว', status: 'success', title: 'เรียบร้อย'});
     } catch (error) {
-      setActionFeedback({error: errorMessage(error), message: '', status: 'error', title: 'ดำเนินการไม่สำเร็จ'});
+      setActionFeedback({error: errorMessage(error), message: '', retryable: true, status: 'error', title: 'ดำเนินการไม่สำเร็จ'});
     } finally {
       actionInFlightRef.current = false;
       setBusy('');
@@ -271,10 +286,8 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
       setCommand('');
       if (result.preferencePatch) {
         setConfirmationFlow(null);
-        Alert.alert('ยืนยันการตั้งค่า', 'ระบบเข้าใจว่าคุณต้องการเปลี่ยนช่วงเวลาที่ชอบ ต้องการบันทึกค่านี้หรือไม่?', [
-          {style: 'cancel', text: 'ยังไม่บันทึก'},
-          {onPress: () => void act('preferences', () => adaptiveScheduling.updatePreferences(result.preferencePatch ?? {}), 'บันทึกช่วงเวลาที่ชอบแล้ว'), text: 'บันทึก'},
-        ]);
+        pendingPreferencePatchRef.current = result.preferencePatch;
+        setActionFeedback({message: 'ระบบเข้าใจว่าคุณต้องการเปลี่ยนช่วงเวลาที่ชอบ ต้องการบันทึกค่านี้หรือไม่?', status: 'confirming', title: 'ยืนยันการตั้งค่า'});
       } else if (result.proposedActivity) {
         const timeZone = resolveTimeZone(result.proposedActivity.generatedForTimeZone, dashboard?.preferences.timeZone);
         const [datePart = '', timePart = ''] = localInput(result.proposedActivity.startAt, timeZone).split(' ');
@@ -286,14 +299,14 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
         setConfirmationFlow({clientRequestId: newClientRequestId(), proposal: result.proposedActivity, stage: 'confirm'});
       } else if (result.suggestion) {
         setConfirmationFlow(null);
-        Alert.alert('สร้างคำแนะนำแล้ว', result.suggestion.explanation);
-      } else if (result.message) { setConfirmationFlow(null); Alert.alert('Adaptive Scheduling', result.message); }
-      else if (result.intent.intent === 'productivity') { setConfirmationFlow(null); Alert.alert('สรุปประสิทธิภาพ', 'อัปเดตข้อมูลด้านล่างแล้ว'); }
-      else { setConfirmationFlow(null); Alert.alert('ต้องการข้อมูลเพิ่ม', 'ลองระบุชื่องาน ระยะเวลา หรือวันที่ต้องเสร็จให้ชัดขึ้น'); }
+        announce('สร้างคำแนะนำแล้ว', result.suggestion.explanation);
+      } else if (result.message) { setConfirmationFlow(null); announce('Adaptive Scheduling', result.message, 'error'); }
+      else if (result.intent.intent === 'productivity') { setConfirmationFlow(null); announce('สรุปประสิทธิภาพ', 'อัปเดตข้อมูลด้านล่างแล้ว'); }
+      else { setConfirmationFlow(null); announce('ต้องการข้อมูลเพิ่ม', 'ลองระบุชื่องาน ระยะเวลา หรือวันที่ต้องเสร็จให้ชัดขึ้น', 'error'); }
       await load();
     } catch (error) { setConfirmationFlow({error: errorMessage(error), proposal: null, stage: 'error'}); }
     finally { commandInFlightRef.current = false; setBusy(''); }
-  }, [act, command, dashboard, load]);
+  }, [announce, command, dashboard, load]);
 
   const submitAlternative = useCallback((suggestion: AdaptiveSuggestion) => {
     const timeZone = resolveTimeZone(suggestion.generatedForTimeZone, dashboard?.preferences.timeZone);
@@ -314,15 +327,27 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
 
   return <UserShell active="smartlife_planner" onNavigate={onNavigate}>
     <AsyncActionOverlay
-      cancelLabel="ปิด"
+      cancelLabel={actionFeedback.status === 'confirming' ? 'ยังไม่บันทึก' : 'ปิด'}
+      confirmLabel="บันทึก"
       errorMessage={actionFeedback.error}
       loadingMessage={actionFeedback.message}
-      onCancel={() => setActionFeedback({message: '', status: 'idle', title: ''})}
-      onRequestClose={() => setActionFeedback({message: '', status: 'idle', title: ''})}
-      onRetry={() => {
+      onCancel={() => {
+        pendingPreferencePatchRef.current = null;
+        setActionFeedback({message: '', status: 'idle', title: ''});
+      }}
+      onConfirm={() => {
+        const patch = pendingPreferencePatchRef.current;
+        pendingPreferencePatchRef.current = null;
+        return patch ? act('preferences', () => adaptiveScheduling.updatePreferences(patch), 'บันทึกช่วงเวลาที่ชอบแล้ว') : undefined;
+      }}
+      onRequestClose={() => {
+        pendingPreferencePatchRef.current = null;
+        setActionFeedback({message: '', status: 'idle', title: ''});
+      }}
+      onRetry={actionFeedback.retryable ? () => {
         const retry = retryActionRef.current;
         return retry ? act(retry.key, retry.action, retry.success) : undefined;
-      }}
+      } : undefined}
       onSuccessAnimationComplete={() => setActionFeedback({message: '', status: 'idle', title: ''})}
       slowMessage="กำลังตรวจ conflict, กำหนดส่ง เวลาพัก และข้อมูล Firebase ล่าสุด…"
       status={actionFeedback.status}
