@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import NativeDateTimePicker from '@/components/date-time-picker';
 
 import {runLegacyDataAction} from '@/services/legacy-data';
 import {getActivitySuggestions, recommendationLevel, type ActivitySuggestion} from '@/services/smartlife-recommendations';

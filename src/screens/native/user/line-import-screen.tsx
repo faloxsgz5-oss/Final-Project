@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import NativeDateTimePicker from '@/components/date-time-picker';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,

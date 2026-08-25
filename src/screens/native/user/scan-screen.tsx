@@ -13,7 +13,7 @@ import {
   useWindowDimensions,
   type GestureResponderEvent,
 } from "react-native";
-import NativeDateTimePicker from "@expo/ui/community/datetime-picker";
+import NativeDateTimePicker from "@/components/date-time-picker";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
