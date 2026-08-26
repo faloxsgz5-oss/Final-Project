@@ -9,7 +9,7 @@ const {
   zonedDayStart,
 } = require('../lib/adaptive-scheduling/engine.js');
 const {validateGeminiNaturalLanguageIntent} = require('../lib/adaptive-scheduling/validation.js');
-const {applyDeterministicTemporalSemantics, fallbackAdaptiveNaturalLanguageIntent, nearestAvailableSlot} = require('../lib/adaptive-scheduling/functions.js');
+const {applyDeterministicTemporalSemantics, fallbackAdaptiveNaturalLanguageIntent, nearestAvailableSlot, unresolvedTemporalMention} = require('../lib/adaptive-scheduling/functions.js');
 
 const minute = 60_000;
 const day = 24 * 60 * minute;
@@ -438,5 +438,104 @@ assert.equal(validateCandidateSlot(askedForSooner, sooner, sooner + 60 * minute)
 const explicitSooner = nearestAvailableSlot(askedForSooner, {preferredPeriod: null});
 assert.equal(explicitSooner.slot.startMs, sooner, 'an explicitly requested time must be offered as asked');
 assert.equal(explicitSooner.unavailableRequest, '', 'honouring the exact request is not a fallback');
+
+// Explicit calendar dates. Before this, "ซื้อมังงะวันที่ 1 กันยาให้หน่อย" left
+// requestedLocalDate null, the whole fortnight was searched, every cold-start
+// slot tied, and the earliest one won: the answer was tomorrow at 07:30 with
+// the user's entire sentence as the activity title.
+const onDate = (message, localDate = '2026-08-26') =>
+  applyDeterministicTemporalSemantics(fallbackAdaptiveNaturalLanguageIntent(message, {localDate}), message, {localDate});
+
+const mangaRepro = onDate('ซื้อมังงะวันที่ 1 กันยาให้หน่อย');
+assert.equal(mangaRepro.requestedLocalDate, '2026-09-01', 'an explicit "วันที่ 1 กันยา" must resolve to that calendar day');
+assert.equal(mangaRepro.taskTitle, 'ซื้อมังงะ', 'the title must be the activity, not the sentence it arrived in');
+assert.equal(mangaRepro.intent, 'create_activity');
+
+assert.equal(onDate('ซื้อมังงะ 1 ก.ย.').requestedLocalDate, '2026-09-01', 'the dotted abbreviation must read the same as the full month');
+assert.equal(onDate('ซื้อมังงะ 1 กันยายน').requestedLocalDate, '2026-09-01');
+assert.equal(onDate('ซื้อมังงะ 1/9').requestedLocalDate, '2026-09-01', 'Thai day/month order must not be read as month/day');
+assert.equal(onDate('ซื้อมังงะ 1/9/2569').requestedLocalDate, '2026-09-01', 'a Buddhist year must be converted, not treated as the far future');
+assert.equal(onDate('ซื้อมังงะ 1 ก.ย. ปี 69').requestedLocalDate, '2026-09-01', 'a two-digit Buddhist year behind a ปี marker must resolve');
+assert.equal(onDate('ซื้อมังงะ 2026-09-01').requestedLocalDate, '2026-09-01');
+assert.equal(onDate('buy manga on Sep 1').requestedLocalDate, '2026-09-01');
+assert.equal(onDate('buy manga on 1 September').requestedLocalDate, '2026-09-01');
+assert.equal(onDate('ซื้อมังงะวันที่ 1').requestedLocalDate, '2026-09-01', 'a bare day number means the next time that date comes round');
+assert.equal(onDate('ซื้อมังงะวันที่ 30').requestedLocalDate, '2026-08-30', 'a day still ahead this month stays in this month');
+
+// A year that has already gone by is only accepted when the user wrote it.
+assert.equal(onDate('ซื้อมังงะ 1 ส.ค.').requestedLocalDate, '2027-08-01', 'a month already past rolls to next year rather than scheduling backwards');
+assert.equal(onDate('ซื้อมังงะ 31 ก.ย.').requestedLocalDate, null, 'a date that does not exist must not roll into October');
+
+// The clock must not be mistaken for a year: "1 กันยา 10:00" once produced 2010.
+const datedClock = onDate('ซื้อมังงะ 1 กันยา 10:00');
+assert.equal(datedClock.requestedLocalDate, '2026-09-01', 'a following clock must not be swallowed as the year');
+assert.equal(datedClock.earliestLocalStartTime, null, 'no relation word means no earliest bound from the fallback reader');
+const datedSpokenClock = onDate('ซื้อมังงะ 1 กันยา ตอน 10 โมง');
+assert.equal(datedSpokenClock.requestedLocalDate, '2026-09-01');
+assert.equal(datedSpokenClock.earliestLocalStartTime, '10:00', 'the explicit date and the explicit clock must both survive');
+assert.equal(datedSpokenClock.taskTitle, 'ซื้อมังงะ', 'neither the date nor the clock belongs in the title');
+
+// An unambiguous calendar date outranks both other kinds of day word.
+assert.equal(onDate('ซื้อมังงะวันศุกร์ที่ 1 กันยา').requestedLocalDate, '2026-09-01', 'an explicit date wins over a weekday word');
+assert.equal(onDate('ซื้อมังงะพรุ่งนี้ 1 กันยา').requestedLocalDate, '2026-09-01', 'an explicit date wins over a relative day word');
+// ...and a message with no explicit date must still work exactly as before.
+assert.equal(onDate('อ่านหนังสือวันนี้').requestedLocalDate, '2026-08-26', 'relative day words must keep working unchanged');
+assert.equal(onDate('อ่านหนังสือ 2 ชั่วโมง').requestedLocalDate, null, 'a bare duration is not a date');
+assert.equal(onDate('อ่านหนังสือ 2 ชั่วโมง').durationMinutes, 120);
+
+// Politeness stacks up in real messages and none of it is part of the activity.
+assert.equal(onDate('ซื้อมังงะให้หน่อยนะครับ').taskTitle, 'ซื้อมังงะ');
+assert.equal(onDate('จัดให้ทีอ่านหนังสือพรุ่งนี้').taskTitle, 'อ่านหนังสือ');
+assert.equal(onDate('ทำรายงานกลุ่มวันที่ 1 ก.ย. ด้วยนะ').taskTitle, 'ทำรายงานกลุ่ม');
+
+// When Gemini answers, the server still owns the date, and the model's title
+// goes through the same cleaner rather than being trusted verbatim.
+const geminiEchoedTheSentence = applyDeterministicTemporalSemantics(
+  {
+    activityCategory: 'personal',
+    deadline: null,
+    durationMinutes: null,
+    earliestLocalStartExclusive: false,
+    earliestLocalStartTime: null,
+    intent: 'create_activity',
+    latestLocalStartTime: null,
+    preferenceMode: null,
+    preferredPeriod: null,
+    requestedLocalDate: '2026-08-27',
+    requiresConfirmation: true,
+    taskTitle: 'ซื้อมังงะวันที่ 1 กันยาให้หน่อย',
+  },
+  'ซื้อมังงะวันที่ 1 กันยาให้หน่อย',
+  {localDate: '2026-08-26'},
+);
+assert.equal(geminiEchoedTheSentence.requestedLocalDate, '2026-09-01',
+  'the server must overrule a model date that contradicts the written one');
+
+// When Gemini cannot be reached, an unread day or clock must become a question
+// rather than a confident answer built on a silently widened search.
+const stillUnread = (message, localDate = '2026-08-26') => {
+  const parsed = onDate(message, localDate);
+  return unresolvedTemporalMention(message, parsed);
+};
+
+assert.equal(stillUnread('ซื้อมังงะ 1 กันยา'), false, 'a date the fallback can read needs no clarification');
+assert.equal(stillUnread('อ่านหนังสือวันนี้'), false);
+assert.equal(stillUnread('อ่านหนังสือ'), false, 'an open request is not ambiguous, it is open');
+assert.equal(stillUnread('อ่านหนังสือ 2 ชั่วโมง'), false, 'a duration is not an unread date');
+assert.equal(stillUnread('ทำงาน 90 นาที'), false);
+assert.equal(
+  unresolvedTemporalMention('ซื้อมังงะ 1 เมษา', {
+    deadline: null,
+    earliestLocalStartTime: null,
+    latestLocalStartTime: null,
+    preferredPeriod: null,
+    requestedLocalDate: null,
+  }),
+  true,
+  'a written month that produced no date must be asked about, not guessed at',
+);
+
+assert.equal(onDate('อ่านหนังสือ 1/2 ชั่วโมง').requestedLocalDate, null,
+  'a fraction of an hour must not be read as the first of February');
 
 console.log('Adaptive Scheduling deterministic tests passed.');

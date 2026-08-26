@@ -42,6 +42,16 @@ const OUTCOME_SWEEP_WINDOW_MS = 3 * DAY_MS;
 const OUTCOME_SWEEP_GRACE_MS = 30 * MINUTE_MS;
 const SUGGESTION_MINIMUM_LEAD_MS = 10 * MINUTE_MS;
 const GEMINI_EXPLANATION_TIMEOUT_MS = 4_500;
+/** Parsing runs before anything is shown, so it may think a little longer. */
+const GEMINI_PARSE_TIMEOUT_MS = 9_000;
+/**
+ * The same ordered candidates the assistant, receipt and schedule parsers use.
+ *
+ * A single hardcoded model is how this file quietly stopped reaching Gemini at
+ * all: the request 404s and the deterministic fallback answers instead, with
+ * nothing in the logs to say so.
+ */
+const GEMINI_MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"];
 
 type AdaptiveFactoryOptions = {
   db: Firestore;
@@ -72,9 +82,49 @@ type ActivityRecord = {
 type NaturalLanguageIntent = ValidatedNaturalLanguageIntent;
 
 type GeminiInteractionResponse = {
+  error?: {message?: string};
   outputs?: {text?: string}[];
   steps?: {content?: {text?: string; type?: string}[]; type?: string}[];
 };
+
+/**
+ * One Gemini interactions call, retried down the model list on a 404.
+ *
+ * Failures are logged with the model and status only. The key never leaves the
+ * request headers, and the user's message is not logged either.
+ */
+async function geminiInteraction(apiKey: string, body: Record<string, unknown>, timeoutMs: number, label: string) {
+  const models = [...new Set([
+    process.env.GEMINI_ASSISTANT_MODEL,
+    ...GEMINI_MODEL_CANDIDATES,
+  ].filter((value): value is string => Boolean(value)))];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    for (const [index, model] of models.entries()) {
+      const response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
+        body: JSON.stringify({...body, model}),
+        headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
+        method: "POST",
+        signal: controller.signal,
+      });
+      const payload = await response.json() as GeminiInteractionResponse;
+      if (response.ok) return {model, ok: true as const, payload};
+      if (response.status !== 404 || index === models.length - 1) {
+        console.error(`${label}: Gemini request failed.`, {
+          detail: text(payload.error?.message, 240),
+          model,
+          status: response.status,
+        });
+        return {model, ok: false as const, payload};
+      }
+      console.warn(`${label}: Gemini model unavailable, trying the next candidate.`, {model, status: response.status});
+    }
+    return {model: "", ok: false as const, payload: {} as GeminiInteractionResponse};
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function interactionText(response: GeminiInteractionResponse) {
   const stepText = response.steps
@@ -146,16 +196,28 @@ function category(value: unknown): AdaptiveActivityCategory {
 function adaptiveTitleFromMessage(value: string) {
   return value
     .trim()
-    .replace(/^(?:ช่วย|อยาก|ขอ|please)?\s*(?:ให้)?\s*(?:หาเวลา|จัดเวลา|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)?\s*/i, "")
+    // The filler is tied to the verb: "จัดให้ที" is all preamble, but a bare
+    // leading "ที" is far more likely to be the start of a real word.
+    .replace(/^(?:ช่วย|อยาก|ขอ|please)?\s*(?:ให้)?\s*(?:(?:หาเวลา|จัดเวลา|จัดตาราง|จัดให้|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)(?:\s*(?:ที|หน่อย|ด้วย))?)?\s*/i, "")
     .replace(/[๐-๙\d]+(?:\.[๐-๙\d]+)?\s*(?:ชั่วโมง|ชม\.?|hours?|นาที|minutes?)(?:\s*(?:ครึ่ง|and a half))?(?=\s|$)/gi, " ")
     .replace(/(?:ก่อน|ภายใน|ไม่เกิน)\s*(?:วัน|วันที่|พรุ่งนี้|มะรืน|สัปดาห์|อาทิตย์).*$/i, " ")
+    // Written-out dates belong to the schedule, never to the activity name.
+    .replace(/[๐-๙\d]{4}-[๐-๙\d]{1,2}-[๐-๙\d]{1,2}/g, " ")
+    .replace(new RegExp(`(?:วันที่|วัน|on)?\\s*[๐-๙\\d]{1,2}\\s*(?:st|nd|rd|th)?\\s*(?:เดือน\\s*)?(?:${MONTH_NAME_SOURCE})(?:\\s*(?:ปี|พ\\.?ศ\\.?|ค\\.?ศ\\.?)\\s*[๐-๙\\d]{2,4}|\\s*[๐-๙\\d]{4})?`, "gi"), " ")
+    // The leading "on" goes with the date it introduces, or "buy manga on Sep 1"
+    // keeps a dangling preposition once the date is taken out.
+    .replace(new RegExp(`(?:\\bon\\s+)?(?:${MONTH_NAME_SOURCE})\\s*[๐-๙\\d]{1,2}\\s*(?:st|nd|rd|th)?,?(?:\\s*[๐-๙\\d]{4})?`, "gi"), " ")
+    .replace(/(?:วันที่\s*)?[๐-๙\d]{1,2}\s*\/\s*[๐-๙\d]{1,2}(?:\s*\/\s*[๐-๙\d]{2,4})?/g, " ")
+    .replace(/วันที่\s*[๐-๙\d]{1,2}/g, " ")
     .replace(/(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:นี้|หน้า)?/gi, " ")
     .replace(/(?:(?:วัน)?มะรืน(?:นี้)?|พรุ่งนี้|วันนี้|day\s*after\s*tomorrow|tomorrow|today|tonight|this\s+(?:morning|afternoon|evening|noon|night))(?:\s*(?:ตอน|ช่วง)?\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|คืน|ดึก))?/gi, " ")
     .replace(/(?:ตอน|ช่วง|ช่อง)?\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|คืน|ดึก)นี้/gi, " ")
     .replace(/^\s*(?:ช่วย|อยาก|จะ|ขอ|please)?\s*(?:ให้)?\s*(?:หาเวลา|จัดเวลา|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)?\s*/i, "")
     .replace(/(?:ตอน|ช่วง|ช่อง)\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|กลางคืน|ดึก).*$/i, " ")
     .replace(/(?:หลัง|ตั้งแต่|ไม่ก่อน|ก่อน|ไม่เกิน|ไม่หลัง|เวลา|ตอน)\s*(?:เวลา)?\s*(?:ตี|บ่าย|เที่ยง)?\s*(?:[๐-๙\d]{1,2}|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|สิบเอ็ด|สิบสอง)(?:[:.][๐-๙\d]{2})?\s*(?:โมงเช้า|โมงเย็น|โมง|ทุ่ม|นาฬิกา|น\.|am|pm)?/gi, " ")
-    .replace(/(?:ให้หน่อย|หน่อย|ที|นะ|ครับ|ค่ะ|คับ)\s*$/i, "")
+    // Politeness stacks up in real messages ("จัดให้ที", "ให้หน่อยนะครับ"), so
+    // one pass over a single word is not enough to keep it out of the title.
+    .replace(/(?:\s*(?:ให้หน่อย|ให้ที|ให้ด้วย|จัดให้|ช่วยด้วย|หน่อย|ด้วย|ที|นะ|ครับ|ค่ะ|คับ|จ้า))+\s*$/i, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 160);
@@ -225,8 +287,124 @@ const RELATIVE_PERIOD_PATTERNS: {pattern: RegExp; period: RequestedPeriod}[] = [
   {pattern: /ค่ำนี้|ดึกนี้|tonight|this\s+night|(?<!เที่ยง)คืนนี้/i, period: "night"},
 ];
 
+/**
+ * Month names as people actually write them: full, shortened, and the dotted
+ * abbreviations, Thai and English.
+ *
+ * Longer spellings come first inside each entry so "กันยายน" is matched whole
+ * instead of as "กันยา" with a stray "ยน" left in the title.
+ */
+const MONTH_NAME_PATTERNS: {month: number; pattern: string}[] = [
+  {month: 1, pattern: "มกราคม|มกรา|ม\\.?ค\\.?|jan(?:uary)?"},
+  {month: 2, pattern: "กุมภาพันธ์|กุมภา|ก\\.?พ\\.?|feb(?:ruary)?"},
+  {month: 3, pattern: "มีนาคม|มีนา|มี\\.?ค\\.?|mar(?:ch)?"},
+  {month: 4, pattern: "เมษายน|เมษา|เม\\.?ย\\.?|apr(?:il)?"},
+  {month: 5, pattern: "พฤษภาคม|พฤษภา|พ\\.?ค\\.?|may"},
+  {month: 6, pattern: "มิถุนายน|มิถุนา|มิ\\.?ย\\.?|jun(?:e)?"},
+  {month: 7, pattern: "กรกฎาคม|กรกฎา|ก\\.?ค\\.?|jul(?:y)?"},
+  {month: 8, pattern: "สิงหาคม|สิงหา|ส\\.?ค\\.?|aug(?:ust)?"},
+  {month: 9, pattern: "กันยายน|กันยา|ก\\.?ย\\.?|sep(?:t(?:ember)?)?"},
+  {month: 10, pattern: "ตุลาคม|ตุลา|ต\\.?ค\\.?|oct(?:ober)?"},
+  {month: 11, pattern: "พฤศจิกายน|พฤศจิกา|พ\\.?ย\\.?|nov(?:ember)?"},
+  {month: 12, pattern: "ธันวาคม|ธันวา|ธ\\.?ค\\.?|dec(?:ember)?"},
+];
+
+const MONTH_NAME_SOURCE = MONTH_NAME_PATTERNS.map((entry) => `(?:${entry.pattern})`).join("|");
+/**
+ * A year only counts when it is unmistakably a year: four digits, or two
+ * digits behind an explicit ปี/พ.ศ. marker. Without that, "1 กันยา 10 โมง"
+ * reads its start time as the year 2010 and schedules the past.
+ */
+const YEAR_SUFFIX_SOURCE = "(?:\\s*(?:ปี|พ\\.?ศ\\.?|ค\\.?ศ\\.?)\\s*(\\d{2,4})|\\s*(\\d{4}))?(?!\\d)";
+
+function monthFromName(value: string) {
+  return MONTH_NAME_PATTERNS.find((entry) => new RegExp(`^(?:${entry.pattern})$`, "i").test(value.trim()))?.month ?? null;
+}
+
+/**
+ * Turns a day/month/year triple into a local ISO date.
+ *
+ * Thai users write both eras, so 2569 and a bare 69 both mean 2026. When no
+ * year is written at all the nearest future occurrence is meant, never a date
+ * that has already gone by.
+ */
+function resolveCalendarDate(day: number, month: number, rawYear: number | null, localDate: string) {
+  if (!Number.isInteger(day) || day < 1 || day > 31 || !Number.isInteger(month) || month < 1 || month > 12) return null;
+  const todayMs = Date.parse(`${localDate}T12:00:00Z`);
+  if (Number.isNaN(todayMs)) return null;
+  const year = rawYear === null ? new Date(todayMs).getUTCFullYear() :
+    rawYear >= 2400 ? rawYear - 543 :
+      rawYear >= 1900 ? rawYear :
+        rawYear >= 60 ? 2500 + rawYear - 543 : 2000 + rawYear;
+  // The Date constructor rolls 31 กันยายน into 1 October; a day that does not
+  // exist is a parse failure, not a different date.
+  const build = (value: number) => {
+    const candidate = new Date(Date.UTC(value, month - 1, day, 12));
+    return candidate.getUTCMonth() === month - 1 && candidate.getUTCDate() === day ? candidate : null;
+  };
+  const first = build(year);
+  const resolved = first && rawYear === null && first.getTime() < todayMs ? build(year + 1) : first;
+  return resolved ? resolved.toISOString().slice(0, 10) : null;
+}
+
+/**
+ * Reads a written-out calendar date: "วันที่ 1 กันยา", "1 ก.ย. 2569", "1/9",
+ * "2026-09-01", "Sep 1", or a bare "วันที่ 5" meaning the next fifth.
+ *
+ * This is the piece the deterministic layer never had, which is why an
+ * unambiguous "วันที่ 1 กันยา" was dropped and the search ranged freely over
+ * the whole fortnight.
+ */
+function explicitDateFromMessage(message: string, localDate: string) {
+  const normalized = normalizeThaiDigits(message);
+  const year = (marked: string | undefined, bare: string | undefined) =>
+    marked ? Number(marked) : bare ? Number(bare) : null;
+
+  const iso = /(?:^|\D)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/.exec(normalized);
+  if (iso) return resolveCalendarDate(Number(iso[3]), Number(iso[2]), Number(iso[1]), localDate);
+
+  const dayMonth = new RegExp(
+    `(?:วันที่|วัน|on)?\\s*(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s*(?:เดือน\\s*)?(${MONTH_NAME_SOURCE})${YEAR_SUFFIX_SOURCE}`,
+    "i",
+  ).exec(normalized);
+  if (dayMonth) {
+    const month = monthFromName(dayMonth[2]);
+    if (month) return resolveCalendarDate(Number(dayMonth[1]), month, year(dayMonth[3], dayMonth[4]), localDate);
+  }
+
+  const monthDay = new RegExp(
+    `(${MONTH_NAME_SOURCE})\\s*(\\d{1,2})\\s*(?:st|nd|rd|th)?,?${YEAR_SUFFIX_SOURCE}`,
+    "i",
+  ).exec(normalized);
+  if (monthDay) {
+    const month = monthFromName(monthDay[1]);
+    if (month) return resolveCalendarDate(Number(monthDay[2]), month, year(monthDay[3], monthDay[4]), localDate);
+  }
+
+  // "1/2 ชั่วโมง" is a fraction of an hour, not the first of February.
+  const slashed = /(?:^|\D)(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?(?!\s*[:.]?\d)(?!\s*(?:ชั่วโมง|ชม\.?|นาที|hours?|minutes?))/.exec(normalized);
+  if (slashed) return resolveCalendarDate(Number(slashed[1]), Number(slashed[2]), slashed[3] ? Number(slashed[3]) : null, localDate);
+
+  const dayOnly = /วันที่\s*(\d{1,2})(?!\s*[:.]?\d)/.exec(normalized);
+  if (dayOnly) {
+    const todayMs = Date.parse(`${localDate}T12:00:00Z`);
+    if (Number.isNaN(todayMs)) return null;
+    const today = new Date(todayMs);
+    const thisMonth = resolveCalendarDate(Number(dayOnly[1]), today.getUTCMonth() + 1, today.getUTCFullYear(), localDate);
+    if (thisMonth && Date.parse(`${thisMonth}T12:00:00Z`) >= todayMs) return thisMonth;
+    const next = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1, 12));
+    return resolveCalendarDate(Number(dayOnly[1]), next.getUTCMonth() + 1, next.getUTCFullYear(), localDate);
+  }
+
+  return null;
+}
+
 function requestedDateFromMessage(message: string, localDate?: string) {
   if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
+  // An explicit calendar date is unambiguous, so it outranks both a weekday
+  // word and a relative day word appearing in the same sentence.
+  const explicit = explicitDateFromMessage(message, localDate);
+  if (explicit) return explicit;
   const weekdayPatterns: {day: number; pattern: RegExp}[] = [
     {day: 0, pattern: /(?:วัน)?อาทิตย์|sunday/i},
     {day: 1, pattern: /(?:วัน)?จันทร์|monday/i},
@@ -341,6 +519,22 @@ export function fallbackAdaptiveNaturalLanguageIntent(message: string, temporalC
     requiresConfirmation: true,
     taskTitle,
   };
+}
+
+/**
+ * True when the user clearly named a day or a time and nothing resolved it.
+ *
+ * Only consulted when Gemini was unreachable and the regex fallback answered
+ * instead: an unread date word there means the request would otherwise be
+ * silently widened to "anywhere in the next fortnight", which is exactly how a
+ * confident-looking wrong answer gets produced. Asking is the honest move.
+ */
+export function unresolvedTemporalMention(message: string, intent: NaturalLanguageIntent) {
+  if (intent.requestedLocalDate || intent.earliestLocalStartTime || intent.latestLocalStartTime ||
+    intent.preferredPeriod || intent.deadline) return false;
+  const normalized = normalizeThaiDigits(message);
+  return new RegExp(`\\d\\s*(?:${MONTH_NAME_SOURCE})|(?:${MONTH_NAME_SOURCE})\\s*\\d`, "i").test(normalized) ||
+    /วันที่|เดือนหน้า|สัปดาห์หน้า|อาทิตย์หน้า|next\s+(?:week|month)|\d{1,2}\s*[/-]\s*\d{1,2}|\d{1,2}[:.]\d{2}|\d{1,2}\s*(?:โมง|ทุ่ม|นาฬิกา|น\.)/i.test(normalized);
 }
 
 type RequestedPeriod = NonNullable<NaturalLanguageIntent["preferredPeriod"]>;
@@ -829,7 +1023,15 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const durationMinutes = activity.estimatedDurationMinutes || activity.durationMinutes;
     const now = Date.now();
     const earliestStartMs = preferredStartMs ?? Math.max(now + 15 * MINUTE_MS, activity.startMs - DAY_MS);
-    const latestEndMs = Math.min(activity.deadlineMs ?? now + 14 * DAY_MS, now + 14 * DAY_MS);
+    // A date the user named explicitly can sit past the usual fortnight, and a
+    // horizon that stops short of it reports "no free slot" for a day that is
+    // wide open. The search still stops at two months so it stays bounded.
+    const requestedDayEndMs = requiredLocalDate ? Date.parse(`${requiredLocalDate}T12:00:00Z`) + 1.5 * DAY_MS : Number.NaN;
+    const horizonMs = Math.min(
+      now + 60 * DAY_MS,
+      Math.max(now + 14 * DAY_MS, Number.isNaN(requestedDayEndMs) ? 0 : requestedDayEndMs),
+    );
+    const latestEndMs = Math.min(activity.deadlineMs ?? horizonMs, horizonMs);
     const [patterns, scheduleItems] = await Promise.all([
       listPatterns(uid),
       constraints(uid, earliestStartMs, latestEndMs, activity.id),
@@ -852,7 +1054,10 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   async function proposeNewFlexibleActivity(uid: string, intent: NaturalLanguageIntent, message: string) {
     const setting = await preferences(uid);
-    const title = text(intent.taskTitle, 160) || adaptiveTitleFromMessage(message);
+    // The model's title goes through the same cleaner as the fallback's, so a
+    // model that echoes the whole sentence back still cannot name an activity
+    // "ซื้อมังงะวันที่ 1 กันยาให้หน่อย".
+    const title = adaptiveTitleFromMessage(text(intent.taskTitle, 160)) || adaptiveTitleFromMessage(message);
     if (!title) return {message: "บอกกิจกรรมที่อยากเพิ่มได้เลย เช่น อ่านบทที่ 4 หรือทำรายงานกลุ่ม"};
 
     const now = Date.now();
@@ -931,36 +1136,27 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   async function geminiExplanation(apiKey: string, facts: Record<string, unknown>, fallback: string) {
     if (!apiKey) return fallback;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), GEMINI_EXPLANATION_TIMEOUT_MS);
     try {
-      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        body: JSON.stringify({
-          generation_config: {max_output_tokens: 280, thinking_level: "low"},
-          input: `VERIFIED_SCHEDULING_FACTS:\n${JSON.stringify(facts)}`,
-          model: process.env.GEMINI_ASSISTANT_MODEL ?? "gemini-3.6-flash",
-          response_format: {
-            mime_type: "application/json",
-            schema: {properties: {explanation: {maxLength: 600, type: "string"}}, required: ["explanation"], type: "object"},
-            type: "text",
-          },
-          store: false,
-          system_instruction: "Write one clear Thai scheduling explanation using only the verified facts. Never invent statistics, dates, conflicts, or user behavior. Do not claim that Gemini selected the time.",
-        }),
-        headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
-        method: "POST",
-        signal: controller.signal,
-      });
-      if (!response.ok) return fallback;
-      const payload = await response.json() as GeminiInteractionResponse;
-      const output = interactionText(payload);
+      const result = await geminiInteraction(apiKey, {
+        // Wide enough that the thinking budget cannot truncate the explanation
+        // the way it silently truncated the parsed intent.
+        generation_config: {max_output_tokens: 900, thinking_level: "low"},
+        input: `VERIFIED_SCHEDULING_FACTS:\n${JSON.stringify(facts)}`,
+        response_format: {
+          mime_type: "application/json",
+          schema: {properties: {explanation: {maxLength: 600, type: "string"}}, required: ["explanation"], type: "object"},
+          type: "text",
+        },
+        store: false,
+        system_instruction: "Write one clear Thai scheduling explanation using only the verified facts. Never invent statistics, dates, conflicts, or user behavior. Do not claim that Gemini selected the time.",
+      }, GEMINI_EXPLANATION_TIMEOUT_MS, "adaptiveSchedulingExplanation");
+      if (!result.ok) return fallback;
+      const output = interactionText(result.payload);
       if (!output) return fallback;
       const parsed = JSON.parse(output) as {explanation?: unknown};
       return text(parsed.explanation, 600) || fallback;
     } catch {
       return fallback;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -1578,15 +1774,27 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     apiKey: string,
     message: string,
     temporalContext: ReturnType<typeof verifiedTemporalContext>,
-  ): Promise<NaturalLanguageIntent> {
-    const fallback = () => fallbackAdaptiveNaturalLanguageIntent(message, temporalContext);
-    if (!apiKey) return fallback();
+  ): Promise<{intent: NaturalLanguageIntent; usedGemini: boolean}> {
+    // The reason is logged so a silent regression back to the regex parser is
+    // visible in the function logs instead of only in a wrong suggestion.
+    const fallback = (reason: string) => {
+      console.warn("processNaturalLanguageScheduleCommand: parsing fell back to the deterministic reader.", {
+        messageLength: message.length,
+        reason,
+      });
+      return {intent: fallbackAdaptiveNaturalLanguageIntent(message, temporalContext), usedGemini: false};
+    };
+    if (!apiKey) return fallback("missing-api-key");
     try {
-      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        body: JSON.stringify({
-          generation_config: {max_output_tokens: 450, thinking_level: "medium"},
+      const result = await geminiInteraction(apiKey, {
+          // Thought tokens are spent out of max_output_tokens, so "medium" plus a
+        // 450-token ceiling returned JSON that stopped mid-object on every
+        // request; JSON.parse threw and the old code silently answered from the
+        // regex reader instead. "low" matches the assistant chat, which is the
+        // one Gemini configuration this project has seen work, and the wider
+        // ceiling keeps a longer answer from being cut off again.
+        generation_config: {max_output_tokens: 1_200, thinking_level: "low"},
           input: JSON.stringify({message, verifiedTemporalContext: temporalContext}),
-          model: process.env.GEMINI_ASSISTANT_MODEL ?? "gemini-3.6-flash",
           response_format: {
             mime_type: "application/json",
             schema: {
@@ -1610,20 +1818,24 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
             type: "text",
           },
           store: false,
-          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate, and resolve relative day words the same way: วันนี้/today and any 'this morning/afternoon/evening/tonight' form such as เช้านี้, บ่ายนี้, เย็นนี้ or คืนนี้ are verifiedTemporalContext.localDate itself, พรุ่งนี้/tomorrow is the next day, and มะรืนนี้ is two days later. The server deterministically recalculates named weekdays, relative day words, noon, and midnight after model output, so do not guess dates. Never move a requested weekday or a requested relative day to another day merely because another slot scores higher. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
-        }),
-        headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
-        method: "POST",
-      });
-      if (!response.ok) return fallback();
-      const payload = await response.json() as GeminiInteractionResponse;
-      const output = interactionText(payload);
-      if (!output) return fallback();
-      const parsed = validateGeminiNaturalLanguageIntent(JSON.parse(output));
-      if (!parsed) throw new Error("Gemini returned an invalid scheduling intent");
-      return applyDeterministicTemporalSemantics(parsed, message, temporalContext);
-    } catch {
-      return fallback();
+          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases, and remove polite filler such as 'ให้หน่อย', 'หน่อยนะ', 'จัดให้ที', 'ช่วย', 'ที', 'ด้วย', 'ครับ' and 'ค่ะ'. taskTitle is the activity alone, for example 'ซื้อมังงะวันที่ 1 กันยาให้หน่อย' has taskTitle 'ซื้อมังงะ'; never echo the user's whole sentence back as the title. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate, and resolve relative day words the same way: วันนี้/today and any 'this morning/afternoon/evening/tonight' form such as เช้านี้, บ่ายนี้, เย็นนี้ or คืนนี้ are verifiedTemporalContext.localDate itself, พรุ่งนี้/tomorrow is the next day, and มะรืนนี้ is two days later. Resolve an explicit calendar date into requestedLocalDate as well: 'วันที่ 1 กันยายน', '1 ก.ย.', '1 กันยา', '1/9', 'Sep 1' and '2026-09-01' all mean the first of September, using the year from verifiedTemporalContext.localDate when none is written and rolling to the next year only if that date has already passed. Convert a Thai Buddhist year by subtracting 543, so 2569 is 2026. An explicit calendar date always outranks a weekday word, a relative day word, and any default. The server deterministically recalculates explicit calendar dates, named weekdays, relative day words, noon, and midnight after model output, so do not guess dates. Never move a requested weekday or a requested relative day to another day merely because another slot scores higher. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
+      }, GEMINI_PARSE_TIMEOUT_MS, "processNaturalLanguageScheduleCommand");
+      if (!result.ok) return fallback("request-failed");
+      const output = interactionText(result.payload);
+      if (!output) return fallback("empty-output");
+      // A truncated answer is still well-formed text, so it only shows up as a
+      // parse error. Name it, rather than reporting a bare SyntaxError.
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(output);
+      } catch {
+        return fallback(`unparseable-output:${output.length}-chars`);
+      }
+      const parsed = validateGeminiNaturalLanguageIntent(decoded);
+      if (!parsed) return fallback("invalid-intent");
+      return {intent: applyDeterministicTemporalSemantics(parsed, message, temporalContext), usedGemini: true};
+    } catch (error) {
+      return fallback(error instanceof Error ? `${error.name}` : "unknown-error");
     }
   }
 
@@ -2184,12 +2396,21 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       preferences(uid),
       constraints(uid, nowMs, nowMs + 7 * DAY_MS),
     ]);
-    const intent = await parseNaturalLanguage(
+    const {intent, usedGemini} = await parseNaturalLanguage(
       geminiApiKey.value(),
       message,
       verifiedTemporalContext(setting, contextItems),
     );
     const response: Record<string, unknown> = {intent};
+    // Gemini is the reader for messy phrasing. When it could not answer and the
+    // regex fallback also failed to place a day or time the user plainly wrote,
+    // say so instead of quietly scheduling whatever the open search returns.
+    if (!usedGemini && ["create_activity", "find_time"].includes(intent.intent) && unresolvedTemporalMention(message, intent)) {
+      return {
+        ...response,
+        message: "ยังอ่านวันหรือเวลาที่ระบุไม่ออกแน่ชัด ช่วยพิมพ์ใหม่ให้ชัดขึ้นได้ไหม เช่น \"ซื้อมังงะ วันที่ 1 ก.ย. 10:00\"",
+      };
+    }
     if (intent.intent === "productivity") {
       response.dashboard = await dashboard(uid);
       return response;
