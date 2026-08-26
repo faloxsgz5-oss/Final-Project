@@ -9,7 +9,7 @@ const {
   zonedDayStart,
 } = require('../lib/adaptive-scheduling/engine.js');
 const {validateGeminiNaturalLanguageIntent} = require('../lib/adaptive-scheduling/validation.js');
-const {applyDeterministicTemporalSemantics, fallbackAdaptiveNaturalLanguageIntent} = require('../lib/adaptive-scheduling/functions.js');
+const {applyDeterministicTemporalSemantics, fallbackAdaptiveNaturalLanguageIntent, nearestAvailableSlot} = require('../lib/adaptive-scheduling/functions.js');
 
 const minute = 60_000;
 const day = 24 * 60 * minute;
@@ -349,5 +349,94 @@ assert.equal(bangkokDate(todayTop.startMs), '2026-08-25', '"วันนี้" 
 assert.equal(bangkokDate(afternoonTop.startMs), '2026-08-25', '"บ่ายนี้" must be scheduled today');
 assert.ok(bangkokHour(afternoonTop.startMs) >= 13, '"บ่ายนี้" must land in the afternoon window');
 assert.notEqual(todayTop.startMs, afternoonTop.startMs, 'two different phrasings must not collapse onto one identical slot');
+
+// Asking for an exact hour that a class already occupies used to be a dead end
+// telling the user to go and pick another time themselves. It now falls back
+// through the same search, offering the nearest slot it can actually take.
+const classStart = ms('2026-08-05T15:00:00+07:00');
+const busyAfternoon = [{category: 'study', endMs: ms('2026-08-05T17:00:00+07:00'), id: 'IST201506', isDifficult: true, isFixed: true, startMs: classStart}];
+const exactThreeRequest = request({
+  category: 'reading',
+  requiredLocalDate: '2026-08-05',
+  requiredLocalTimeWindow: {endTime: '16:00', startTime: '15:00'},
+  scheduleItems: busyAfternoon,
+});
+const noIntent = {preferredPeriod: null};
+
+assert.equal(findAdaptiveTimeSlots(exactThreeRequest, 1).length, 0, 'the hour the class occupies must stay unavailable');
+const offered = nearestAvailableSlot(exactThreeRequest, noIntent);
+assert.ok(offered.slot, 'a taken hour must come back with an alternative, not nothing');
+assert.ok(offered.unavailableRequest.includes('15:00'), 'the card has to say which time was unavailable');
+assert.equal(bangkokDate(offered.slot.startMs), '2026-08-05', 'the alternative should stay on the day that was asked for');
+assert.ok(bangkokHour(offered.slot.startMs) >= 13 && bangkokHour(offered.slot.startMs) < 15,
+  'the first relaxation is the surrounding part of day, so 3pm falls back inside the afternoon');
+assert.ok(offered.slot.startMs + 60 * minute <= classStart, 'the alternative must not overlap the class');
+
+// A request that simply succeeds must not be labelled as a fallback.
+const freeRequest = request({category: 'reading', requiredLocalDate: '2026-08-05', requiredLocalTimeWindow: {endTime: '14:00', startTime: '13:00'}});
+const direct = nearestAvailableSlot(freeRequest, noIntent);
+assert.ok(direct.slot, 'a free requested hour must still be offered directly');
+assert.equal(direct.unavailableRequest, '', 'no clash means no "was unavailable" notice');
+assert.equal(bangkokHour(direct.slot.startMs), 13);
+
+// The fallback must keep obeying what 3a learned rather than grabbing the first
+// free half hour. With the whole afternoon blocked the search widens to the
+// rest of the day, and there a learned evening has to beat the earliest slot.
+const blockedAfternoon = [{category: 'study', endMs: ms('2026-08-05T17:00:00+07:00'), id: 'IST201506', isDifficult: false, isFixed: true, startMs: ms('2026-08-05T13:00:00+07:00')}];
+const wholeAfternoonGone = {
+  category: 'reading',
+  requiredLocalDate: '2026-08-05',
+  requiredLocalTimeWindow: {endTime: '16:00', startTime: '15:00'},
+  scheduleItems: blockedAfternoon,
+};
+const coldWideFallback = nearestAvailableSlot(request(wholeAfternoonGone), noIntent);
+assert.ok(coldWideFallback.slot, 'a blocked afternoon must widen to the rest of the day');
+assert.equal(bangkokHour(coldWideFallback.slot.startMs), 6, 'with nothing learned the widened search takes the earliest free hour');
+
+const learnedEvening = [{
+  activityCategory: 'reading', averageDurationMinutes: 60, averageStartDelayMinutes: 0,
+  completionRate: 1, confidenceLevel: 'medium', confidenceScore: 0.6, dayOfWeek: 3,
+  observationCount: 8, postponementRate: 0, preferredEndHour: 21, preferredStartHour: 19,
+  suggestionAcceptanceRate: 1,
+}];
+const learnedFallback = nearestAvailableSlot(request({...wholeAfternoonGone, patterns: learnedEvening}), noIntent);
+assert.ok(learnedFallback.slot, 'the learned fallback must still find something');
+assert.equal(bangkokHour(learnedFallback.slot.startMs), 19, 'the alternative must follow the learned window, not just the next free slot');
+assert.notEqual(learnedFallback.slot.startMs, coldWideFallback.slot.startMs, 'learned behaviour has to change which alternative is offered');
+assert.ok(learnedFallback.unavailableRequest.includes('15:00'), 'the learned fallback is still labelled as a fallback');
+
+// Found while testing on production: after a class the fallback skips the first
+// free half hours. That is the burnout penalty doing its job -- a slot starting
+// within 90 minutes of a difficult item loses 18 points -- so the alternative
+// leaves a recovery gap instead of butting straight up against the class.
+const afternoonClass = [{category: 'study', endMs: ms('2026-08-05T17:00:00+07:00'), id: 'IST201506', isDifficult: true, isFixed: true, startMs: ms('2026-08-05T15:00:00+07:00')}];
+const eveningRequest = request({
+  category: 'reading',
+  earliestStartMs: ms('2026-08-05T14:15:00+07:00'),
+  requiredLocalDate: '2026-08-05',
+  requiredLocalTimeWindow: {endTime: '16:00', startTime: '15:00'},
+  scheduleItems: afternoonClass,
+});
+const afterClass = nearestAvailableSlot(eveningRequest, {preferredPeriod: null});
+assert.ok(afterClass.slot, 'a clash late in the afternoon must still yield an alternative');
+assert.equal(afterClass.slot.startMs, ms('2026-08-05T18:30:00+07:00'), 'the alternative must clear the 90-minute burnout window after the class');
+assert.equal(afterClass.slot.breakdown.burnoutPenalty, 0, 'the offered alternative must not be carrying a burnout penalty');
+
+// The nearer slots are perfectly valid -- they are merely outscored. Asking for
+// 17:30 outright carries its own window, and that request is still honoured
+// rather than being quietly pushed out to the higher-scoring 18:30.
+const sooner = ms('2026-08-05T17:30:00+07:00');
+const askedForSooner = request({
+  category: 'reading',
+  earliestStartMs: ms('2026-08-05T14:15:00+07:00'),
+  requiredLocalDate: '2026-08-05',
+  requiredLocalTimeWindow: {endTime: '18:30', startTime: '17:30'},
+  scheduleItems: afternoonClass,
+});
+assert.equal(validateCandidateSlot(askedForSooner, sooner, sooner + 60 * minute).ok, true,
+  'a slot inside the burnout window is still valid, only lower scoring');
+const explicitSooner = nearestAvailableSlot(askedForSooner, {preferredPeriod: null});
+assert.equal(explicitSooner.slot.startMs, sooner, 'an explicitly requested time must be offered as asked');
+assert.equal(explicitSooner.unavailableRequest, '', 'honouring the exact request is not a fallback');
 
 console.log('Adaptive Scheduling deterministic tests passed.');

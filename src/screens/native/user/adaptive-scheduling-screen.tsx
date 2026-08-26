@@ -392,11 +392,15 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
           {confirmationFlow?.stage === 'confirm' && confirmationFlow.proposal ? <>
             <LinearGradient colors={['#eef7e9', '#ffffff']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.flowHero}>
               <View style={styles.flowHeroIcon}><MaterialIcon color="#527750" name="auto_awesome" size={25} /></View>
-              <View style={{flex: 1}}><Text style={styles.flowEyebrow}>SMARTLIFE ADAPTIVE AI</Text><Text style={styles.flowTitle}>พร้อมเพิ่มลงตาราง</Text></View>
+              <View style={{flex: 1}}><Text style={styles.flowEyebrow}>SMARTLIFE ADAPTIVE AI</Text><Text style={styles.flowTitle}>{confirmationFlow.proposal.unavailableRequest ? 'เวลาที่ขอไม่ว่าง' : 'พร้อมเพิ่มลงตาราง'}</Text></View>
             </LinearGradient>
             <Text style={styles.flowActivityTitle}>{confirmationFlow.proposal.title}</Text>
+            {confirmationFlow.proposal.unavailableRequest ? <View style={styles.flowClashNotice}>
+              <MaterialIcon color="#a3714f" name="event_busy" size={17} />
+              <Text style={styles.flowClashText}>{confirmationFlow.proposal.unavailableRequest} ชนกับรายการในตาราง ลองช่วงนี้แทนได้ไหม</Text>
+            </View> : null}
             <View style={styles.flowDetails}>
-              <FlowDetail icon="calendar_month" label="วันและเวลา" value={thaiDate(confirmationFlow.proposal.startAt, dashboard?.preferences.timeZone)} />
+              <FlowDetail icon="calendar_month" label={confirmationFlow.proposal.unavailableRequest ? 'เวลาที่เสนอแทน' : 'วันและเวลา'} value={thaiDate(confirmationFlow.proposal.startAt, dashboard?.preferences.timeZone)} />
               <FlowDetail icon="timer" label="ระยะเวลา" value={`${confirmationFlow.proposal.durationMinutes} นาที`} />
               <FlowDetail icon="sync_alt" label="Adaptive" value="ย้ายเวลาได้เมื่อคุณอนุญาต" />
             </View>
@@ -527,7 +531,7 @@ const styles = StyleSheet.create({
   flowDetail: {alignItems: 'center', borderBottomColor: '#e9eee5', borderBottomWidth: 1, flexDirection: 'row', gap: 10, minHeight: 58, paddingVertical: 8},
   flowDetailIcon: {alignItems: 'center', backgroundColor: '#edf5e9', borderRadius: 13, height: 38, justifyContent: 'center', width: 38},
   flowDetailLabel: {color: '#8a9487', fontFamily: 'Prompt_500Medium', fontSize: 9},
-  flowDetails: {backgroundColor: '#f8faf6', borderColor: '#e5ebe1', borderRadius: 18, borderWidth: 1, marginTop: 14, overflow: 'hidden', paddingHorizontal: 12},
+  flowClashNotice: {alignItems: 'flex-start', backgroundColor: '#fbf1e9', borderRadius: 14, flexDirection: 'row', gap: 8, marginTop: 12, padding: 11}, flowClashText: {color: '#8a5f42', flex: 1, fontFamily: 'Prompt_600SemiBold', fontSize: 10, lineHeight: 16}, flowDetails: {backgroundColor: '#f8faf6', borderColor: '#e5ebe1', borderRadius: 18, borderWidth: 1, marginTop: 14, overflow: 'hidden', paddingHorizontal: 12},
   flowDetailValue: {color: '#3a4938', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 2},
   flowEditor: {backgroundColor: '#f4f8f1', borderColor: '#dfe9db', borderRadius: 17, borderWidth: 1, marginTop: 9, padding: 11},
   flowEditorApply: {alignItems: 'center', alignSelf: 'flex-end', backgroundColor: '#5b8059', borderRadius: 12, flexDirection: 'row', gap: 5, justifyContent: 'center', marginTop: 9, minHeight: 38, paddingHorizontal: 14},

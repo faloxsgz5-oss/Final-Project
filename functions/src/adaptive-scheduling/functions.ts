@@ -617,6 +617,59 @@ function serializeDocument(document: QueryDocumentSnapshot<DocumentData>) {
   }));
 }
 
+/**
+ * The slot to offer for a new activity, relaxing what was asked for only as far
+ * as it has to.
+ *
+ * A request for an exact hour that is already taken used to be a dead end: the
+ * user was told to go and pick another time themselves. Now the same search
+ * that serves open-ended requests runs again with one constraint loosened at a
+ * time, so a clash comes back as a concrete alternative the user can accept in
+ * one tap instead of a refusal.
+ *
+ * Every step calls `findAdaptiveTimeSlots` on a copy of the same request, so
+ * conflict checks, availability, workload limits and the learned-pattern
+ * scoring all apply exactly as they do on the first attempt -- this is not a
+ * second "next free slot" search that ignores what 3a has learned.
+ */
+export function nearestAvailableSlot(request: AdaptiveSlotRequest, intent: NaturalLanguageIntent) {
+  const exact = findAdaptiveTimeSlots(request, 1)[0];
+  if (exact) return {slot: exact, unavailableRequest: ""};
+
+  // Nothing to fall back from: the request never named a time or a day.
+  if (!request.requiredLocalTimeWindow && !request.requiredLocalDate) return {slot: undefined, unavailableRequest: ""};
+
+  const askedClock = request.requiredLocalTimeWindow?.startTime;
+  const askedFor = [
+    request.requiredLocalDate ? `วันที่ ${request.requiredLocalDate}` : "",
+    askedClock ? `เวลา ${askedClock}` : "",
+  ].filter(Boolean).join(" ");
+
+  /** Widen the exact hour to the part of day it sits in, keeping the day. */
+  const surroundingPeriod = () => {
+    if (!askedClock) return undefined;
+    const minutes = parseClockMinutes(askedClock);
+    if (minutes === null) return undefined;
+    const period: RequestedPeriod = intent.preferredPeriod ?? adaptiveTimePeriod(Math.floor(minutes / 60));
+    const window = REQUESTED_PERIOD_WINDOWS[period];
+    // Only useful if it is genuinely wider than what already failed.
+    return window.startTime === request.requiredLocalTimeWindow?.startTime ? undefined : window;
+  };
+
+  const relaxations: {requiredLocalDate?: string; requiredLocalTimeWindow?: {endTime: string; startTime: string}}[] = [
+    {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: surroundingPeriod()},
+    {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: undefined},
+    {requiredLocalDate: undefined, requiredLocalTimeWindow: request.requiredLocalTimeWindow},
+    {requiredLocalDate: undefined, requiredLocalTimeWindow: undefined},
+  ];
+
+  for (const relaxation of relaxations) {
+    const slot = findAdaptiveTimeSlots({...request, ...relaxation}, 1)[0];
+    if (slot) return {slot, unavailableRequest: askedFor};
+  }
+  return {slot: undefined, unavailableRequest: ""};
+}
+
 export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: AdaptiveFactoryOptions) {
   const callableOptions = {
     enforceAppCheck: true,
@@ -835,27 +888,34 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     };
     const requestedWindow = requestedWindowForIntent(intent, durationMinutes);
     const {request} = await schedulingRequest(uid, activity, undefined, requestedWindow, intent.requestedLocalDate ?? undefined);
-    const slot = findAdaptiveTimeSlots(request, 1)[0];
-    if (!slot) {
-      // A requested day that is genuinely full has to say so. Staying silent is
-      // how "วันนี้" used to come back as a slot on some other day entirely.
+    const nearest = nearestAvailableSlot(request, intent);
+    if (!nearest.slot) {
+      // Every relaxation was tried and the fortnight really is full, so say so
+      // rather than inventing something outside what was asked for.
       const requestedScope = intent.requestedLocalDate ?
         ` ในวันที่ ${intent.requestedLocalDate}${requestedWindow ? ` ช่วง ${requestedWindow.startTime}-${requestedWindow.endTime}` : ""}` : "";
       return {message: requestedScope ?
         `ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้${requestedScope} ลองลดระยะเวลา เลือกวันอื่น หรือปรับเวลาที่พร้อมใช้งาน` :
         "ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้ ลองลดระยะเวลา ขยายกำหนดเสร็จ หรือปรับเวลาที่พร้อมใช้งาน"};
     }
+    const {slot, unavailableRequest} = nearest;
     const defaultNote = durationWasDefaulted ? ` ใช้เวลาเริ่มต้น ${durationMinutes} นาทีเพราะยังไม่ได้ระบุระยะเวลา` : "";
+    const explanation = unavailableRequest
+      ? `${unavailableRequest} ไม่ว่างเพราะชนกับรายการในตาราง จึงเสนอช่วงว่างที่ใกล้ที่สุดที่ผ่านการตรวจแล้วแทน${defaultNote}`
+      : `พบช่วงว่างที่ไม่ชนตารางและอยู่ในเวลาที่ตั้งไว้${defaultNote}`;
     return {
       proposedActivity: {
         activityCategory,
         deadline: deadlineMs === null ? null : new Date(deadlineMs).toISOString(),
         durationMinutes,
         endAt: new Date(slot.endMs).toISOString(),
-        explanation: `พบช่วงว่างที่ไม่ชนตารางและอยู่ในเวลาที่ตั้งไว้${defaultNote}`,
+        explanation,
         generatedForTimeZone: setting.timeZone,
         startAt: new Date(slot.startMs).toISOString(),
         title,
+        // Present only when the exact time asked for was taken, so the card can
+        // say what it is offering instead of what was requested.
+        ...(unavailableRequest ? {unavailableRequest} : {}),
       },
     };
   }

@@ -129,6 +129,12 @@ export type AdaptiveProposedActivity = {
   generatedForTimeZone?: string;
   startAt: string;
   title: string;
+  /**
+   * Set only when the exact day or time asked for was already taken, naming
+   * what was unavailable so the card can offer this slot as an alternative
+   * rather than presenting it as the time the user requested.
+   */
+  unavailableRequest?: string;
 };
 
 type CreateActivityRequest = AdaptiveProposedActivity & {clientRequestId?: string};
