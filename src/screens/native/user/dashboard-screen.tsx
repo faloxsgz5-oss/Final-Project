@@ -3,13 +3,14 @@ import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
+import SleepLogCard from '@/components/sleep-log-card';
 import {LinearGradient} from 'expo-linear-gradient';
 import {Timestamp} from 'firebase/firestore';
 
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
 import {calculateDailyAllowance, type DailyAllowance} from '@/services/dynamic-insights';
 import {loadMonthlyBudget} from '@/services/monthly-budget';
-import {buildNotificationFeed, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
+import {buildNotificationFeed, isRankable, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
 import {recordTaskCompleted} from '@/services/behavior-tracking';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
@@ -105,8 +106,11 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     todayExpenses: items(data?.transactions).filter((item) => item.type === 'expense').map((item) => ({amount: Number(item.amount ?? 0)})),
   }), [budgetAmount, data, monthTransactions, notifications]);
   const workNotes = notes.filter((item) => item.status !== 'completed' && /งาน|task|assignment|homework/i.test(string(item, 'category', '')));
+  // `pending` drives the priority card, the focus tile and the "งานที่ต้องทำ"
+  // count, so a sleep log has to be filtered out here too -- otherwise a logged
+  // night is ranked as an overdue to-do with a "เสร็จ" button on it.
   const pending = [
-    ...activities.filter((item) => item.status !== 'completed').map((item): Item => ({...item, __entity: 'activity'})),
+    ...activities.filter((item) => item.status !== 'completed' && isRankable(item)).map((item): Item => ({...item, __entity: 'activity'})),
     ...workNotes.map((item): Item => ({...item, __entity: 'note'})),
   ];
   // Both budget surfaces read from the same allowance, so the tile and the
@@ -161,6 +165,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>{allowanceAnswer}</Text></View>
         </SoftPress>
         <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>
+        <SleepLogCard onLogged={() => { void load(); }} uid={uid} variant="log" />
 
         {showDevTools && pending.length === 0 && transactions.length === 0 ? <Pressable disabled={seeding} onPress={seedAiDynamicData} style={({pressed}) => [styles.seedCard, pressed && styles.pressed, seeding && {opacity: .6}]}><View style={styles.seedIcon}><MaterialIcon color={colors.sageDark} name="database" size={20} /></View><View style={{flex: 1}}><Text style={styles.seedTitle}>เติมข้อมูลทดสอบ AI Dynamic</Text><Text style={styles.seedSub}>เพิ่มตาราง งาน โน้ต และการเงินเข้า Firebase ของบัญชีนี้</Text></View><Text style={styles.seedAction}>{seeding ? 'กำลังเพิ่ม...' : 'เพิ่มเลย'}</Text></Pressable> : null}
 

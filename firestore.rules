@@ -7,7 +7,7 @@ service cloud.firestore {
     // users/{uid}/{schedules|activities|notes|transactions|pendingReview|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
     // users/{uid}/{schedulingBehaviorEvents|schedulingPatterns|schedulingSuggestions|scheduleChangeHistory|productivityInsights|pushTokens}/{documentId}
     // users/{uid}/monthlyBudgets/{monthKey}
-    // users/{uid}/settings/adaptiveScheduling
+    // users/{uid}/settings/{adaptiveScheduling|sleepBaseline}
     // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
     // Admin access is derived only from the trusted `admin` custom claim.
@@ -86,6 +86,16 @@ service cloud.firestore {
         && data.source in ['ai', 'manual']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
+    }
+
+    function validSleepBaseline(data, userId) {
+      return data.keys().hasAll(['ownerId', 'bedtimeMinutes', 'wakeMinutes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'bedtimeMinutes', 'wakeMinutes', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.bedtimeMinutes is int && data.bedtimeMinutes >= 0 && data.bedtimeMinutes < 1440
+        && data.wakeMinutes is int && data.wakeMinutes >= 0 && data.wakeMinutes < 1440
+        && data.bedtimeMinutes != data.wakeMinutes
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
     function validSchedule(data, userId) {
@@ -356,9 +366,23 @@ service cloud.firestore {
       // Adaptive scheduling calculations and mutations are performed only by
       // authenticated callable/scheduled functions using the Admin SDK. The
       // client can read only the data below its own UID.
+      //
+      // `sleepBaseline` is the one exception: it is a preference the user types
+      // in for themselves, never a computed result, so the owner writes it
+      // directly. It is validated as strictly as any other owned document, and
+      // it stores only two clock values -- the burnout model treats it as a
+      // labelled fallback, never as logged sleep evidence.
       match /settings/{settingId} {
-        allow read: if (isOwner(userId) || isAdmin()) && settingId == 'adaptiveScheduling';
-        allow write: if false;
+        allow read: if (isOwner(userId) || isAdmin()) && settingId in ['adaptiveScheduling', 'sleepBaseline'];
+        allow create: if isOwner(userId) && userExists(userId)
+          && settingId == 'sleepBaseline'
+          && validSleepBaseline(request.resource.data, userId)
+          && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && settingId == 'sleepBaseline'
+          && validSleepBaseline(request.resource.data, userId)
+          && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId) && settingId == 'sleepBaseline';
       }
 
       match /schedulingBehaviorEvents/{eventId} {
