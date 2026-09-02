@@ -12,8 +12,9 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import {CalendarList, CalendarProvider, LocaleConfig, WeekCalendar, type DateData} from 'react-native-calendars';
+import {CalendarList, CalendarProvider, WeekCalendar, type DateData} from 'react-native-calendars';
 
+import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-locale';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
@@ -55,14 +56,7 @@ const C = {
 };
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
 
-LocaleConfig.locales.th = {
-  monthNames: ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'],
-  monthNamesShort: ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'],
-  dayNames: ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'],
-  dayNamesShort: ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'],
-  today: 'วันนี้',
-};
-LocaleConfig.defaultLocale = 'th';
+registerThaiCalendarLocale();
 
 function pad(value: number) { return String(value).padStart(2, '0'); }
 function toDate(value: unknown) {
@@ -272,7 +266,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     if (mode === 'year') return (
       <View style={styles.yearGrid}>{yearMonths.map(({month, days}) => (
         <Pressable key={month} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); setMode('month'); }} style={styles.miniMonth}>
-          <Text style={styles.miniMonthTitle}>{LocaleConfig.locales.th.monthNames[month]}</Text>
+          <Text style={styles.miniMonthTitle}>{THAI_MONTH_NAMES[month]}</Text>
           <View style={styles.miniDays}>{days.map((key, index) => key ? (
             <View key={key} style={[styles.miniDay, key === today && styles.miniToday]}><Text style={[styles.miniDayText, key === today && styles.miniTodayText]}>{Number(key.slice(-2))}</Text>{grouped[key]?.length ? <View style={styles.miniDot} /> : null}</View>
           ) : <View key={`empty-${month}-${index}`} style={styles.miniDay} />)}</View>

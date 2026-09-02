@@ -36,6 +36,9 @@ import AdaptiveSchedulingScreen from '@/screens/native/user/adaptive-scheduling-
 export function generateStaticParams() {
   return [
     ...legacyPageParams.map(({ section, page }) => ({ section, page })),
+    {section: 'admin', page: 'admin_calendar'},
+    {section: 'admin', page: 'admin_notes'},
+    {section: 'admin', page: 'admin_finance'},
     {section: 'user', page: 'smartlife_ocr_history'},
     {section: 'user', page: 'smartlife_monthly_budget'},
     {section: 'user', page: 'smartlife_line_import'},
