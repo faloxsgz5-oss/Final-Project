@@ -6,7 +6,8 @@ service cloud.firestore {
     // users/{uid}
     // users/{uid}/{schedules|activities|notes|transactions|pendingReview|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
     // users/{uid}/{schedulingBehaviorEvents|schedulingPatterns|schedulingSuggestions|scheduleChangeHistory|productivityInsights|pushTokens}/{documentId}
-    // users/{uid}/settings/adaptiveScheduling
+    // users/{uid}/monthlyBudgets/{monthKey}
+    // users/{uid}/settings/{adaptiveScheduling|sleepBaseline}
     // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
     // Admin access is derived only from the trusted `admin` custom claim.
@@ -73,6 +74,30 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function validMonthlyBudget(data, userId, monthKey) {
+      return data.keys().hasAll(['ownerId', 'amount', 'monthKey', 'source', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'amount', 'monthKey', 'source', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && monthKey.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && data.monthKey == monthKey
+        && data.amount is number
+        && data.amount > 0
+        && data.amount <= 10000000
+        && data.source in ['ai', 'manual']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function validSleepBaseline(data, userId) {
+      return data.keys().hasAll(['ownerId', 'bedtimeMinutes', 'wakeMinutes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'bedtimeMinutes', 'wakeMinutes', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.bedtimeMinutes is int && data.bedtimeMinutes >= 0 && data.bedtimeMinutes < 1440
+        && data.wakeMinutes is int && data.wakeMinutes >= 0 && data.wakeMinutes < 1440
+        && data.bedtimeMinutes != data.wakeMinutes
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
     function validSchedule(data, userId) {
       return data.keys().hasAll(['ownerId', 'title', 'courseCode', 'startAt', 'endAt', 'location', 'color', 'source', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'title', 'courseCode', 'courseName', 'startAt', 'endAt', 'location', 'color', 'seriesId', 'source', 'googleCalendarId', 'googleEventId', 'createdAt', 'updatedAt'])
@@ -96,7 +121,7 @@ service cloud.firestore {
           'ownerId', 'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source',
           'note', 'reminder', 'category', 'priority', 'attendees',
           'actualDurationMinutes', 'actualEnd', 'actualStart', 'aiConfidence', 'aiReason', 'aiScheduled',
-          'allowAiReschedule', 'deadline', 'estimatedDurationMinutes', 'googleCalendarId', 'googleEventId',
+          'allowAiReschedule', 'clientRequestId', 'deadline', 'estimatedDurationMinutes', 'googleCalendarId', 'googleEventId',
           'googleSyncStatus', 'isFlexible', 'isLocked', 'originalScheduledStart', 'scheduleVersion',
           'createdAt', 'updatedAt'
         ])
@@ -116,6 +141,7 @@ service cloud.firestore {
         && (!('aiConfidence' in data) || data.aiConfidence == null || (data.aiConfidence is number && data.aiConfidence >= 0 && data.aiConfidence <= 1))
         && (!('aiReason' in data) || data.aiReason == null || (data.aiReason is string && data.aiReason.size() <= 600))
         && (!('aiScheduled' in data) || data.aiScheduled is bool)
+        && (!('clientRequestId' in data) || (data.clientRequestId is string && data.clientRequestId.size() <= 256))
         && (!('allowAiReschedule' in data) || data.allowAiReschedule is bool)
         && (!('deadline' in data) || data.deadline == null || data.deadline is timestamp)
         && (!('estimatedDurationMinutes' in data) || (data.estimatedDurationMinutes is int && data.estimatedDurationMinutes >= 15 && data.estimatedDurationMinutes <= 720))
@@ -211,7 +237,11 @@ service cloud.firestore {
     }
 
     function validActivityClientCreate(data) {
-      return (!('actualDurationMinutes' in data) || data.actualDurationMinutes == null)
+      // Only createAdaptiveActivity sets clientRequestId, and it does so through
+      // the Admin SDK. Keeping it out of client creates stops a forged key from
+      // colliding with that callable's idempotency check.
+      return !('clientRequestId' in data)
+        && (!('actualDurationMinutes' in data) || data.actualDurationMinutes == null)
         && (!('actualEnd' in data) || data.actualEnd == null)
         && (!('actualStart' in data) || data.actualStart == null)
         && (!('aiConfidence' in data) || data.aiConfidence == null)
@@ -308,6 +338,17 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'updatedAt']);
       allow delete: if false;
 
+      match /monthlyBudgets/{monthKey} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId)
+          && validMonthlyBudget(request.resource.data, userId, monthKey)
+          && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && validMonthlyBudget(request.resource.data, userId, monthKey)
+          && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
       match /schedules/{scheduleId} {
         allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && userExists(userId) && validSchedule(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
@@ -325,9 +366,23 @@ service cloud.firestore {
       // Adaptive scheduling calculations and mutations are performed only by
       // authenticated callable/scheduled functions using the Admin SDK. The
       // client can read only the data below its own UID.
+      //
+      // `sleepBaseline` is the one exception: it is a preference the user types
+      // in for themselves, never a computed result, so the owner writes it
+      // directly. It is validated as strictly as any other owned document, and
+      // it stores only two clock values -- the burnout model treats it as a
+      // labelled fallback, never as logged sleep evidence.
       match /settings/{settingId} {
-        allow read: if (isOwner(userId) || isAdmin()) && settingId == 'adaptiveScheduling';
-        allow write: if false;
+        allow read: if (isOwner(userId) || isAdmin()) && settingId in ['adaptiveScheduling', 'sleepBaseline'];
+        allow create: if isOwner(userId) && userExists(userId)
+          && settingId == 'sleepBaseline'
+          && validSleepBaseline(request.resource.data, userId)
+          && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && settingId == 'sleepBaseline'
+          && validSleepBaseline(request.resource.data, userId)
+          && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId) && settingId == 'sleepBaseline';
       }
 
       match /schedulingBehaviorEvents/{eventId} {

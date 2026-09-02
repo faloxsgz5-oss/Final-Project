@@ -27,12 +27,15 @@ import {rankAssistantTasks} from '@/services/assistant-task-ranking';
 import {
   calculateBurnoutDynamicInsight,
   calculateFinanceBudgetInsight,
+  SLEEP_REFERENCE,
   type SmartLifeDynamicInsight,
 } from '@/services/dynamic-insights';
 import {adaptiveScheduling} from '@/services/adaptive-scheduling';
 import {activities, notes, scanLogs, schedules, transactions} from '@/services/firestore';
 import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
+import {baselineNightHours, loadSleepBaseline} from '@/services/sleep-log';
 import {activityForFreeSlot, TRUSTED_COACHING_SOURCES, WELLBEING_AI_DISCLAIMER} from '@/config/trusted-coaching-knowledge';
+import {burnoutRiskBand} from '@/constants/burnout-risk';
 import type {AssistantChatMessage, AssistantConversationState, AssistantConversationStatePatch, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantResponseMode, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, ScanLog, Schedule, Transaction, WithId} from '@/types/smartlife';
 
@@ -449,6 +452,10 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
   const monthIncome = monthTransactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + item.amount, 0);
   const monthExpense = monthTransactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + item.amount, 0);
   const monthlyBudget = await loadMonthlyBudget(uid, currentMonthKey());
+  // The declared window is loaded separately from the activity queries above,
+  // because it is a preference rather than a record and must never join the
+  // evidence counts. It reaches the model only as a labelled fallback.
+  const sleepBaselineHours = baselineNightHours(await loadSleepBaseline(uid).catch(() => null));
   const financeDynamic = monthlyBudget
     ? calculateFinanceBudgetInsight({monthlyBudget: monthlyBudget.amount, transactions: monthTransactions})
     : null;
@@ -458,6 +465,7 @@ export async function loadAssistantContext(uid: string): Promise<AssistantContex
       finance: financeDynamic,
       pendingTasks,
       schedules: todaySchedules,
+      sleepBaselineHours,
       weekActivities: wellbeingActivities,
       weekSchedules: wellbeingSchedules,
     }),
@@ -1944,10 +1952,18 @@ function buildRecentOcrAnswer(context: AssistantContext) {
 
 function buildDynamicBurnoutAnswer(context: AssistantContext) {
   const insight = context.dynamic.burnout;
-  const riskLabel = insight.riskLevel === 'high' ? 'สูง' : insight.riskLevel === 'medium' ? 'ปานกลาง' : 'ต่ำ';
-  const sleepLine = insight.sleepDataDays > 0
-    ? `ข้อมูลการนอน: มี ${insight.sleepDataDays} คืน${insight.averageSleepHours === null ? '' : ` เฉลี่ย ${insight.averageSleepHours} ชั่วโมง`}${insight.lateSleepStreak >= 2 ? ` และนอนหลังเที่ยงคืนต่อเนื่อง ${insight.lateSleepStreak} คืน` : ''}`
-    : 'ข้อมูลการนอน: ยังไม่มีการบันทึก จึงไม่นำเรื่องการนอนมาคาดเดาหรือคิดคะแนน';
+  const riskLabel = burnoutRiskBand(insight.riskLevel).label;
+  // Three distinct sentences, because the three cases are genuinely different
+  // claims: measured nights, a stated habit, and nothing at all. Collapsing the
+  // middle one into the first is exactly how a default starts reading as data.
+  const sleepLine = insight.sleepEvidenceSource === 'logged'
+    ? `ข้อมูลการนอน (บันทึกจริง): มี ${insight.sleepDataDays} คืน${insight.averageSleepHours === null ? '' : ` เฉลี่ย ${insight.averageSleepHours} ชั่วโมง`}${insight.lateSleepStreak >= 2 ? ` และนอนหลังเที่ยงคืนต่อเนื่อง ${insight.lateSleepStreak} คืน` : ''}`
+    : insight.sleepEvidenceSource === 'baseline'
+      ? `ข้อมูลการนอน: ยังไม่มีบันทึกจริงในช่วงนี้ จึงใช้ช่วงนอนปกติที่ตั้งไว้ ${insight.averageSleepHours} ชั่วโมงเป็นค่าอ้างอิง ซึ่งเป็นค่าที่ตั้งเอง ไม่ใช่การนอนที่วัดได้`
+      : 'ข้อมูลการนอน: ยังไม่มีการบันทึก จึงไม่นำเรื่องการนอนมาคาดเดาหรือคิดคะแนน';
+  const sleepDebtLine = insight.sleepDebtHours !== null && insight.sleepDebtNights >= 3
+    ? [`การนอนขาดสะสมใน ${insight.sleepDebtNights} คืนที่บันทึกไว้: ${insight.sleepDebtHours} ชั่วโมง (เทียบเป้าหมาย ${SLEEP_REFERENCE.targetHours} ชั่วโมงต่อคืน)`]
+    : [];
   const reasonLines = insight.reasons.length
     ? insight.reasons.slice(0, 4).map((reason, index) => `${index + 1}. ${reason}`)
     : ['1. จากข้อมูลที่มี ยังไม่พบสัญญาณภาระสูงที่เข้าเกณฑ์เตือน'];
@@ -1959,6 +1975,8 @@ function buildDynamicBurnoutAnswer(context: AssistantContext) {
     `${reasonLines.length + 1}. งานค้าง ${insight.pendingTaskCount} รายการ งานด่วน ${insight.urgentTaskCount} รายการ`,
     `${reasonLines.length + 2}. ${sleepLine}`,
     ...(insight.studyWorkToSleepRatio === null ? [] : [`${reasonLines.length + 3}. สัดส่วนเวลาเรียน/งานเฉลี่ยต่อวันต่อเวลานอนที่บันทึกประมาณ ${insight.studyWorkToSleepRatio}:1`]),
+    ...sleepDebtLine,
+    `เกณฑ์ชั่วโมงการนอนอ้างอิงจาก ${TRUSTED_COACHING_SOURCES.sleepDuration.label} (แนะนำ ${SLEEP_REFERENCE.recommendedMinHours}-${SLEEP_REFERENCE.recommendedMaxHours} ชั่วโมงต่อคืนสำหรับวัยผู้ใหญ่ตอนต้นและผู้ใหญ่)`,
     `คำแนะนำตอนนี้: ${activityForFreeSlot(insight.longestFreeSlotMinutes)}`,
     `อ้างอิงแนวทางทั่วไปจาก ${TRUSTED_COACHING_SOURCES.wellbeing.label} และไม่ใช้แทนการประเมินโดยผู้เชี่ยวชาญ`,
     WELLBEING_AI_DISCLAIMER,

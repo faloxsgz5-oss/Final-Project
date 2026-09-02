@@ -3,64 +3,43 @@ import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
+import SleepLogCard from '@/components/sleep-log-card';
 import {LinearGradient} from 'expo-linear-gradient';
 import {Timestamp} from 'firebase/firestore';
 
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
+import {calculateDailyAllowance, type DailyAllowance} from '@/services/dynamic-insights';
+import {loadMonthlyBudget} from '@/services/monthly-budget';
+import {buildNotificationFeed, isRankable, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
+import {recordTaskCompleted} from '@/services/behavior-tracking';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+
+/**
+ * Page data arrives already serialised to ISO strings, so the slot times the
+ * adaptive engine learns from have to be parsed back rather than read as
+ * Firestore timestamps.
+ */
+function dateOf(value: unknown) {
+  const parsed = new Date(String(value ?? ''));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 type Props = {onNavigate: (page: string) => void; uid: string};
 type Item = Record<string, unknown>;
 
 const colors = {pine: '#2c341b', sage: '#6f8f6d', sageDark: '#5f835f', sageSoft: '#dfe7dc', mist: '#f4f5ef', paper: '#ffffff', muted: '#8b9085', finance: '#9297bb', financeSoft: '#eceef7', note: '#bb9293', noteSoft: '#f3e8e8'};
 const showDevTools = __DEV__ || process.env.EXPO_PUBLIC_SMARTLIFE_SHOW_DEV_TOOLS === 'true';
-const importantWords = ['quiz', 'สอบ', 'ส่ง', 'deadline', 'ด่วน', 'ต้องทำ', 'ประชุม', 'นำเสนอ', 'รายงาน', 'โปรเจค', 'project', 'assignment', 'homework'];
 
-function items(value: unknown) { return Array.isArray(value) ? value.filter((item): item is Item => Boolean(item) && typeof item === 'object') : []; }
-function string(item: Item, key: string, fallback = '-') { const value = item[key]; return typeof value === 'string' && value.trim() ? value : fallback; }
 function time(value: unknown) { const date = new Date(String(value ?? '')); return Number.isNaN(date.getTime()) ? '-' : new Intl.DateTimeFormat('th-TH', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(date); }
 function money(value: number) { return `฿${value.toLocaleString('th-TH')}`; }
-function millis(item: Item) { const date = new Date(String(item.startAt ?? item.dueAt ?? item.createdAt ?? '')); return Number.isNaN(date.getTime()) ? Number.POSITIVE_INFINITY : date.getTime(); }
-function itemText(item: Item) { return `${string(item, 'title', '')} ${string(item, 'note', '')} ${string(item, 'details', '')} ${string(item, 'category', '')}`.toLowerCase(); }
-function priorityScore(item: Item) {
-  const text = itemText(item);
-  const type = string(item, 'type', string(item, 'category', ''));
-  let score = 0;
-  if (/task|งาน|assignment|homework/i.test(type)) score += 40;
-  if (/appointment|นัด|ประชุม/i.test(type)) score += 28;
-  if (/activity|class|เรียน/i.test(type)) score += 18;
-  if (/urgent|high|important|ด่วน|สูง|สำคัญ/i.test(string(item, 'priority', ''))) score += 24;
-  importantWords.forEach((word) => { if (text.includes(word.toLowerCase())) score += 10; });
-  const hoursUntil = (millis(item) - Date.now()) / 36e5;
-  if (hoursUntil <= 0) score += 34;
-  else if (hoursUntil <= 24) score += 30;
-  else if (hoursUntil <= 72) score += 18;
-  else if (hoursUntil <= 168) score += 8;
-  return score;
-}
-function priorityReasons(item: Item) {
-  const reasons: string[] = [];
-  const text = itemText(item);
-  const type = string(item, 'type', string(item, 'category', ''));
-  const hoursUntil = (millis(item) - Date.now()) / 36e5;
-  if (/task|งาน|assignment|homework/i.test(type)) reasons.push('เป็นงานที่ต้องทำ');
-  if (/appointment|นัด|ประชุม/i.test(type)) reasons.push('เป็นนัดหมาย/ประชุม');
-  if (/urgent|high|important|ด่วน|สูง|สำคัญ/i.test(string(item, 'priority', ''))) reasons.push('ตั้งความสำคัญไว้สูง');
-  if (hoursUntil <= 0) reasons.push('เลยกำหนดหรือถึงเวลาแล้ว');
-  else if (hoursUntil <= 24) reasons.push('กำหนดภายในวันนี้');
-  else if (hoursUntil <= 72) reasons.push('ใกล้ deadline');
-  const matched = importantWords.find((word) => text.includes(word.toLowerCase()));
-  if (matched) reasons.push(`พบคำสำคัญ: ${matched}`);
-  return reasons.slice(0, 3);
-}
 
 function SoftPress({children, onPress, style}: {children: React.ReactNode; onPress: () => void; style?: object}) {
   return <Pressable onPress={onPress} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Pressable>;
 }
 
 function StatCard({icon, value, label, tint = colors.sageSoft}: {icon: string; value: string | number; label: string; tint?: string}) {
-  return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View><Text style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
+  return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View><Text adjustsFontSizeToFit minimumFontScale={.7} numberOfLines={1} style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
 }
 
 export default function DashboardScreen({onNavigate, uid}: Props) {
@@ -68,7 +47,30 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [completingId, setCompletingId] = useState('');
-  const load = useCallback(async () => setData(await loadLegacyPageData(uid, 'user/index') as Item), [uid]);
+  const [allowance, setAllowance] = useState<DailyAllowance | null>(null);
+  const [budgetAmount, setBudgetAmount] = useState(0);
+  const [monthTransactions, setMonthTransactions] = useState<{amount: number; occurredAt: never; type: 'expense' | 'income'}[]>([]);
+  // `user/index` is a one-day window, so its transactions cannot answer what is
+  // left of the monthly limit. The month's spending and the saved limit are
+  // fetched alongside it, and neither failing may stop the dashboard loading.
+  const load = useCallback(async () => {
+    const [pageData, monthData, savedBudget] = await Promise.all([
+      loadLegacyPageData(uid, 'user/index') as Promise<Item>,
+      (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>)
+        .catch((error) => { console.error('[Dashboard] Month transactions load failed', error); return null; }),
+      loadMonthlyBudget(uid).catch((error) => { console.error('[Dashboard] Saved budget load failed', error); return null; }),
+    ]);
+    const monthly = savedBudget?.amount ?? 0;
+    const spending = items(monthData?.transactions).map((item) => ({
+      amount: Number(item.amount ?? 0),
+      occurredAt: item.occurredAt as never,
+      type: item.type === 'income' ? 'income' as const : 'expense' as const,
+    }));
+    setBudgetAmount(monthly);
+    setMonthTransactions(spending);
+    setAllowance(calculateDailyAllowance({monthlyBudget: monthly, transactions: spending}));
+    setData(pageData);
+  }, [uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
   const seedAiDynamicData = useCallback(async () => {
@@ -91,15 +93,40 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const notes = useMemo(() => items(data?.notes), [data]);
   const transactions = useMemo(() => items(data?.transactions), [data]);
   const notifications = useMemo(() => items(data?.notifications), [data]);
+  // The badge counts what is true right now: derived alerts while their
+  // condition holds, plus stored notifications that are genuinely unread. It
+  // reads from the same feed the notification list renders, so the number on
+  // the bell and the rows behind it can never disagree.
+  const feed = useMemo<FeedItem[]>(() => buildNotificationFeed({
+    activities: data?.activities,
+    monthlyBudget: budgetAmount,
+    monthTransactions,
+    notes: data?.notes,
+    stored: notifications as never,
+    todayExpenses: items(data?.transactions).filter((item) => item.type === 'expense').map((item) => ({amount: Number(item.amount ?? 0)})),
+  }), [budgetAmount, data, monthTransactions, notifications]);
   const workNotes = notes.filter((item) => item.status !== 'completed' && /งาน|task|assignment|homework/i.test(string(item, 'category', '')));
+  // `pending` drives the priority card, the focus tile and the "งานที่ต้องทำ"
+  // count, so a sleep log has to be filtered out here too -- otherwise a logged
+  // night is ranked as an overdue to-do with a "เสร็จ" button on it.
   const pending = [
-    ...activities.filter((item) => item.status !== 'completed').map((item): Item => ({...item, __entity: 'activity'})),
+    ...activities.filter((item) => item.status !== 'completed' && isRankable(item)).map((item): Item => ({...item, __entity: 'activity'})),
     ...workNotes.map((item): Item => ({...item, __entity: 'note'})),
   ];
-  const expense = transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  const income = transactions.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  const balance = Math.max(income - expense, 0);
-  const unread = notifications.filter((item) => item.read !== true).length;
+  // Both budget surfaces read from the same allowance, so the tile and the
+  // assistant's instant answer can never quote different numbers.
+  const allowanceValue = allowance ? money(allowance.amount) : '—';
+  const allowanceAnswer = !allowance ? 'ตั้งงบเดือนนี้ก่อน'
+    : allowance.overBudget ? `เกินงบแล้ว ${money(Math.abs(allowance.remainingBudget))}`
+    : `ตอบทันที: วันนี้ใช้ได้อีก ${money(allowance.amount)}`;
+  // The card headlines the same allowance as the tile above it -- it used to
+  // show a day's income minus expenses, which sat at ฿0 next to a tile saying
+  // ฿392. The bar behind it is the share of the month's limit still unspent,
+  // rather than the old balance-over-income ratio that measured nothing.
+  const monthBudgetLeftPercent = allowance && allowance.monthlyBudget > 0
+    ? Math.min(100, Math.max(0, allowance.remainingBudget / allowance.monthlyBudget * 100))
+    : 0;
+  const unread = unreadCount(feed);
   const urgent = [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2);
   const markComplete = useCallback(async (item: Item) => {
     const id = string(item, 'id', '');
@@ -110,7 +137,12 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     setData((current) => current ? {...current, [key]: items(current[key]).map((entry) => string(entry, 'id', '') === id ? {...entry, completedAt: new Date().toISOString(), status: 'completed'} : entry)} : current);
     try {
       if (entity === 'note') await notesStore.update(uid, id, {completedAt: Timestamp.fromDate(new Date()), status: 'completed'});
-      else await activitiesStore.update(uid, id, {status: 'completed'});
+      else {
+        await activitiesStore.update(uid, id, {status: 'completed'});
+        // Only activities live in the adaptive engine's schedule; notes have no
+        // slot for it to learn a preferred hour from.
+        void recordTaskCompleted(id, {scheduledEndAt: dateOf(item.endAt), scheduledStartAt: dateOf(item.startAt)});
+      }
     } catch (error) {
       await load().catch(() => undefined);
       Alert.alert('อัปเดตงานไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
@@ -122,17 +154,18 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.sage} />} showsVerticalScrollIndicator={false}>
       <View style={styles.topRow}>
-        <SoftPress onPress={() => onNavigate('smartlife_profile')} style={styles.profileRow}><View style={styles.avatar}><View style={styles.avatarGlow} /><Text style={styles.avatarText}>{string(profile, 'displayName', 'SL').slice(0, 2).toUpperCase()}</Text></View><View><Text style={styles.hello}>สวัสดีตอนเช้า</Text><Text style={styles.name}>{string(profile, 'displayName', 'เพื่อน')}</Text></View></SoftPress>
-        <SoftPress onPress={() => onNavigate('smartlife_notifications')} style={styles.bell}><MaterialIcon name="notifications" size={24} />{unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{Math.min(unread, 9)}</Text></View> : null}</SoftPress>
+        <SoftPress onPress={() => onNavigate('smartlife_profile')} style={styles.profileRow}><View style={styles.avatar}><View style={styles.avatarGlow} /><Text style={styles.avatarText}>{string(profile, 'displayName', 'SL').slice(0, 2).toUpperCase()}</Text></View><View style={styles.greeting}><Text numberOfLines={1} style={styles.hello}>สวัสดีตอนเช้า</Text><Text ellipsizeMode="tail" numberOfLines={1} style={styles.name}>{string(profile, 'displayName', 'เพื่อน')}</Text></View></SoftPress>
+        <SoftPress onPress={() => onNavigate('smartlife_notifications')} style={styles.bell}><MaterialIcon name="notifications" size={24} />{unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{unread > 9 ? '9+' : unread}</Text></View> : null}</SoftPress>
       </View>
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <SoftPress onPress={() => onNavigate('smartlife_ai_assistant')} style={styles.aiCard}><LinearGradient colors={['#769674', '#8fa69a', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View><View style={styles.mic}><MaterialIcon name="mic" size={21} /></View></View>
           <View style={styles.prompt}><Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} /></View>
-          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>ตอบทันที: {money(balance)}</Text></View>
+          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>{allowanceAnswer}</Text></View>
         </SoftPress>
         <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>
+        <SleepLogCard onLogged={() => { void load(); }} uid={uid} variant="log" />
 
         {showDevTools && pending.length === 0 && transactions.length === 0 ? <Pressable disabled={seeding} onPress={seedAiDynamicData} style={({pressed}) => [styles.seedCard, pressed && styles.pressed, seeding && {opacity: .6}]}><View style={styles.seedIcon}><MaterialIcon color={colors.sageDark} name="database" size={20} /></View><View style={{flex: 1}}><Text style={styles.seedTitle}>เติมข้อมูลทดสอบ AI Dynamic</Text><Text style={styles.seedSub}>เพิ่มตาราง งาน โน้ต และการเงินเข้า Firebase ของบัญชีนี้</Text></View><Text style={styles.seedAction}>{seeding ? 'กำลังเพิ่ม...' : 'เพิ่มเลย'}</Text></Pressable> : null}
 
@@ -143,7 +176,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           <View style={styles.collapsed}><MaterialIcon color="#7e8979" name="inventory_2" size={15} /><Text style={styles.collapsedText}>ข้อมูลรองถูกย่อไว้ชั่วคราว: งบอาหาร โน้ตทั่วไป และรายการไม่เร่งด่วน</Text></View>
         </View>
 
-        <View style={styles.stats}><StatCard icon="calendar_today" label="คลาสเรียน" value={schedules.length} /><StatCard icon="task_alt" label="งานที่ต้องทำ" tint={colors.noteSoft} value={pending.length} /><StatCard icon="account_balance_wallet" label="งบวันนี้" tint={colors.financeSoft} value={money(balance)} /></View>
+        <View style={styles.stats}><StatCard icon="calendar_today" label="คลาสเรียน" value={schedules.length} /><StatCard icon="task_alt" label="งานที่ต้องทำ" tint={colors.noteSoft} value={pending.length} /><StatCard icon="account_balance_wallet" label={allowance ? 'งบวันนี้' : 'ยังไม่ได้ตั้งงบ'} tint={colors.financeSoft} value={allowanceValue} /></View>
 
         <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>ตารางวันนี้</Text><SoftPress onPress={() => onNavigate('smartlife_calendar_day')}><Text style={styles.seeAll}>ดูทั้งหมด</Text></SoftPress></View>
         <View style={styles.scheduleCard}>{schedules.length ? schedules.slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={[styles.classRow, index > 0 && styles.classBorder]}><View style={styles.timePill}><Text style={styles.classTime}>{time(item.startAt)}</Text></View><View style={[styles.courseLine, {backgroundColor: string(item, 'color', index % 2 ? colors.finance : colors.sage)}]} /><View style={styles.courseCopy}><Text style={styles.courseTitle}>{string(item, 'title')}</Text><View style={styles.roomRow}><MaterialIcon color="#899284" name="location_on" size={14} /><Text style={styles.roomText}>{string(item, 'location', string(item, 'courseCode'))}</Text></View></View></View>) : <View style={styles.empty}><MaterialIcon color="#a4ada0" name="event_available" size={30} /><Text style={styles.emptyText}>วันนี้ยังไม่มีคลาสเรียน</Text></View>}</View>
@@ -151,7 +184,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
         <Text style={styles.sectionTitle}>โฟกัสวันนี้</Text>
         <View style={styles.focusGrid}>
           <SoftPress onPress={() => onNavigate('smartlife_add_task')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.note} name="check_box" size={17} /><Text style={styles.panelTitle}>โฟกัสวันนี้</Text></View>{pending.length ? pending.slice(0, 2).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.taskRow}><View style={styles.taskCheck}><MaterialIcon color="#fff" name="check" size={11} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.taskTitle}>{string(item, 'title')}</Text><Text style={styles.taskTime}>{time(item.startAt)}</Text></View></View>) : <Text style={styles.panelEmpty}>ยังไม่มีงานที่ต้องทำ</Text>}</SoftPress>
-          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบคงเหลือ</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{money(balance)}</Text><Text style={styles.budgetUnit}>/ วันนี้</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(balance / Math.max(income, 1) * 100, 100)}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
+          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบคงเหลือ</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{allowanceValue}</Text><Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
         </View>
 
         {notes[0] ? <SoftPress onPress={() => onNavigate('smartlife_notes_study')} style={styles.noteLink}><View style={styles.noteIcon}><MaterialIcon color={colors.note} name="note_alt" size={20} /></View><View style={{flex: 1}}><Text style={styles.noteEyebrow}>โน้ตที่เชื่อมกับตารางวันนี้</Text><Text numberOfLines={1} style={styles.noteTitle}>{string(notes[0], 'title')}</Text></View><MaterialIcon color={colors.sageDark} name="chevron_right" size={23} /></SoftPress> : null}
@@ -173,10 +206,13 @@ const styles = StyleSheet.create({
   aiHeading: {alignItems: 'center', flexDirection: 'row', gap: 10},
   aiTitle: {color: '#fff', fontFamily: font.bold, fontSize: 17},
   aiTop: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
-  avatar: {...shadow, alignItems: 'center', backgroundColor: '#834b51', borderColor: '#fff', borderRadius: 25, borderWidth: 2, height: 50, justifyContent: 'center', overflow: 'hidden', width: 50},
+  avatar: {...shadow, alignItems: 'center', backgroundColor: '#834b51', borderColor: '#fff', borderRadius: 25, borderWidth: 2, flexShrink: 0, height: 50, justifyContent: 'center', overflow: 'hidden', width: 50},
   avatarGlow: {backgroundColor: '#d8b3a5', borderRadius: 22, height: 32, opacity: .34, position: 'absolute', right: -8, top: -6, width: 32},
   avatarText: {color: '#fff', fontFamily: font.bold, fontSize: 15},
-  bell: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, height: 50, justifyContent: 'center', width: 50},
+  // The bell keeps its own square and is never allowed to shrink or be
+  // pushed out of the row: a long display name may only eat the space left
+  // over, not the one control in the header.
+  bell: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
   budgetLine: {alignItems: 'baseline', flexDirection: 'row', marginTop: 11},
   budgetUnit: {color: colors.muted, fontFamily: font.regular, fontSize: 10, marginLeft: 4},
   budgetValue: {color: colors.pine, fontFamily: font.extra, fontSize: 24},
@@ -222,7 +258,11 @@ const styles = StyleSheet.create({
   priorityTitleRow: {alignItems: 'center', flexDirection: 'row', gap: 7},
   progress: {backgroundColor: '#e6e6ec', borderRadius: 99, height: 6, marginTop: 9, overflow: 'hidden'},
   progressFill: {backgroundColor: colors.finance, borderRadius: 99, height: 6},
-  profileRow: {alignItems: 'center', flexDirection: 'row', gap: 12},
+  // `minWidth: 0` is what actually lets the name truncate on web, where a
+  // flex item defaults to min-width:auto and refuses to shrink below its
+  // content -- which is how a 30-character name ran off the screen edge.
+  greeting: {flex: 1, minWidth: 0},
+  profileRow: {alignItems: 'center', flex: 1, flexDirection: 'row', gap: 12, minWidth: 0},
   prompt: {alignItems: 'center', backgroundColor: 'rgba(72,105,72,.24)', borderColor: 'rgba(44,52,27,.08)', borderRadius: 14, borderWidth: 1, flexDirection: 'row', height: 41, justifyContent: 'space-between', marginTop: 10, paddingHorizontal: 13},
   promptText: {color: '#fff', flex: 1, fontFamily: font.regular, fontSize: 12},
   quickAnswer: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.45)', borderRadius: 11, flexDirection: 'row', justifyContent: 'space-between', marginTop: 7, paddingHorizontal: 11, paddingVertical: 7},
@@ -255,7 +295,7 @@ const styles = StyleSheet.create({
   taskTime: {color: colors.muted, fontFamily: font.regular, fontSize: 8},
   taskTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 9},
   timePill: {alignItems: 'center', backgroundColor: '#edf3ea', borderRadius: 10, minWidth: 48, paddingHorizontal: 7, paddingVertical: 6},
-  topRow: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15},
+  topRow: {alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginBottom: 15},
   unread: {alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
   unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 7},
   urgency: {backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4},

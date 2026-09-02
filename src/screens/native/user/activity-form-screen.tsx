@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import NativeDateTimePicker from '@/components/date-time-picker';
 
 import {runLegacyDataAction} from '@/services/legacy-data';
 import {getActivitySuggestions, recommendationLevel, type ActivitySuggestion} from '@/services/smartlife-recommendations';
@@ -134,7 +134,11 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     if (isTransaction && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
       return Alert.alert('กรอกจำนวนเงินให้ถูกต้อง');
     }
-    if (transactionType === 'expense' && !category.trim()) {
+    // `transactionType` defaults to 'expense' for every form that is not the
+    // income one, tasks and activities included, and those forms have no
+    // category field to fill in -- so without the isTransaction guard this
+    // rejected every activity, task and appointment the user tried to save.
+    if (isTransaction && transactionType === 'expense' && !category.trim()) {
       return Alert.alert('เลือกหรือกรอกหมวดรายจ่ายก่อนบันทึก');
     }
     const startDate = new Date(`${date}T${time}:00`);

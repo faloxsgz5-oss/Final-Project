@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Alert, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
@@ -98,6 +98,9 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
   const [loaded, setLoaded] = useState<{data: Data; key: string} | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
 
   const data = useMemo(() => (loaded?.key === key ? loaded.data : {}), [key, loaded]);
   const loading = !perUser && loaded?.key !== key;
@@ -122,10 +125,21 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
     }
   }, [load]);
 
-  const logout = useCallback(() => Alert.alert('ออกจากระบบ Admin', 'ต้องการกลับไปหน้าเข้าสู่ระบบใช่ไหม?', [
-    {style: 'cancel', text: 'ยกเลิก'},
-    {onPress: () => { onLogout().catch(() => Alert.alert('ออกจากระบบไม่สำเร็จ')); }, style: 'destructive', text: 'ออกจากระบบ'},
-  ]), [onLogout]);
+  // `Alert.alert` is a no-op on react-native-web, so the confirmation is a Modal
+  // to keep logout working on the web build as well as on the native app.
+  const logout = useCallback(() => { setLogoutError(''); setLogoutOpen(true); }, []);
+
+  const confirmLogout = useCallback(async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      await onLogout();
+    } catch {
+      setLogoutError('ออกจากระบบไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง');
+      setLoggingOut(false);
+    }
+  }, [loggingOut, onLogout]);
 
   const handleAction = useCallback(async (
     id: string,
@@ -187,12 +201,12 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
             <Text style={styles.adminTitle}>{page === 'admin_dashboard' ? 'ผู้ดูแลระบบ' : info[0]}</Text>
           </View>
           <Pressable
-            accessibilityLabel="ดูประกาศ"
-            onPress={() => onNavigate('admin_announcements')}
-            style={({pressed}) => [styles.notificationButton, pressed && styles.pressed]}
+            accessibilityLabel="ออกจากระบบ"
+            accessibilityRole="button"
+            onPress={logout}
+            style={({pressed}) => [styles.logoutButton, pressed && styles.pressed]}
           >
-            <MaterialIcon color={C.pine} name="notifications_none" size={21} />
-            <View style={styles.notificationDot} />
+            <MaterialIcon color={C.red} name="logout" size={21} />
           </Pressable>
         </LinearGradient>
 
@@ -212,6 +226,43 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
         </ScrollView>
 
         <AdminTabs active={page} onNavigate={onNavigate} />
+
+        <Modal animationType="fade" onRequestClose={() => { if (!loggingOut) setLogoutOpen(false); }} transparent visible={logoutOpen}>
+          <View style={styles.modalBackdrop}>
+            <Pressable disabled={loggingOut} onPress={() => setLogoutOpen(false)} style={StyleSheet.absoluteFill} />
+            <View accessibilityViewIsModal style={styles.logoutDialog}>
+              <View style={styles.logoutDialogIcon}><MaterialIcon color={C.red} name="logout" size={25} /></View>
+              <Text style={styles.logoutDialogTitle}>ออกจากระบบ Admin?</Text>
+              <Text style={styles.logoutDialogMessage}>ต้องการกลับไปหน้าเข้าสู่ระบบใช่ไหม?</Text>
+              {logoutError ? (
+                <View style={styles.logoutErrorBox}>
+                  <MaterialIcon color={C.red} name="error" size={17} />
+                  <Text style={styles.logoutErrorText}>{logoutError}</Text>
+                </View>
+              ) : null}
+              <View style={styles.logoutActions}>
+                <Pressable
+                  disabled={loggingOut}
+                  onPress={() => setLogoutOpen(false)}
+                  style={({pressed}) => [styles.cancelLogout, pressed && styles.pressed, loggingOut && styles.disabled]}
+                >
+                  <Text style={styles.cancelLogoutText}>ยกเลิก</Text>
+                </Pressable>
+                <Pressable
+                  disabled={loggingOut}
+                  onPress={confirmLogout}
+                  style={({pressed}) => [styles.confirmLogout, pressed && styles.pressed, loggingOut && styles.disabled]}
+                >
+                  {loggingOut ? (
+                    <><ActivityIndicator color="#fff" size="small" /><Text style={styles.confirmLogoutText}>กำลังออก...</Text></>
+                  ) : (
+                    <><MaterialIcon color="#fff" name="logout" size={17} /><Text style={styles.confirmLogoutText}>ออกจากระบบ</Text></>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     </ResponsiveSafeArea>
   );
@@ -221,16 +272,28 @@ const shadow = {shadowColor: C.pine, shadowOffset: {height: 10, width: 0}, shado
 
 const styles = StyleSheet.create({
   adminTitle: {color: C.pine, fontFamily: F.x, fontSize: 18, lineHeight: 22, marginTop: 1},
+  cancelLogout: {alignItems: 'center', backgroundColor: '#eff3eb', borderRadius: 13, flex: 1, justifyContent: 'center', minHeight: 46},
+  cancelLogoutText: {color: C.pine, fontFamily: F.b, fontSize: 11},
   centerTab: {...shadow, alignItems: 'center', borderColor: '#fff', borderRadius: 32, borderWidth: 5, height: 64, justifyContent: 'center', marginTop: -27, width: 64},
+  confirmLogout: {alignItems: 'center', backgroundColor: C.red, borderRadius: 13, flex: 1.25, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 46},
+  confirmLogoutText: {color: '#fff', fontFamily: F.b, fontSize: 11},
   content: {padding: 19, paddingBottom: 27},
+  disabled: {opacity: 0.6},
   headerAvatar: {alignItems: 'center', backgroundColor: '#754b59', borderColor: '#fff', borderRadius: 24, borderWidth: 3, height: 46, justifyContent: 'center', width: 46},
   headerAvatarText: {color: '#fff', fontFamily: F.x, fontSize: 13},
   headerBack: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, height: 42, justifyContent: 'center', width: 42},
   headerBrand: {color: '#668d65', fontFamily: F.s, fontSize: 12},
   headerCopy: {flex: 1},
   headerLight: {alignItems: 'center', borderBottomColor: '#e5e9e1', borderBottomWidth: 1, flexDirection: 'row', gap: 10, justifyContent: 'space-between', minHeight: 76, paddingHorizontal: 19, paddingVertical: 12},
-  notificationButton: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 22, height: 44, justifyContent: 'center', position: 'relative', width: 44},
-  notificationDot: {backgroundColor: '#f06767', borderColor: '#fff', borderRadius: 6, borderWidth: 1.5, height: 11, position: 'absolute', right: 8, top: 8, width: 11},
+  logoutActions: {flexDirection: 'row', gap: 9, marginTop: 17},
+  logoutButton: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderColor: 'rgba(201,103,97,.22)', borderRadius: 22, borderWidth: 1, height: 44, justifyContent: 'center', width: 44},
+  logoutDialog: {...shadow, backgroundColor: '#fff', borderRadius: 22, maxWidth: 410, padding: 22, width: '88%'},
+  logoutDialogIcon: {alignItems: 'center', alignSelf: 'center', backgroundColor: C.redSoft, borderRadius: 22, height: 48, justifyContent: 'center', marginBottom: 11, width: 48},
+  logoutDialogMessage: {color: C.muted, fontFamily: F.r, fontSize: 11, lineHeight: 18, textAlign: 'center'},
+  logoutDialogTitle: {color: C.pine, fontFamily: F.x, fontSize: 19, marginBottom: 5, textAlign: 'center'},
+  logoutErrorBox: {alignItems: 'center', backgroundColor: '#fff0ee', borderRadius: 10, flexDirection: 'row', gap: 7, marginTop: 12, padding: 9},
+  logoutErrorText: {color: C.red, flex: 1, fontFamily: F.m, fontSize: 9, lineHeight: 14},
+  modalBackdrop: {alignItems: 'center', backgroundColor: 'rgba(24,30,19,.48)', flex: 1, justifyContent: 'center', padding: 18},
   pageHead: {alignItems: 'center', flexDirection: 'row', gap: 11},
   pageIcon: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 47, justifyContent: 'center', width: 47},
   pressed: {opacity: 0.78, transform: [{scale: 0.987}]},

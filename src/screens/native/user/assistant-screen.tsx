@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import NativeDateTimePicker from '@/components/date-time-picker';
 import {ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -23,6 +23,9 @@ import {classifyAssistantIntent} from '@/services/assistant-intent';
 import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
 import {assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
 import {calculateBurnoutDynamicInsight} from '@/services/dynamic-insights';
+import {baselineNightHours, loadSleepBaseline} from '@/services/sleep-log';
+import RiskMeter from '@/components/risk-meter';
+import {burnoutRiskBand} from '@/constants/burnout-risk';
 import {
   deleteAssistantConversation,
   listAssistantConversations,
@@ -595,7 +598,17 @@ function insightDate(item: Record<string, unknown>) {
 }
 
 // Added for AI Assistant insights: present seven-day workload, behavior, and focus using existing calendar data only.
-function AssistantInsights({adaptiveDashboard, data, onAsk}: {adaptiveDashboard: AdaptiveDashboard | null; data: WeeklyInsightData | null; onAsk: (prompt: string) => void}) {
+function AssistantInsights({adaptiveDashboard, data, onAsk, uid}: {adaptiveDashboard: AdaptiveDashboard | null; data: WeeklyInsightData | null; onAsk: (prompt: string) => void; uid: string}) {
+  // The declared window is the weaker fallback, so it is loaded here rather
+  // than derived from `data`: it is a preference, not part of the week's records.
+  const [sleepBaselineHours, setSleepBaselineHours] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    void loadSleepBaseline(uid)
+      .then((baseline) => { if (active) setSleepBaselineHours(baselineNightHours(baseline)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [uid]);
   const insight = useMemo(() => {
     const schedules = insightRecords(data?.schedules);
     const activities = insightRecords(data?.activities);
@@ -624,29 +637,35 @@ function AssistantInsights({adaptiveDashboard, data, onAsk}: {adaptiveDashboard:
       activities: activities as unknown as WithId<Activity>[],
       pendingTasks: activities.filter((item) => item.type === 'task') as unknown as WithId<Activity>[],
       schedules: schedules as unknown as WithId<Schedule>[],
+      sleepBaselineHours,
       weekActivities: activities as unknown as WithId<Activity>[],
       weekSchedules: schedules as unknown as WithId<Schedule>[],
     });
     const workload = all.length;
-    const risk = burnout.riskLevel === 'high' ? 'สูง' : burnout.riskLevel === 'medium' ? 'ปานกลาง' : 'ต่ำ';
-    const sleepEvidence = burnout.sleepDataDays > 0
-      ? `นอนเฉลี่ย ${burnout.averageSleepHours ?? '-'} ชม. จาก ${burnout.sleepDataDays} คืน`
-      : 'ยังไม่มีข้อมูลการนอน จึงไม่คาดเดา';
+    const risk = burnoutRiskBand(burnout.riskLevel).label;
+    const sleepEvidence = burnout.sleepEvidenceSource === 'logged'
+      ? `นอนจริงเฉลี่ย ${burnout.averageSleepHours ?? '-'} ชม. จาก ${burnout.sleepDataDays} คืนที่บันทึก`
+      : burnout.sleepEvidenceSource === 'baseline'
+        ? `ยังไม่มีบันทึกจริง ใช้ช่วงนอนปกติที่ตั้งไว้ ${burnout.averageSleepHours} ชม. เป็นค่าอ้างอิง`
+        : 'ยังไม่มีข้อมูลการนอน จึงไม่คาดเดา';
+    const debt = burnout.sleepDebtHours !== null && burnout.sleepDebtNights >= 3
+      ? ` · นอนขาดสะสม ${burnout.sleepDebtHours} ชม.`
+      : '';
     const ratio = burnout.studyWorkToSleepRatio === null ? '' : ` · สัดส่วนงานต่อการนอน ${burnout.studyWorkToSleepRatio}:1`;
-    const riskCopy = `คะแนน ${burnout.score}/100 · เรียน/งาน ${burnout.busyHoursThisWeek} ชม. · งานค้าง ${burnout.pendingTaskCount} · ${sleepEvidence}${ratio}`;
+    const riskCopy = `คะแนน ${burnout.score}/100 · เรียน/งาน ${burnout.busyHoursThisWeek} ชม. · งานค้าง ${burnout.pendingTaskCount} · ${sleepEvidence}${debt}${ratio}`;
     const focus: InsightItem[] = all.slice(0, 3).map((item) => ({icon: item.icon, subtitle: item.kind, title: item.title}));
     if (!focus.length) focus.push(
       {icon: 'calendar_month', subtitle: 'เริ่มจากข้อมูลที่มี', title: 'เพิ่มตารางของสัปดาห์นี้'},
       {icon: 'task_alt', subtitle: 'ช่วยจัดลำดับให้ได้', title: 'บันทึกงานที่ต้องส่ง'},
       {icon: 'savings', subtitle: 'วางแผนง่ายขึ้น', title: 'กำหนดงบสำหรับสัปดาห์นี้'},
     );
-    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskCopy, workload};
-  }, [adaptiveDashboard?.patterns, data]);
+    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskCopy, riskLevel: burnout.riskLevel, score: burnout.score, workload};
+  }, [adaptiveDashboard?.patterns, data, sleepBaselineHours]);
 
   return <View style={local.insightSection}>
     <View style={local.insightHeader}><Text style={local.insightHeading}>วิเคราะห์ข้อมูล 7 วันที่ผ่านมา</Text><Text style={local.insightCount}>{insight.workload} รายการ</Text></View>
     <View style={local.insightDivider} />
-    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text></View></View>
+    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text><RiskMeter level={insight.riskLevel} score={insight.score} /></View></View>
     <View style={local.behaviorPanel}><View style={local.behaviorHeading}><View style={local.behaviorIcon}><MaterialIcon color="#668d65" name="schedule" size={18} /></View><View style={{flex: 1}}><Text style={local.behaviorTitle}>AI เรียนรู้พฤติกรรม</Text><Text style={local.behaviorText}>{insight.behaviorEvidence}</Text></View></View><View style={local.behaviorTiming}><View style={local.timingTile}><Text style={local.timingLabel}>ช่วงที่เหมาะ</Text><Text style={local.timingValue}>{insight.preferred}</Text></View><View style={local.timingTile}><Text style={local.timingLabel}>ระยะเวลาที่แนะนำ</Text><Text style={local.timingValue}>โฟกัส {insight.focusMinutes} นาที</Text></View></View><Pressable onPress={() => onAsk(`ช่วยจัดช่วงโฟกัส ${insight.focusMinutes} นาทีให้เหมาะกับตารางของฉัน`)} style={local.behaviorAction}><MaterialIcon color="#fff" name="check" size={17} /><Text style={local.behaviorActionText}>ใช้แผน Adaptive ในแชตนี้</Text></Pressable></View>
     <View style={local.focusHeader}><Text style={local.focusHeading}>AI แนะนำให้โฟกัส</Text><Text style={local.focusCount}>{insight.focus.length} รายการ</Text></View>
     <View style={local.focusList}>{insight.focus.map((item, index) => <Pressable key={`${item.title}-${index}`} onPress={() => onAsk(`ช่วยวางแผน ${item.title}`)} style={local.focusItem}><View style={local.focusIcon}><MaterialIcon color="#678266" name={item.icon} size={17} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={local.focusItemTitle}>{item.title}</Text><Text numberOfLines={1} style={local.focusText}>{item.subtitle}</Text></View><MaterialIcon color="#95a18f" name="chevron_right" size={18} /></Pressable>)}</View>
@@ -861,6 +880,10 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const scrollToBottomVisibleRef = useRef(false);
   const speechBaseInputRef = useRef('');
   const browserSpeechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  // Set when this browser exposes SpeechRecognition but its speech service is
+  // unusable (offline recogniser, blocked Google endpoint). The next mic press
+  // then records audio for Gemini instead of failing the same way again.
+  const browserSpeechUnusableRef = useRef(false);
   const browserMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const browserMediaStreamRef = useRef<MediaStream | null>(null);
   const browserVoiceChunksRef = useRef<Blob[]>([]);
@@ -1481,11 +1504,59 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     }
   };
 
+  // The browser recogniser writes straight into the input box with no server
+  // round trip, so it is preferred on web. Returns false when this browser has
+  // no SpeechRecognition support and the MediaRecorder fallback should run.
+  const startBrowserSpeechInput = () => {
+    if (browserSpeechUnusableRef.current) return false;
+    const recognition = createBrowserSpeechRecognition();
+    if (!recognition) return false;
+    speechBaseInputRef.current = input.trimEnd();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'th-TH';
+    recognition.onresult = (event) => {
+      const spokenParts: string[] = [];
+      for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
+        const spoken = event.results[index]?.[0]?.transcript?.trim();
+        if (spoken) spokenParts.push(spoken);
+      }
+      if (!spokenParts.length) return;
+      setInput([speechBaseInputRef.current, spokenParts.join(' ')].filter(Boolean).join(' '));
+    };
+    recognition.onerror = (event) => {
+      browserSpeechRecognitionRef.current = null;
+      setListening(false);
+      if (event.error === 'aborted') return;
+      if (event.error === 'not-allowed') {
+        appendAssistant('ยังไม่ได้รับสิทธิ์ไมโครโฟนครับ อนุญาตไมโครโฟนให้เว็บไซต์ SmartLife แล้วกดไมค์ใหม่ได้เลย');
+        return;
+      }
+      browserSpeechUnusableRef.current = true;
+      appendAssistant('ฟังเสียงไม่สำเร็จครับ กดไมค์อีกครั้งได้เลย ระบบจะสลับไปใช้การอัดเสียงแล้วถอดความให้อัตโนมัติ');
+    };
+    recognition.onend = () => {
+      browserSpeechRecognitionRef.current = null;
+      setListening(false);
+    };
+    browserSpeechRecognitionRef.current = recognition;
+    setListening(true);
+    try {
+      recognition.start();
+    } catch {
+      browserSpeechRecognitionRef.current = null;
+      setListening(false);
+      return false;
+    }
+    return true;
+  };
+
   const startVoiceInput = async () => {
     if (busy) return;
     setQuickAddOpen(false);
     setQuickAddCategory(null);
     if (Platform.OS === 'web') {
+      if (startBrowserSpeechInput()) return;
       if (typeof MediaRecorder !== 'undefined' && globalThis.navigator?.mediaDevices?.getUserMedia) {
         try {
           const stream = await globalThis.navigator.mediaDevices.getUserMedia({audio: true});
@@ -1553,45 +1624,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           return;
         }
       }
-      const recognition = createBrowserSpeechRecognition();
-      if (!recognition) {
-        appendAssistant('เบราว์เซอร์นี้ยังไม่รองรับการพิมพ์ด้วยเสียง กรุณาเปิด SmartLife ด้วย Chrome หรือ Edge รุ่นล่าสุด หรือพิมพ์ข้อความในช่องแชทได้เลย');
-        return;
-      }
-      speechBaseInputRef.current = input.trimEnd();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = 'th-TH';
-      recognition.onresult = (event) => {
-        const spokenParts: string[] = [];
-        for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
-          const spoken = event.results[index]?.[0]?.transcript?.trim();
-          if (spoken) spokenParts.push(spoken);
-        }
-        if (!spokenParts.length) return;
-        setInput([speechBaseInputRef.current, spokenParts.join(' ')].filter(Boolean).join(' '));
-      };
-      recognition.onerror = (event) => {
-        browserSpeechRecognitionRef.current = null;
-        setListening(false);
-        if (event.error === 'aborted') return;
-        appendAssistant(event.error === 'not-allowed'
-          ? 'ยังไม่ได้รับสิทธิ์ไมโครโฟนครับ อนุญาตไมโครโฟนให้เว็บไซต์ SmartLife แล้วกดไมค์ใหม่ได้เลย'
-          : 'ฟังเสียงไม่สำเร็จครับ ลองกดไมค์แล้วพูดใหม่ หรือพิมพ์ข้อความต่อเองได้เลย');
-      };
-      recognition.onend = () => {
-        browserSpeechRecognitionRef.current = null;
-        setListening(false);
-      };
-      browserSpeechRecognitionRef.current = recognition;
-      setListening(true);
-      try {
-        recognition.start();
-      } catch {
-        browserSpeechRecognitionRef.current = null;
-        setListening(false);
-        appendAssistant('เริ่มฟังเสียงบนเว็บไม่สำเร็จครับ ลองกดไมค์ใหม่อีกครั้ง หรือพิมพ์ข้อความต่อเองได้เลย');
-      }
+      appendAssistant('เบราว์เซอร์นี้ยังไม่รองรับการพิมพ์ด้วยเสียง กรุณาเปิด SmartLife ด้วย Chrome หรือ Edge รุ่นล่าสุด หรือพิมพ์ข้อความในช่องแชทได้เลย');
       return;
     }
     try {
@@ -1827,7 +1860,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           </View>
 
           {/* Added for AI Assistant: keep insights visible before and during a conversation. */}
-          <AssistantInsights adaptiveDashboard={adaptiveInsightDashboard} data={weeklyInsights} onAsk={sendMessage} />
+          <AssistantInsights adaptiveDashboard={adaptiveInsightDashboard} data={weeklyInsights} onAsk={sendMessage} uid={uid} />
 
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
@@ -2081,7 +2114,7 @@ const local = StyleSheet.create({
   behaviorTiming: {flexDirection: 'row', gap: 8, marginTop: 11},
   behaviorTitle: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 13},
   burnoutIcon: {alignItems: 'center', backgroundColor: '#e8e9cc', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},
-  burnoutPanel: {alignItems: 'center', backgroundColor: '#f0f1dc', borderColor: '#d9dcad', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 12, padding: 13},
+  burnoutPanel: {alignItems: 'flex-start', backgroundColor: '#f0f1dc', borderColor: '#d9dcad', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 12, padding: 13},
   burnoutText: {color: '#727560', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
   burnoutTitle: {color: '#35402d', fontFamily: 'Prompt_700Bold', fontSize: 11},
   chatContent: {gap: 14, paddingBottom: 138, paddingHorizontal: 18, paddingTop: 18},

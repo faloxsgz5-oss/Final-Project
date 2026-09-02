@@ -4,6 +4,7 @@ import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSh
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 
 import {thailandRange} from '@/lib/thailand-time';
+import {calculateDailyAllowance, calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
 import {transactions} from '@/services/firestore';
@@ -65,20 +66,27 @@ function categoryIcon(category: string) {
 
 export default function FinanceScreen({onNavigate, page, uid}: Props) {
   const [data, setData] = useState<Item | null>(null);
-  const [monthlyBudget, setMonthlyBudget] = useState<number | null>(null);
+  const [monthlyBudget, setMonthlyBudget] = useState<{amount: number; rolledOver: boolean} | null>(null);
+  const [monthData, setMonthData] = useState<Item | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [referenceDate, setReferenceDate] = useState(() => new Date());
   const [period, setPeriod] = useState<Period>(() => periodForPage(page));
   const [filter, setFilter] = useState<Filter>(() => page === 'smartlife_finance_income' ? 'income' : page === 'smartlife_finance_expense' ? 'expense' : 'all');
   const periodPage = `smartlife_finance_${period}` as 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month';
   const load = useCallback(async () => {
-    const [pageData, savedBudget] = await Promise.all([
+    const [pageData, savedBudget, monthPage] = await Promise.all([
       loadLegacyPageData(uid, `user/${periodPage}`, referenceDate) as Promise<Item>,
       loadMonthlyBudget(uid, currentMonthKey()),
+      // The weekly and monthly windows are month-scoped whatever tab is open,
+      // so the month's spending is fetched unless this tab already is it.
+      period === 'month' ? Promise.resolve(null)
+        : (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<Item>)
+          .catch((error) => { console.error('[Finance] Month transactions load failed', error); return null; }),
     ]);
     setData(pageData);
-    setMonthlyBudget(savedBudget?.amount ?? null);
-  }, [periodPage, referenceDate, uid]);
+    setMonthData(monthPage);
+    setMonthlyBudget(savedBudget ? {amount: savedBudget.amount, rolledOver: Boolean(savedBudget.rolledOverFrom)} : null);
+  }, [period, periodPage, referenceDate, uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
   const all = useMemo(() => list(data?.transactions), [data]);
@@ -87,7 +95,39 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
   const balance = income - expense;
   const shown = filter === 'income' ? all.filter((item) => item.type === 'income') : filter === 'expense' ? all.filter((item) => item.type === 'expense') : all;
   const mainAmount = filter === 'income' ? income : filter === 'expense' ? expense : balance;
-  const mainLabel = filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : 'ยอดคงเหลือ';
+  const mainLabel = filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : 'ยอดสุทธิ รายรับ − รายจ่าย';
+  // The budget read-out for whichever period is on screen. Every figure comes
+  // from the calculators the dashboard and the notification bell already use,
+  // so the three surfaces cannot quote different numbers. Only the current
+  // period gets one: the insight is anchored to today, so it would be wrong
+  // against a range the user has paged back to.
+  const isCurrentPeriod = thailandRange(period, referenceDate).from.getTime() === thailandRange(period, new Date()).from.getTime();
+  const monthTransactions = useMemo(() => list(period === 'month' ? data?.transactions : monthData?.transactions).map((item) => ({
+    amount: Number(item.amount ?? 0),
+    occurredAt: item.occurredAt as never,
+    type: item.type === 'income' ? 'income' as const : 'expense' as const,
+  })), [data, monthData, period]);
+  const budgetLine = useMemo(() => {
+    if (!isCurrentPeriod) return null;
+    const monthlyAmount = monthlyBudget?.amount ?? 0;
+    const insight = calculateFinanceBudgetInsight({monthlyBudget: monthlyAmount, transactions: monthTransactions});
+    if (!insight) return {over: false, title: 'ยังไม่ได้ตั้งงบเดือนนี้', detail: 'ตั้งวงเงินแล้วหน้านี้จะบอกยอดที่ใช้ได้ของแต่ละช่วง'};
+    if (period === 'day') {
+      const allowance = calculateDailyAllowance({monthlyBudget: monthlyAmount, transactions: monthTransactions});
+      if (!allowance) return null;
+      return allowance.overBudget
+        ? {over: true, title: `เกินงบเดือนนี้ ${money(Math.abs(allowance.remainingBudget))}`, detail: `ใช้ไปแล้ว ${money(insight.spentSoFar)} จากลิมิต ${money(insight.monthlyBudget)}`}
+        : {over: false, title: `งบวันนี้ใช้ได้อีก ${money(allowance.amount)}`, detail: `เหลือทั้งเดือน ${money(allowance.remainingBudget)} ใน ${insight.daysRemainingIncludingToday} วันที่เหลือ`};
+    }
+    if (period === 'week') {
+      return insight.weeklyRemainingBudget < 0
+        ? {over: true, title: `เกินงบสัปดาห์นี้ ${money(Math.abs(insight.weeklyRemainingBudget))}`, detail: `ใช้ ${money(insight.weekSpent)} จากงบสัปดาห์ ${money(insight.weeklyBudget)}`}
+        : {over: false, title: `งบสัปดาห์นี้เหลือ ${money(insight.weeklyRemainingBudget)}`, detail: `ใช้ไป ${insight.weeklyUsagePercent}% ของงบสัปดาห์ ${money(insight.weeklyBudget)}`};
+    }
+    return insight.remainingBudget < 0
+      ? {over: true, title: `เกินงบเดือนนี้ ${money(Math.abs(insight.remainingBudget))}`, detail: `ใช้ ${money(insight.spentSoFar)} จากลิมิต ${money(insight.monthlyBudget)}`}
+      : {over: false, title: `งบเดือนนี้เหลือ ${money(insight.remainingBudget)}`, detail: `ใช้ไป ${money(insight.spentSoFar)} จากลิมิต ${money(insight.monthlyBudget)}`};
+  }, [isCurrentPeriod, monthTransactions, monthlyBudget, period]);
   const categoryTotals = useMemo(() => Array.from(all.filter((item) => item.type === 'expense').reduce((map, item) => { const category = str(item, 'category', 'ทั่วไป'); map.set(category, (map.get(category) ?? 0) + Number(item.amount ?? 0)); return map; }, new Map<string, number>()).entries()).slice(0, 3), [all]);
   const deleteTransaction = (item: Item) => {
     const id = str(item, 'id', ''); if (!id) return;
@@ -119,13 +159,18 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
       <View style={styles.filterBar}>{(['all', 'income', 'expense'] as Filter[]).map((item) => <Pressable key={item} onPress={() => setFilter(item)} style={[styles.filterItem, filter === item && styles.filterActive]}><Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item === 'all' ? 'ภาพรวม' : item === 'income' ? 'รายรับ' : 'รายจ่าย'}</Text></Pressable>)}</View>
       {!data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <View style={styles.balanceCard}><View style={styles.balanceCircle} /><View style={styles.balanceTop}><View><View style={styles.balanceLabelRow}><MaterialIcon color={C.accent} name="credit_card" size={14} /><Text style={styles.balanceLabel}>{mainLabel}</Text></View><Text style={styles.balanceAmount}>{money(mainAmount)}</Text><Text style={styles.balancePeriod}>/ {periodText(periodPage)}</Text></View></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(expense / Math.max(income, expense, 1) * 100, 100)}%`}]} /></View><View style={styles.categoryTags}>{categoryTotals.length ? categoryTotals.map(([category, amount]) => <View key={category} style={styles.categoryTag}><Text style={styles.categoryTagText}>{category} {money(amount)}</Text></View>) : <View style={styles.categoryTag}><Text style={styles.categoryTagText}>ยังไม่มีค่าใช้จ่าย</Text></View>}</View></View>
+        {budgetLine ? <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.budgetStrip, budgetLine.over && styles.budgetStripOver]}>
+          <View style={[styles.budgetStripIcon, budgetLine.over && styles.budgetStripIconOver]}><MaterialIcon color={budgetLine.over ? C.red : C.sage} name={budgetLine.over ? 'error' : 'savings'} size={17} /></View>
+          <View style={{flex: 1}}><Text style={[styles.budgetStripTitle, budgetLine.over && styles.budgetStripTitleOver]}>{budgetLine.title}</Text><Text style={styles.budgetStripDetail}>{budgetLine.detail}</Text></View>
+          <MaterialIcon color={C.muted} name="chevron_right" size={20} />
+        </Pressable> : null}
         <View style={styles.summaryRow}>{filter === 'income' ? <><Summary amount={income} icon="north" label="รับแล้ว" tone="income" /><Summary amount={Math.max(0, income - shown.reduce((sum, item) => sum + Number(item.amount ?? 0), 0))} icon="schedule" label="รอรับ" tone="neutral" /></> : filter === 'expense' ? <><Summary amount={expense} icon="south" label="ใช้ไปแล้ว" tone="expense" /><Summary amount={Math.max(0, balance)} icon="schedule" label="เหลือ" tone="neutral" /></> : <><Summary amount={income} icon="north" label="รายรับ" tone="income" /><Summary amount={expense} icon="south" label="รายจ่าย" tone="expense" /></>}</View>
 
         <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.menuCard, {backgroundColor: '#faecea', marginTop: 16}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#d89182'}]}><MaterialIcon color="#fff" name="savings" size={20} /></View>
             <View style={{flex: 1}}>
               <Text style={styles.menuTitle}>กำหนดงบและกรอบรายสัปดาห์</Text>
-              <Text style={styles.menuSubtitle}>{monthlyBudget ? `วงเงินเดือน ${money(monthlyBudget)} · AI แบ่งให้เป็นรายสัปดาห์` : 'ตั้งวงเงิน แล้ว AI คุมยอดรวมเป็นรายสัปดาห์'}</Text>
+              <Text style={styles.menuSubtitle}>{monthlyBudget ? `วงเงินเดือน ${money(monthlyBudget.amount)}${monthlyBudget.rolledOver ? ' (ต่อจากเดือนก่อน รอยืนยัน)' : ''} · AI แบ่งให้เป็นรายสัปดาห์` : 'ตั้งวงเงิน แล้ว AI คุมยอดรวมเป็นรายสัปดาห์'}</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Pressable>
@@ -177,6 +222,13 @@ function TransactionRow({item, onDelete}: {item: Item; onDelete: () => void}) { 
 
 const shadow = {shadowColor: C.ink, shadowOffset: {height: 8, width: 0}, shadowOpacity: .07, shadowRadius: 18};
 const styles = StyleSheet.create({
+  budgetStrip: {alignItems: 'center', backgroundColor: '#fff', borderColor: C.sageSoft, borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 12, padding: 12},
+  budgetStripDetail: {color: C.muted, fontFamily: F.r, fontSize: 9, lineHeight: 14, marginTop: 2},
+  budgetStripIcon: {alignItems: 'center', backgroundColor: C.sageSoft, borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
+  budgetStripIconOver: {backgroundColor: C.redSoft},
+  budgetStripOver: {borderColor: C.redSoft},
+  budgetStripTitle: {color: C.ink, fontFamily: F.b, fontSize: 12},
+  budgetStripTitleOver: {color: C.red},
   allLink: {color: C.accent, fontFamily: F.b, fontSize: 9}, balanceAmount: {color: C.ink, fontFamily: F.x, fontSize: 30, marginTop: 2}, balanceCard: {...shadow, backgroundColor: '#fff', borderRadius: 21, marginTop: 10, overflow: 'hidden', padding: 15}, balanceCircle: {backgroundColor: C.accentSoft, borderBottomLeftRadius: 58, height: 72, position: 'absolute', right: 0, top: 0, width: 72}, balanceLabel: {color: C.ink, fontFamily: F.b, fontSize: 10}, balanceLabelRow: {alignItems: 'center', flexDirection: 'row', gap: 6}, balancePeriod: {color: C.muted, fontFamily: F.s, fontSize: 10, marginLeft: 92, marginTop: -14}, budgetPlanner: {alignItems: 'center', backgroundColor: '#fff0e8', borderColor: '#f0cfc1', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 13, padding: 12}, budgetPlannerIcon: {alignItems: 'center', backgroundColor: '#c87964', borderRadius: 20, boxShadow: '0 5px 11px rgba(176,99,79,.20)', height: 40, justifyContent: 'center', width: 40}, budgetPlannerText: {color: '#8e6256', fontFamily: F.r, fontSize: 8, marginTop: 2}, budgetPlannerTitle: {color: '#56372e', fontFamily: F.b, fontSize: 11}, balanceTop: {flexDirection: 'row', justifyContent: 'space-between'}, categoryTag: {backgroundColor: '#f1f3ef', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5}, categoryTagText: {color: '#697669', fontFamily: F.b, fontSize: 8}, categoryTags: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10}, content: {padding: 20, paddingBottom: 26}, delete: {alignItems: 'center', height: 28, justifyContent: 'center', marginLeft: 2, width: 22}, empty: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, gap: 6, paddingVertical: 28}, emptyText: {color: C.muted, fontFamily: F.r, fontSize: 10}, eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 10}, filterActive: {backgroundColor: C.accent}, filterBar: {backgroundColor: '#fff', borderRadius: 16, flexDirection: 'row', marginTop: 9, padding: 5}, filterItem: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 8}, filterText: {color: C.muted, fontFamily: F.b, fontSize: 10}, filterTextActive: {color: '#fff'}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, insight: {alignItems: 'center', backgroundColor: '#eef1fa', borderRadius: 18, flexDirection: 'row', gap: 10, marginTop: 14, padding: 12}, insightIcon: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 20, height: 40, justifyContent: 'center', width: 40}, insightText: {color: '#7c8790', fontFamily: F.r, fontSize: 8, marginTop: 2}, insightTitle: {color: C.ink, fontFamily: F.b, fontSize: 11}, loading: {alignItems: 'center', gap: 9, paddingVertical: 80}, loadingText: {color: C.muted, fontFamily: F.r, fontSize: 10}, periodActive: {backgroundColor: C.ink}, periodBar: {backgroundColor: '#fff', borderRadius: 16, flexDirection: 'row', marginTop: 12, padding: 5}, periodItem: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 9}, periodText: {color: C.muted, fontFamily: F.b, fontSize: 10}, periodTextActive: {color: '#fff'}, progress: {backgroundColor: '#e4e5ec', borderRadius: 99, height: 7, marginTop: 16, overflow: 'hidden'}, progressFill: {backgroundColor: C.accent, borderRadius: 99, height: 7}, rangeBar: {alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 8}, rangeButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, height: 36, justifyContent: 'center', width: 36}, rangeHint: {color: C.accent, fontFamily: F.b, fontSize: 8}, rangeLabel: {alignItems: 'center', flex: 1, justifyContent: 'center', minHeight: 36}, rangeToday: {color: C.ink, fontFamily: F.b, fontSize: 10, marginTop: 1}, receiptButton: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 28, boxShadow: '0 7px 17px rgba(69,77,125,.25)', height: 54, justifyContent: 'center', width: 54}, safe: {backgroundColor: C.mist, flex: 1}, screen: {backgroundColor: C.mist, flex: 1}, sectionHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10, marginTop: 17}, sectionTitle: {color: C.ink, fontFamily: F.x, fontSize: 14}, summary: {...shadow, backgroundColor: '#fff', borderRadius: 18, flex: 1, minHeight: 84, padding: 13}, summaryAmount: {fontFamily: F.x, fontSize: 19, marginTop: 6}, summaryHead: {alignItems: 'center', flexDirection: 'row', gap: 5}, summaryLabel: {color: C.muted, fontFamily: F.s, fontSize: 9}, summaryRow: {flexDirection: 'row', gap: 10, marginTop: 12}, title: {color: C.ink, fontFamily: F.x, fontSize: 24}, transaction: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, flexDirection: 'row', gap: 10, minHeight: 61, paddingHorizontal: 12, paddingVertical: 10}, transactionAmount: {fontFamily: F.x, fontSize: 11}, transactionIcon: {alignItems: 'center', borderRadius: 13, height: 38, justifyContent: 'center', width: 38}, transactionList: {gap: 9}, transactionSub: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2}, transactionTitle: {color: C.ink, fontFamily: F.b, fontSize: 11},
   menuCard: { alignItems: 'center', borderRadius: 18, flexDirection: 'row', gap: 12, marginTop: 10, padding: 14, borderColor: 'rgba(0,0,0,0.04)', borderWidth: 1 },
   menuIcon: { alignItems: 'center', borderRadius: 22, height: 44, justifyContent: 'center', width: 44, shadowColor: C.ink, shadowOffset: {width: 0, height: 5}, shadowOpacity: 0.1, shadowRadius: 11 },
