@@ -31,12 +31,12 @@ import {
   type SmartLifeDynamicInsight,
 } from '@/services/dynamic-insights';
 import {adaptiveScheduling} from '@/services/adaptive-scheduling';
-import {activities, notes, scanLogs, schedules, transactions} from '@/services/firestore';
+import {activities, findScheduleConflicts, notes, scanLogs, schedules, transactions} from '@/services/firestore';
 import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
 import {baselineNightHours, loadSleepBaseline} from '@/services/sleep-log';
 import {activityForFreeSlot, TRUSTED_COACHING_SOURCES, WELLBEING_AI_DISCLAIMER} from '@/config/trusted-coaching-knowledge';
 import {burnoutRiskBand} from '@/constants/burnout-risk';
-import type {AssistantChatMessage, AssistantConversationState, AssistantConversationStatePatch, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantProposedAction, AssistantReplySource, AssistantResponseMode, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
+import type {AssistantChatMessage, AssistantConversationState, AssistantConversationStatePatch, AssistantErrorKind, AssistantFeedbackRating, AssistantMemoryPayload, AssistantPendingTaskShortcut, AssistantProposedAction, AssistantReplySource, AssistantResponseMode, AssistantToolSchema, ChecklistPayload, FinancePayload, NotePayload, SchedulePayload} from '@/types/assistant';
 import type {Activity, Note, ScanLog, Schedule, Transaction, WithId} from '@/types/smartlife';
 
 export const assistantToolSchemas: AssistantToolSchema[] = [
@@ -97,6 +97,7 @@ export type AssistantReply = {
   errorKind?: AssistantErrorKind;
   intent: AssistantIntent;
   latencyMs: number;
+  pendingTaskShortcuts?: AssistantPendingTaskShortcut[];
   proposedAction?: AssistantProposedAction;
   source: AssistantReplySource;
   statePatch?: AssistantConversationStatePatch;
@@ -1029,6 +1030,18 @@ function buildUpcomingTasksAnswer(context: AssistantContext) {
     lines.push(`งานที่ยังไม่ระบุวันส่ง: ${undatedTasks.slice(0, 3).map((task) => task.title).join(', ')}`);
   }
   return `${opening}\n${lines.join('\n')}`;
+}
+
+function pendingTaskShortcuts(context: AssistantContext): AssistantPendingTaskShortcut[] {
+  return upcomingTaskCandidates(context)
+    .filter((task): task is TaskDeadlineCandidate & {id: string} => task.source === 'activity' && Boolean(task.id))
+    .slice(0, 5)
+    .map((task) => ({
+      dueAt: task.dueAt?.toISOString(),
+      id: task.id,
+      status: 'pending',
+      title: task.title,
+    }));
 }
 
 function buildPriorityPlan(context: AssistantContext, preferences: AssistantPreferences) {
@@ -2133,6 +2146,7 @@ export async function buildAssistantReply(
     source: AssistantReplySource,
     options: {
       errorKind?: AssistantErrorKind;
+      pendingTaskShortcuts?: AssistantPendingTaskShortcut[];
       proposedAction?: AssistantProposedAction;
       statePatch?: AssistantConversationStatePatch;
       suggestions?: string[];
@@ -2142,6 +2156,7 @@ export async function buildAssistantReply(
     errorKind: options.errorKind,
     intent,
     latencyMs: Date.now() - startedAt,
+    pendingTaskShortcuts: options.pendingTaskShortcuts,
     proposedAction: options.proposedAction,
     source,
     statePatch: options.statePatch ?? {lastIntent: intent},
@@ -2245,6 +2260,7 @@ export async function buildAssistantReply(
       if (content) {
         const selectedTask = result.data.selectedTask?.title ? result.data.selectedTask : undefined;
         return reply(content, 'gemini', {
+          pendingTaskShortcuts: isTaskLookupIntent(understoodMessage) ? pendingTaskShortcuts(context) : undefined,
           statePatch: selectedTask ? {
             lastIntent: intent,
             selectedTask: {
@@ -2260,7 +2276,10 @@ export async function buildAssistantReply(
       const errorKind = classifyAssistantError(error);
       try {
         const {answer, context, preferences} = await loadFallback();
-        if (answer) return reply(answer, 'fallback', {errorKind});
+        if (answer) return reply(answer, 'fallback', {
+          errorKind,
+          pendingTaskShortcuts: isTaskLookupIntent(understoodMessage) ? pendingTaskShortcuts(context) : undefined,
+        });
         const offlineAnswer = contextualOfflineAnswer(
           intent,
           understoodMessage,
@@ -2268,7 +2287,10 @@ export async function buildAssistantReply(
           context,
           preferences,
         );
-        if (offlineAnswer) return reply(offlineAnswer, 'fallback', {errorKind});
+        if (offlineAnswer) return reply(offlineAnswer, 'fallback', {
+          errorKind,
+          pendingTaskShortcuts: isTaskLookupIntent(understoodMessage) ? pendingTaskShortcuts(context) : undefined,
+        });
       } catch (fallbackError) {
         const fallbackErrorKind = classifyAssistantError(fallbackError);
         if (fallbackErrorKind === 'authentication' || fallbackErrorKind === 'permission') {
@@ -2279,8 +2301,10 @@ export async function buildAssistantReply(
     }
   }
   try {
-    const {answer} = await loadFallback();
-    if (answer) return reply(answer, 'deterministic');
+    const {answer, context} = await loadFallback();
+    if (answer) return reply(answer, 'deterministic', {
+      pendingTaskShortcuts: isTaskLookupIntent(understoodMessage) ? pendingTaskShortcuts(context) : undefined,
+    });
   } catch (error) {
     const errorKind = classifyAssistantError(error);
     return reply(assistantErrorMessage(errorKind), 'fallback', {errorKind});
@@ -2345,6 +2369,10 @@ export async function confirmAssistantAction(uid: string, action: AssistantPropo
   const payload = action.payload;
   const startAt = new Date(payload.startAt);
   const endAt = payload.endAt ? new Date(payload.endAt) : new Date(startAt.getTime() + 60 * 60 * 1000);
+  if (!payload.allowOverlap) {
+    const conflicts = await findScheduleConflicts(uid, startAt, endAt);
+    if (conflicts.length) return {conflicts, id: '', page: 'smartlife_calendar_day', requiresConflictConfirmation: true as const};
+  }
   if (payload.type === 'class') {
     const result = await schedules.create(uid, {
       color: '#6F8F6D',
@@ -2361,14 +2389,18 @@ export async function confirmAssistantAction(uid: string, action: AssistantPropo
   if (!isDemoMode && payload.type === 'task' && payload.isFlexible && payload.aiScheduled) {
     const result = await adaptiveScheduling.createActivity({
       activityCategory: (payload.category ?? 'other') as Parameters<typeof adaptiveScheduling.createActivity>[0]['activityCategory'],
+      allowOverlap: payload.allowOverlap,
+      dateLocked: payload.dateLocked,
       deadline: payload.deadline ?? null,
       durationMinutes: payload.estimatedDurationMinutes ?? Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
       endAt: endAt.toISOString(),
       explanation: payload.aiReason ?? 'จัดเวลาจาก SmartLife AI และตรวจสอบตารางก่อนบันทึก',
       startAt: startAt.toISOString(),
       title: payload.title,
+      ...(payload.userSelectedTime ? {userSelectedTime: true} : {}),
     }, action.id);
-    return {id: result.id, page: 'smartlife_calendar_day'};
+    if (!result.saved) return {conflicts: result.conflicts, id: '', page: 'smartlife_calendar_day', requiresConflictConfirmation: true as const};
+    return {conflicts: result.conflicts, id: result.id, page: 'smartlife_calendar_day', requiresConflictConfirmation: false as const};
   }
   const result = await activities.create(uid, {
     ...(payload.aiReason ? {aiReason: payload.aiReason} : {}),

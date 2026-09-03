@@ -14,6 +14,7 @@ import {
   calculateSchedulingPatterns as calculatePatterns,
   DEFAULT_ADAPTIVE_PREFERENCES,
   findAdaptiveTimeSlots,
+  overlappingScheduleItems,
   parseClockMinutes,
   validateCandidateSlot,
   validateMovableScheduleItem,
@@ -66,6 +67,7 @@ type ActivityRecord = {
   durationMinutes: number;
   endMs: number;
   estimatedDurationMinutes: number;
+  fixedLocalDate: string | null;
   googleEventId: string;
   id: string;
   isFlexible: boolean;
@@ -545,7 +547,10 @@ const REQUESTED_PERIOD_WINDOWS: Record<RequestedPeriod, {endTime: string; startT
   evening: {endTime: "21:00", startTime: "17:00"},
   late_morning: {endTime: "13:00", startTime: "11:00"},
   morning: {endTime: "11:00", startTime: "08:00"},
-  night: {endTime: "23:59", startTime: "21:00"},
+  // Night intentionally wraps across midnight. Explicit late-night requests
+  // may use 00:00-05:00, while automatic suggestions still honor the user's
+  // normal wake/sleep and earliest/latest settings.
+  night: {endTime: "05:00", startTime: "21:00"},
   noon: {endTime: "13:00", startTime: "12:00"},
 };
 
@@ -664,6 +669,7 @@ function activityFromDocument(document: QueryDocumentSnapshot<DocumentData> | {i
     durationMinutes,
     endMs,
     estimatedDurationMinutes: Math.round(boundedNumber(data.estimatedDurationMinutes, 15, 720, durationMinutes)),
+    fixedLocalDate: /^\d{4}-\d{2}-\d{2}$/.test(text(data.fixedLocalDate, 10)) ? text(data.fixedLocalDate, 10) : null,
     googleEventId: text(data.googleEventId, 512),
     id: document.id,
     isFlexible: data.isFlexible === true || (!Object.prototype.hasOwnProperty.call(data, "isFlexible") && inferredFlexible),
@@ -707,6 +713,19 @@ function localDateKey(timestamp: number, timeZone: string) {
     timeZone,
     year: "numeric",
   }).format(new Date(timestamp));
+}
+
+function userFacingConflicts(startMs: number, endMs: number, items: EngineScheduleItem[]) {
+  return overlappingScheduleItems(startMs, endMs, items)
+    .filter((item) => item.kind !== "suggestion")
+    .map((item) => ({
+      endAt: new Date(item.endMs).toISOString(),
+      id: item.id,
+      kind: item.kind === "schedule" ? "schedule" as const : "activity" as const,
+      startAt: new Date(item.startMs).toISOString(),
+      title: item.title || "รายการในตาราง",
+    }))
+    .sort((left, right) => left.startAt.localeCompare(right.startAt));
 }
 
 function localTime(timestamp: number, timeZone: string) {
@@ -850,12 +869,18 @@ export function nearestAvailableSlot(request: AdaptiveSlotRequest, intent: Natur
     return window.startTime === request.requiredLocalTimeWindow?.startTime ? undefined : window;
   };
 
-  const relaxations: {requiredLocalDate?: string; requiredLocalTimeWindow?: {endTime: string; startTime: string}}[] = [
-    {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: surroundingPeriod()},
-    {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: undefined},
-    {requiredLocalDate: undefined, requiredLocalTimeWindow: request.requiredLocalTimeWindow},
-    {requiredLocalDate: undefined, requiredLocalTimeWindow: undefined},
-  ];
+  // A calendar date the user named is a hard constraint. Widen an exact hour
+  // to another free hour on that date, but never silently move a birthday,
+  // appointment, exam, or other dated activity to a different day.
+  const relaxations: {requiredLocalDate?: string; requiredLocalTimeWindow?: {endTime: string; startTime: string}}[] = request.requiredLocalDate
+    ? [
+      {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: surroundingPeriod()},
+      {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: undefined},
+    ]
+    : [
+      {requiredLocalDate: undefined, requiredLocalTimeWindow: surroundingPeriod()},
+      {requiredLocalDate: undefined, requiredLocalTimeWindow: undefined},
+    ];
 
   for (const relaxation of relaxations) {
     const slot = findAdaptiveTimeSlots({...request, ...relaxation}, 1)[0];
@@ -978,7 +1003,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       const startMs = timestampMs(data.startAt);
       const endMs = timestampMs(data.endAt);
       if (startMs === null || endMs === null) return [];
-      return [{category: category(data.courseCode || data.title), endMs, id: document.id, isDifficult: true, isFixed: true, startMs}];
+      return [{category: category(data.courseCode || data.title), endMs, id: document.id, isDifficult: true, isFixed: true, kind: "schedule" as const, startMs, title: text(data.title, 120) || text(data.courseName, 120) || "ตารางเรียน"}];
     });
     activitySnapshot.docs.forEach((document) => {
       if (document.id === excludeActivityId) return;
@@ -990,7 +1015,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         id: item.id,
         isDifficult: ["high", "urgent"].includes(item.priority) || item.durationMinutes >= 90,
         isFixed: !item.isFlexible || item.isLocked,
+        kind: "activity",
         startMs: item.startMs,
+        title: item.title,
       });
     });
     suggestionSnapshot.docs.forEach((document) => {
@@ -1006,7 +1033,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         id: `suggestion-${document.id}`,
         isDifficult: false,
         isFixed: true,
+        kind: "suggestion",
         startMs,
+        title: text(data.taskTitle, 120) || "คำแนะนำที่รอยืนยัน",
       });
     });
     return scheduleItems;
@@ -1018,25 +1047,26 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     preferredStartMs?: number,
     requiredLocalTimeWindow?: {endTime: string; startTime: string},
     requiredLocalDate?: string,
+    allowOutsideAvailability = false,
   ) {
     const setting = await preferences(uid);
+    const effectiveRequiredLocalDate = requiredLocalDate ?? activity.fixedLocalDate ?? undefined;
     const durationMinutes = activity.estimatedDurationMinutes || activity.durationMinutes;
     const now = Date.now();
-    const earliestStartMs = preferredStartMs ?? Math.max(now + 15 * MINUTE_MS, activity.startMs - DAY_MS);
-    // A date the user named explicitly can sit past the usual fortnight, and a
-    // horizon that stops short of it reports "no free slot" for a day that is
-    // wide open. The search still stops at two months so it stays bounded.
-    const requestedDayEndMs = requiredLocalDate ? Date.parse(`${requiredLocalDate}T12:00:00Z`) + 1.5 * DAY_MS : Number.NaN;
-    const horizonMs = Math.min(
-      now + 60 * DAY_MS,
-      Math.max(now + 14 * DAY_MS, Number.isNaN(requestedDayEndMs) ? 0 : requestedDayEndMs),
-    );
+    // An explicit date may be years away. Jump the scan directly to that local
+    // day instead of walking every 30-minute slot from today or clipping it to
+    // the old 60-day horizon.
+    const requestedReferenceMs = effectiveRequiredLocalDate ? Date.parse(`${effectiveRequiredLocalDate}T12:00:00Z`) : Number.NaN;
+    const requestedDayStartMs = Number.isNaN(requestedReferenceMs) ? null : zonedDayStart(requestedReferenceMs, setting.timeZone);
+    const earliestStartMs = preferredStartMs ?? (requestedDayStartMs === null ? Math.max(now + 15 * MINUTE_MS, activity.startMs - DAY_MS) : Math.max(now + 15 * MINUTE_MS, requestedDayStartMs));
+    const horizonMs = requestedDayStartMs === null ? now + 14 * DAY_MS : requestedDayStartMs + DAY_MS;
     const latestEndMs = Math.min(activity.deadlineMs ?? horizonMs, horizonMs);
     const [patterns, scheduleItems] = await Promise.all([
       listPatterns(uid),
       constraints(uid, earliestStartMs, latestEndMs, activity.id),
     ]);
     const request: AdaptiveSlotRequest = {
+      allowOutsideAvailability,
       category: activity.category,
       deadlineMs: activity.deadlineMs,
       durationMinutes,
@@ -1045,7 +1075,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       patterns,
       preferences: setting,
       priority: activity.priority,
-      requiredLocalDate,
+      requiredLocalDate: effectiveRequiredLocalDate,
       requiredLocalTimeWindow,
       scheduleItems,
     };
@@ -1079,6 +1109,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       durationMinutes,
       endMs: placeholderStartMs + durationMinutes * MINUTE_MS,
       estimatedDurationMinutes: durationMinutes,
+      fixedLocalDate: intent.requestedLocalDate ?? null,
       googleEventId: "",
       id: "__adaptive_new_activity__",
       isFlexible: true,
@@ -1092,7 +1123,14 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       version: 0,
     };
     const requestedWindow = requestedWindowForIntent(intent, durationMinutes);
-    const {request} = await schedulingRequest(uid, activity, undefined, requestedWindow, intent.requestedLocalDate ?? undefined);
+    const {request} = await schedulingRequest(
+      uid,
+      activity,
+      undefined,
+      requestedWindow,
+      intent.requestedLocalDate ?? undefined,
+      Boolean(requestedWindow),
+    );
     const nearest = nearestAvailableSlot(request, intent);
     if (!nearest.slot) {
       // Every relaxation was tried and the fortnight really is full, so say so
@@ -1107,17 +1145,23 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const defaultNote = durationWasDefaulted ? ` ใช้เวลาเริ่มต้น ${durationMinutes} นาทีเพราะยังไม่ได้ระบุระยะเวลา` : "";
     const explanation = unavailableRequest
       ? `${unavailableRequest} ไม่ว่างเพราะชนกับรายการในตาราง จึงเสนอช่วงว่างที่ใกล้ที่สุดที่ผ่านการตรวจแล้วแทน${defaultNote}`
-      : `พบช่วงว่างที่ไม่ชนตารางและอยู่ในเวลาที่ตั้งไว้${defaultNote}`;
+      : requestedWindow
+        ? `พบช่วงว่างที่ไม่ชนตารางและตรงกับช่วงเวลาที่คุณขอ${defaultNote}`
+        : `พบช่วงว่างที่ไม่ชนตารางและอยู่ในเวลาที่ตั้งไว้${defaultNote}`;
     return {
       proposedActivity: {
         activityCategory,
         deadline: deadlineMs === null ? null : new Date(deadlineMs).toISOString(),
         durationMinutes,
+        dateLocked: Boolean(intent.requestedLocalDate),
         endAt: new Date(slot.endMs).toISOString(),
         explanation,
         generatedForTimeZone: setting.timeZone,
         startAt: new Date(slot.startMs).toISOString(),
         title,
+        // A clock window written by the user is authoritative even when it is
+        // inside the default sleep window. Conflicts are still checked.
+        userSelectedTime: Boolean(requestedWindow),
         // Present only when the exact time asked for was taken, so the card can
         // say what it is offering instead of what was requested.
         ...(unavailableRequest ? {unavailableRequest} : {}),
@@ -1178,7 +1222,14 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const recentSuggestions = await userRef(uid).collection("schedulingSuggestions").orderBy("createdAt", "desc").limit(50).get();
     const sameActivity = recentSuggestions.docs.filter((document) => text(document.data().scheduleItemId, 128) === activity.id);
     const nowMs = Date.now();
-    const {patterns, request, setting} = await schedulingRequest(uid, activity, requestedStartMs, requiredLocalTimeWindow, requiredLocalDate);
+    const {patterns, request, setting} = await schedulingRequest(
+      uid,
+      activity,
+      requestedStartMs,
+      requiredLocalTimeWindow,
+      requiredLocalDate,
+      Boolean(requiredLocalTimeWindow),
+    );
     if (!setting.allowAiSuggestions) throw new HttpsError("failed-precondition", "ปิดคำแนะนำ Adaptive Scheduling ไว้");
     const existing = sameActivity.find((document) => {
       const data = document.data();
@@ -1818,7 +1869,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
             type: "text",
           },
           store: false,
-          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases, and remove polite filler such as 'ให้หน่อย', 'หน่อยนะ', 'จัดให้ที', 'ช่วย', 'ที', 'ด้วย', 'ครับ' and 'ค่ะ'. taskTitle is the activity alone, for example 'ซื้อมังงะวันที่ 1 กันยาให้หน่อย' has taskTitle 'ซื้อมังงะ'; never echo the user's whole sentence back as the title. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate, and resolve relative day words the same way: วันนี้/today and any 'this morning/afternoon/evening/tonight' form such as เช้านี้, บ่ายนี้, เย็นนี้ or คืนนี้ are verifiedTemporalContext.localDate itself, พรุ่งนี้/tomorrow is the next day, and มะรืนนี้ is two days later. Resolve an explicit calendar date into requestedLocalDate as well: 'วันที่ 1 กันยายน', '1 ก.ย.', '1 กันยา', '1/9', 'Sep 1' and '2026-09-01' all mean the first of September, using the year from verifiedTemporalContext.localDate when none is written and rolling to the next year only if that date has already passed. Convert a Thai Buddhist year by subtracting 543, so 2569 is 2026. An explicit calendar date always outranks a weekday word, a relative day word, and any default. The server deterministically recalculates explicit calendar dates, named weekdays, relative day words, noon, and midnight after model output, so do not guess dates. Never move a requested weekday or a requested relative day to another day merely because another slot scores higher. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
+          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases, and remove polite filler such as 'ให้หน่อย', 'หน่อยนะ', 'จัดให้ที', 'ช่วย', 'ที', 'ด้วย', 'ครับ' and 'ค่ะ'. taskTitle is the activity alone, for example 'ซื้อมังงะวันที่ 1 กันยาให้หน่อย' has taskTitle 'ซื้อมังงะ'; never echo the user's whole sentence back as the title. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate, and resolve relative day words the same way: วันนี้/today and any 'this morning/afternoon/evening/tonight' form such as เช้านี้, บ่ายนี้, เย็นนี้ or คืนนี้ are verifiedTemporalContext.localDate itself, พรุ่งนี้/tomorrow is the next day, and มะรืนนี้ is two days later. Resolve an explicit calendar date into requestedLocalDate as well: 'วันที่ 1 กันยายน', '1 ก.ย.', '1 กันยา', '1/9', 'Sep 1' and '2026-09-01' all mean the first of September, using the year from verifiedTemporalContext.localDate when none is written and rolling to the next year only if that date has already passed. Convert a Thai Buddhist year by subtracting 543, so 2569 is 2026. An explicit calendar date always outranks a weekday word, a relative day word, and any default. The server deterministically recalculates explicit calendar dates, named weekdays, relative day words, noon, and midnight after model output, so do not guess dates. Never move an explicit calendar date, requested weekday, or requested relative day to another day merely because another slot scores higher; birthdays and similar dated events must stay on their requested date and only their time may be optimized. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
       }, GEMINI_PARSE_TIMEOUT_MS, "processNaturalLanguageScheduleCommand");
       if (!result.ok) return fallback("request-failed");
       const output = interactionText(result.payload);
@@ -1974,6 +2025,8 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   const createAdaptiveActivity = onCall(callableOptions, async (request) => {
     const uid = requiredUid(request);
+    const allowOverlap = request.data?.allowOverlap === true;
+    const userSelectedTime = request.data?.userSelectedTime === true;
     const clientRequestId = text(request.data?.clientRequestId, 256);
     const requestKey = clientRequestId ? Buffer.from(clientRequestId).toString("base64url") : "";
     const activityCollection = userRef(uid).collection("activities");
@@ -1988,8 +2041,11 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       }
       return {
         adjusted: false,
+        conflicts: [],
         endAt: new Date(existingEndMs).toISOString(),
         id: activityReference.id,
+        requiresConflictConfirmation: false,
+        saved: true,
         startAt: new Date(existingStartMs).toISOString(),
       };
     };
@@ -2003,6 +2059,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const requestedEndMs = timestampMs(request.data?.endAt);
     const deadlineMs = request.data?.deadline === null || request.data?.deadline === undefined ? null : timestampMs(request.data.deadline);
     const activityCategory = category(request.data?.activityCategory);
+    const dateLocked = request.data?.dateLocked === true;
     const durationMinutes = Math.round(boundedNumber(
       request.data?.durationMinutes,
       15,
@@ -2015,6 +2072,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     if (deadlineMs !== null && deadlineMs <= Date.now()) {
       throw new HttpsError("failed-precondition", "กำหนดส่งของกิจกรรมนี้ผ่านไปแล้ว กรุณาเลือกวันใหม่");
     }
+    const requestedTimeZone = text(request.data?.generatedForTimeZone, 80);
+    const lockTimeZone = validTimeZone(requestedTimeZone) ? requestedTimeZone : (await preferences(uid)).timeZone;
+    const fixedLocalDate = dateLocked ? localDateKey(requestedStartMs, lockTimeZone) : null;
 
     const activity: ActivityRecord = {
       allowAiReschedule: true,
@@ -2023,6 +2083,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       durationMinutes,
       endMs: requestedStartMs + durationMinutes * MINUTE_MS,
       estimatedDurationMinutes: durationMinutes,
+      fixedLocalDate,
       googleEventId: "",
       id: "__adaptive_confirmed_activity__",
       isFlexible: true,
@@ -2035,10 +2096,21 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       title,
       version: 0,
     };
-    const {request: slotRequest} = await schedulingRequest(uid, activity, requestedStartMs);
+    const {request: slotRequest} = await schedulingRequest(uid, activity, requestedStartMs, undefined, fixedLocalDate ?? undefined);
     const requestedEndAtMs = requestedStartMs + durationMinutes * MINUTE_MS;
+    const conflictResult = (conflicts: ReturnType<typeof userFacingConflicts>) => ({
+      adjusted: false,
+      conflicts,
+      endAt: new Date(requestedEndAtMs).toISOString(),
+      id: "",
+      requiresConflictConfirmation: true,
+      saved: false,
+      startAt: new Date(requestedStartMs).toISOString(),
+    });
+    const preliminaryConflicts = userFacingConflicts(requestedStartMs, requestedEndAtMs, slotRequest.scheduleItems);
+    if (preliminaryConflicts.length && !allowOverlap) return conflictResult(preliminaryConflicts);
     const requestedInWindow = requestedStartMs >= Math.max(Date.now() + 5 * MINUTE_MS, slotRequest.earliestStartMs) && requestedEndAtMs <= slotRequest.latestEndMs;
-    const requestedValidation = validateCandidateSlot(slotRequest, requestedStartMs, requestedEndAtMs);
+    const requestedValidation = validateCandidateSlot(slotRequest, requestedStartMs, requestedEndAtMs, {allowConflicts: allowOverlap, userSelectedTime});
     const requestedIsValid = requestedInWindow && requestedValidation.ok;
     if (!requestedIsValid) {
       throw new HttpsError(
@@ -2055,12 +2127,11 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       }
       const settingsSnapshot = await transaction.get(settingsRef(uid));
       const freshSetting = sanitizePreferences(settingsSnapshot.data() ?? {});
-      const validationStart = Timestamp.fromMillis(startMs - DAY_MS);
       const validationEnd = Timestamp.fromMillis(endMs + DAY_MS);
       const scheduleSnapshot = await transaction.get(userRef(uid).collection("schedules")
-        .where("startAt", ">=", validationStart).where("startAt", "<", validationEnd).limit(300));
+        .where("startAt", "<", validationEnd).orderBy("startAt", "desc").limit(500));
       const activitySnapshot = await transaction.get(userRef(uid).collection("activities")
-        .where("startAt", ">=", validationStart).where("startAt", "<", validationEnd).limit(300));
+        .where("startAt", "<", validationEnd).orderBy("startAt", "desc").limit(500));
       const suggestionSnapshot = await transaction.get(userRef(uid).collection("schedulingSuggestions")
         .where("status", "==", "pending").limit(100));
       const freshScheduleItems: EngineScheduleItem[] = [];
@@ -2070,7 +2141,8 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         const itemEndMs = timestampMs(data.endAt);
         if (itemStartMs !== null && itemEndMs !== null) freshScheduleItems.push({
           category: category(data.courseCode || data.title), endMs: itemEndMs, id: document.id,
-          isDifficult: true, isFixed: true, startMs: itemStartMs,
+          isDifficult: true, isFixed: true, kind: "schedule", startMs: itemStartMs,
+          title: text(data.title, 120) || text(data.courseName, 120) || "ตารางเรียน",
         });
       });
       activitySnapshot.docs.forEach((document) => {
@@ -2079,7 +2151,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         freshScheduleItems.push({
           category: item.category, endMs: item.endMs, id: item.id,
           isDifficult: ["high", "urgent"].includes(item.priority),
-          isFixed: !item.isFlexible || item.isLocked, startMs: item.startMs,
+          isFixed: !item.isFlexible || item.isLocked, kind: "activity", startMs: item.startMs, title: item.title,
         });
       });
       suggestionSnapshot.docs.forEach((document) => {
@@ -2090,9 +2162,12 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         if (itemStartMs === null || itemEndMs === null || itemEndMs <= startMs || itemStartMs >= endMs || expiresAt <= Date.now()) return;
         freshScheduleItems.push({
           category: category(data.activityCategory), endMs: itemEndMs, id: `suggestion-${document.id}`,
-          isDifficult: false, isFixed: true, startMs: itemStartMs,
+          isDifficult: false, isFixed: true, kind: "suggestion", startMs: itemStartMs,
+          title: text(data.taskTitle, 120) || "คำแนะนำที่รอยืนยัน",
         });
       });
+      const freshConflicts = userFacingConflicts(startMs, endMs, freshScheduleItems);
+      if (freshConflicts.length && !allowOverlap) return conflictResult(freshConflicts);
       const freshValidation = validateCandidateSlot({
         category: activityCategory,
         deadlineMs,
@@ -2102,15 +2177,16 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         patterns: [],
         preferences: freshSetting,
         priority: activity.priority,
+        requiredLocalDate: fixedLocalDate ?? undefined,
         scheduleItems: freshScheduleItems,
-      }, startMs, endMs);
+      }, startMs, endMs, {allowConflicts: allowOverlap, userSelectedTime});
       if (!freshValidation.ok || startMs < Date.now() + 5 * MINUTE_MS) {
         throw new HttpsError("failed-precondition", `${freshValidation.ok ? "เวลาที่เลือกใกล้หรือผ่านไปแล้ว" : freshValidation.message} กรุณาวิเคราะห์และยืนยันเวลาใหม่`);
       }
       transaction.create(activityReference, {
       aiReason: text(request.data?.explanation, 600) || "จัดเวลาจาก Adaptive AI และตรวจสอบตารางก่อนบันทึก",
       aiScheduled: true,
-      allowAiReschedule: true,
+      allowAiReschedule: !dateLocked,
       category: activityCategory,
       color: "#BB9293",
       ...(clientRequestId ? {clientRequestId} : {}),
@@ -2118,8 +2194,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       ...(deadlineMs === null ? {} : {deadline: Timestamp.fromMillis(deadlineMs)}),
       endAt: Timestamp.fromMillis(endMs),
       estimatedDurationMinutes: durationMinutes,
+      ...(fixedLocalDate ? {fixedLocalDate} : {}),
       isFlexible: true,
-      isLocked: false,
+      isLocked: dateLocked,
       location: "",
       ownerId: uid,
       priority: activity.priority,
@@ -2130,6 +2207,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       title,
       type: "task",
       updatedAt: FieldValue.serverTimestamp(),
+      userSelectedTime,
     });
       transaction.create(eventReference, {
       activityCategory,
@@ -2140,7 +2218,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       dayOfWeek: dayOfWeek(startMs, freshSetting.timeZone),
       estimatedDurationMinutes: durationMinutes,
       eventType: "task_created",
-      metadata: {adjustedAfterValidation: false, ...(clientRequestId ? {clientRequestId} : {})},
+      metadata: {adjustedAfterValidation: false, allowOverlap, conflictingItemCount: freshConflicts.length, userSelectedTime, ...(clientRequestId ? {clientRequestId} : {})},
       originalScheduledStart: Timestamp.fromMillis(startMs),
       ownerId: uid,
       scheduleItemId: activityReference.id,
@@ -2151,8 +2229,11 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     });
       return {
         adjusted: false,
+        conflicts: freshConflicts,
         endAt: new Date(endMs).toISOString(),
         id: activityReference.id,
+        requiresConflictConfirmation: false,
+        saved: true,
         startAt: new Date(startMs).toISOString(),
       };
     });

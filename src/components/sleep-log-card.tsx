@@ -1,8 +1,9 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Pressable, StyleSheet, Text, View} from 'react-native';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
+import NativeDateTimePicker from '@/components/date-time-picker';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {
   baselineNightHours,
@@ -47,6 +48,7 @@ export default function SleepLogCard({onLogged, uid, variant = 'full'}: {
   const [status, setStatus] = useState<Status>(null);
   const [bedtimeText, setBedtimeText] = useState('23:00');
   const [wakeText, setWakeText] = useState('07:00');
+  const [timePickerTarget, setTimePickerTarget] = useState<'bedtime' | 'wake' | null>(null);
   const [editing, setEditing] = useState(false);
   // A session the user forgot to close. It is asked about rather than silently
   // dropped, so the night is either corrected and counted or cleanly discarded.
@@ -83,6 +85,24 @@ export default function SleepLogCard({onLogged, uid, variant = 'full'}: {
     const wakeMinutes = parseClockMinutes(wakeText);
     return bedtimeMinutes === null || wakeMinutes === null ? null : baselineNightHours({bedtimeMinutes, wakeMinutes});
   }, [bedtimeText, wakeText]);
+
+  const pickerValue = (value: string) => {
+    const minutes = parseClockMinutes(value) ?? 0;
+    const result = new Date();
+    result.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return result;
+  };
+
+  const selectBaselineTime = (selectedDate?: Date) => {
+    if (!timePickerTarget || !selectedDate) {
+      setTimePickerTarget(null);
+      return;
+    }
+    const value = formatClockMinutes(selectedDate.getHours() * 60 + selectedDate.getMinutes());
+    if (timePickerTarget === 'bedtime') setBedtimeText(value);
+    else setWakeText(value);
+    setTimePickerTarget(null);
+  };
 
   const goToBed = async () => {
     if (busy) return;
@@ -233,14 +253,41 @@ export default function SleepLogCard({onLogged, uid, variant = 'full'}: {
         <View style={styles.fields}>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>เข้านอน</Text>
-            <TextInput keyboardType="numbers-and-punctuation" onChangeText={setBedtimeText} placeholder="23:00" placeholderTextColor="#a3a9a0" style={styles.input} value={bedtimeText} />
+            <Pressable
+              accessibilityLabel={`เลือกเวลาเข้านอน ปัจจุบัน ${bedtimeText} น.`}
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={() => setTimePickerTarget('bedtime')}
+              style={({pressed}) => [styles.timePickerButton, pressed && styles.pressed, busy && styles.disabled]}>
+              <MaterialIcon color={C.night} name="bedtime" size={16} />
+              <Text style={styles.timePickerValue}>{bedtimeText}</Text>
+              <MaterialIcon color={C.muted} name="expand_more" size={18} />
+            </Pressable>
           </View>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>ตื่นนอน</Text>
-            <TextInput keyboardType="numbers-and-punctuation" onChangeText={setWakeText} placeholder="07:00" placeholderTextColor="#a3a9a0" style={styles.input} value={wakeText} />
+            <Pressable
+              accessibilityLabel={`เลือกเวลาตื่นนอน ปัจจุบัน ${wakeText} น.`}
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={() => setTimePickerTarget('wake')}
+              style={({pressed}) => [styles.timePickerButton, pressed && styles.pressed, busy && styles.disabled]}>
+              <MaterialIcon color={C.sage} name="wb_sunny" size={16} />
+              <Text style={styles.timePickerValue}>{wakeText}</Text>
+              <MaterialIcon color={C.muted} name="expand_more" size={18} />
+            </Pressable>
           </View>
         </View>
-        <Text style={styles.baselineNote}>{draftHours === null ? 'กรอกเวลาแบบ HH:MM ให้ได้ช่วงยาว 2-14 ชั่วโมง' : `ได้ช่วงนอน ${draftHours} ชั่วโมงต่อคืน`}</Text>
+        {timePickerTarget ? <NativeDateTimePicker
+          accentColor={C.dark}
+          is24Hour
+          mode="time"
+          onDismiss={() => setTimePickerTarget(null)}
+          onValueChange={(_, selectedDate) => selectBaselineTime(selectedDate)}
+          presentation="dialog"
+          value={pickerValue(timePickerTarget === 'bedtime' ? bedtimeText : wakeText)}
+        /> : null}
+        <Text style={styles.baselineNote}>{draftHours === null ? 'เลือกเวลาให้ได้ช่วงนอนยาว 2-14 ชั่วโมง' : `ได้ช่วงนอน ${draftHours} ชั่วโมงต่อคืน`}</Text>
         <Pressable disabled={busy} onPress={saveBaseline} style={({pressed}) => [styles.save, pressed && styles.pressed, busy && styles.disabled]}>
           <Text style={styles.saveText}>{busy ? 'กำลังบันทึก...' : 'บันทึกช่วงนอนปกติ'}</Text>
         </Pressable>
@@ -304,7 +351,6 @@ const styles = StyleSheet.create({
   fields: {flexDirection: 'row', gap: 9, marginTop: 8},
   head: {alignItems: 'center', flexDirection: 'row', gap: 10},
   icon: {alignItems: 'center', backgroundColor: C.nightSoft, borderRadius: 13, height: 40, justifyContent: 'center', width: 40},
-  input: {backgroundColor: '#f8faf5', borderColor: 'rgba(44,52,27,.12)', borderRadius: 11, borderWidth: 1, color: C.pine, fontFamily: F.m, fontSize: 12, minHeight: 42, paddingHorizontal: 11},
   link: {color: C.dark, fontFamily: F.s, fontSize: 9},
   openRow: {alignItems: 'center', backgroundColor: C.nightSoft, borderRadius: 11, flexDirection: 'row', gap: 7, marginTop: 11, padding: 9},
   openText: {color: '#4a5175', flex: 1, fontFamily: F.m, fontSize: 9, lineHeight: 14},
@@ -324,5 +370,7 @@ const styles = StyleSheet.create({
   statusTextError: {color: C.danger},
   subtitle: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 1},
   title: {color: C.pine, fontFamily: F.b, fontSize: 14},
+  timePickerButton: {alignItems: 'center', backgroundColor: '#f8faf5', borderColor: 'rgba(44,52,27,.12)', borderRadius: 11, borderWidth: 1, flexDirection: 'row', gap: 7, minHeight: 44, paddingHorizontal: 11},
+  timePickerValue: {color: C.pine, flex: 1, fontFamily: F.s, fontSize: 13},
   wake: {backgroundColor: C.sage},
 });

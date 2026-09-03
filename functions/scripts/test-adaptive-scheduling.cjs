@@ -4,6 +4,7 @@ const {
   DEFAULT_ADAPTIVE_PREFERENCES,
   calculateSchedulingPatterns,
   findAdaptiveTimeSlots,
+  overlappingScheduleItems,
   validateCandidateSlot,
   validateMovableScheduleItem,
   zonedDayStart,
@@ -49,12 +50,35 @@ assert.equal(newYorkNextDay - newYorkDstStart, 23 * 60 * minute, 'day ranges mus
 const conflictStart = ms('2026-08-05T13:00:00+07:00');
 const conflictRequest = request({scheduleItems: [{category: 'study', endMs: conflictStart + 60 * minute, id: 'fixed-class', isDifficult: true, isFixed: true, startMs: conflictStart}]});
 assert.equal(validateCandidateSlot(conflictRequest, conflictStart, conflictStart + 60 * minute).code, 'conflict', 'fixed events must block overlapping slots');
+assert.equal(overlappingScheduleItems(conflictStart, conflictStart + 60 * minute, conflictRequest.scheduleItems).length, 1, 'the warning UI must receive the exact overlapping item');
+assert.equal(validateCandidateSlot(conflictRequest, conflictStart, conflictStart + 60 * minute, {allowConflicts: true}).ok, true, 'an explicitly confirmed concurrent activity must be saveable');
+assert.equal(overlappingScheduleItems(conflictStart + 60 * minute, conflictStart + 120 * minute, conflictRequest.scheduleItems).length, 0, 'adjacent events are not overlapping events');
 
 const deadlineRequest = request({deadlineMs: ms('2026-08-05T15:00:00+07:00')});
 assert.equal(validateCandidateSlot(deadlineRequest, ms('2026-08-05T14:30:00+07:00'), ms('2026-08-05T15:30:00+07:00')).code, 'deadline');
 
 const sleepRequest = request();
 assert.equal(validateCandidateSlot(sleepRequest, ms('2026-08-05T23:10:00+07:00'), ms('2026-08-05T23:40:00+07:00')).code, 'outside_availability');
+
+const explicitLateNightRequest = request({
+  allowOutsideAvailability: true,
+  earliestStartMs: ms('2026-08-06T00:00:00+07:00'),
+  latestEndMs: ms('2026-08-06T05:00:00+07:00'),
+  requiredLocalDate: '2026-08-06',
+  requiredLocalTimeWindow: {endTime: '05:00', startTime: '00:00'},
+});
+const lateNightSlots = findAdaptiveTimeSlots(explicitLateNightRequest, 8);
+assert.ok(lateNightSlots.length > 0, 'an explicit late-night request must be usable between midnight and 05:00');
+assert.ok(lateNightSlots.every((slot) => {
+  const hour = Number(new Intl.DateTimeFormat('en-US', {hour: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(new Date(slot.startMs))) % 24;
+  return hour >= 0 && hour < 5;
+}), 'late-night results must stay inside the requested 00:00-05:00 window');
+
+const automaticLateNightRequest = request({
+  earliestStartMs: ms('2026-08-06T00:00:00+07:00'),
+  latestEndMs: ms('2026-08-06T05:00:00+07:00'),
+});
+assert.equal(findAdaptiveTimeSlots(automaticLateNightRequest, 8).length, 0, 'automatic scheduling must still protect the default sleep window');
 
 const boundedRequest = request({earliestStartMs: ms('2026-08-05T10:00:00+07:00'), latestEndMs: ms('2026-08-05T18:00:00+07:00')});
 assert.equal(validateCandidateSlot(boundedRequest, ms('2026-08-05T09:00:00+07:00'), ms('2026-08-05T10:00:00+07:00')).code, 'outside_availability', 'server validation must reject a slot before the verified search window');
@@ -67,9 +91,15 @@ assert.equal(validateCandidateSlot(breakRequest, ms('2026-08-05T13:05:00+07:00')
 
 const unavailableRequest = request({preferences: preferences({unavailablePeriods: [{days: [3], endTime: '16:00', startTime: '14:00'}]})});
 assert.equal(validateCandidateSlot(unavailableRequest, ms('2026-08-05T14:30:00+07:00'), ms('2026-08-05T15:30:00+07:00')).code, 'outside_availability');
+assert.equal(validateCandidateSlot(unavailableRequest, ms('2026-08-05T14:30:00+07:00'), ms('2026-08-05T15:30:00+07:00'), {userSelectedTime: true}).ok, true, 'a time explicitly selected by the user must override soft availability preferences');
 
 const overloadRequest = request({durationMinutes: 90, preferences: preferences({maximumDailyWorkMinutes: 120}), scheduleItems: [{category: 'assignment', endMs: ms('2026-08-05T10:00:00+07:00'), id: 'work', isDifficult: true, isFixed: true, startMs: ms('2026-08-05T09:00:00+07:00')}]});
 assert.equal(validateCandidateSlot(overloadRequest, ms('2026-08-05T15:00:00+07:00'), ms('2026-08-05T16:30:00+07:00')).code, 'overload');
+assert.equal(validateCandidateSlot(overloadRequest, ms('2026-08-05T15:00:00+07:00'), ms('2026-08-05T16:30:00+07:00'), {userSelectedTime: true}).ok, true, 'a user-selected time must override the AI workload recommendation');
+
+const tentativeSuggestionRequest = request({scheduleItems: [{category: 'reading', endMs: conflictStart + 60 * minute, id: 'suggestion-pending', isDifficult: false, isFixed: true, startMs: conflictStart}]});
+assert.equal(validateCandidateSlot(tentativeSuggestionRequest, conflictStart, conflictStart + 60 * minute, {userSelectedTime: true}).ok, true, 'a pending AI suggestion must not block an explicit user choice');
+assert.equal(validateCandidateSlot(conflictRequest, conflictStart, conflictStart + 60 * minute, {userSelectedTime: true}).code, 'conflict', 'an explicit user choice must still reject a real calendar conflict');
 
 const explicitPreferenceRequest = request({
   patterns: [{activityCategory: 'study', averageDurationMinutes: 60, averageStartDelayMinutes: 0, completionRate: 1, confidenceLevel: 'high', confidenceScore: .95, dayOfWeek: 3, observationCount: 20, postponementRate: 0, preferredEndHour: 10, preferredStartHour: 8, suggestionAcceptanceRate: .8}],
@@ -372,6 +402,37 @@ assert.ok(bangkokHour(offered.slot.startMs) >= 13 && bangkokHour(offered.slot.st
   'the first relaxation is the surrounding part of day, so 3pm falls back inside the afternoon');
 assert.ok(offered.slot.startMs + 60 * minute <= classStart, 'the alternative must not overlap the class');
 
+const saturdayBirthday = request({
+  category: 'other',
+  earliestStartMs: ms('2026-08-08T06:00:00+07:00'),
+  latestEndMs: ms('2026-08-09T23:00:00+07:00'),
+  preferences: preferences({availableDays: [1, 2, 3, 4, 5]}),
+  requiredLocalDate: '2026-08-08',
+  scheduleItems: [{category: 'study', endMs: ms('2026-08-08T12:00:00+07:00'), id: 'morning-class', isDifficult: true, isFixed: true, startMs: ms('2026-08-08T09:00:00+07:00')}],
+});
+const birthdaySlot = nearestAvailableSlot(saturdayBirthday, noIntent);
+assert.ok(birthdaySlot.slot, 'a birthday on a normally unavailable weekday must still find a free hour on its explicit date');
+assert.equal(bangkokDate(birthdaySlot.slot.startMs), '2026-08-08', 'a birthday must stay on the date the user supplied');
+assert.ok(birthdaySlot.slot.endMs <= ms('2026-08-09T00:00:00+07:00'), 'the birthday activity must not spill into another date');
+
+const farFutureMilestone = nearestAvailableSlot(request({
+  category: 'other',
+  earliestStartMs: ms('2031-10-10T00:00:00+07:00'),
+  latestEndMs: ms('2031-10-11T00:00:00+07:00'),
+  requiredLocalDate: '2031-10-10',
+}), noIntent);
+assert.ok(farFutureMilestone.slot, 'an explicitly dated milestone years away must still be schedulable');
+assert.equal(bangkokDate(farFutureMilestone.slot.startMs), '2031-10-10');
+
+const fullyBookedBirthday = nearestAvailableSlot(request({
+  category: 'other',
+  earliestStartMs: ms('2026-08-08T06:00:00+07:00'),
+  latestEndMs: ms('2026-08-10T23:00:00+07:00'),
+  requiredLocalDate: '2026-08-08',
+  scheduleItems: [{category: 'other', endMs: ms('2026-08-08T23:00:00+07:00'), id: 'booked-day', isDifficult: false, isFixed: true, startMs: ms('2026-08-08T06:00:00+07:00')}],
+}), noIntent);
+assert.equal(fullyBookedBirthday.slot, undefined, 'a fully booked birthday date must ask for another choice instead of moving the event to another day');
+
 // A request that simply succeeds must not be labelled as a fallback.
 const freeRequest = request({category: 'reading', requiredLocalDate: '2026-08-05', requiredLocalTimeWindow: {endTime: '14:00', startTime: '13:00'}});
 const direct = nearestAvailableSlot(freeRequest, noIntent);
@@ -453,6 +514,9 @@ assert.equal(mangaRepro.intent, 'create_activity');
 
 assert.equal(onDate('ซื้อมังงะ 1 ก.ย.').requestedLocalDate, '2026-09-01', 'the dotted abbreviation must read the same as the full month');
 assert.equal(onDate('ซื้อมังงะ 1 กันยายน').requestedLocalDate, '2026-09-01');
+const birthdayRepro = onDate('เพิ่มนัดหมาย วันที่10ตุลาไปวันเกิดเพื่อน', '2026-09-03');
+assert.equal(birthdayRepro.requestedLocalDate, '2026-10-10', 'a compact Thai birthday date must stay on the requested calendar day');
+assert.equal(birthdayRepro.intent, 'create_activity');
 assert.equal(onDate('ซื้อมังงะ 1/9').requestedLocalDate, '2026-09-01', 'Thai day/month order must not be read as month/day');
 assert.equal(onDate('ซื้อมังงะ 1/9/2569').requestedLocalDate, '2026-09-01', 'a Buddhist year must be converted, not treated as the far future');
 assert.equal(onDate('ซื้อมังงะ 1 ก.ย. ปี 69').requestedLocalDate, '2026-09-01', 'a two-digit Buddhist year behind a ปี marker must resolve');

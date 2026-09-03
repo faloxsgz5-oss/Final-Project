@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NativeDateTimePicker from '@/components/date-time-picker';
+import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
 import {ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -21,7 +22,7 @@ import {
 } from '@/services/assistant-conversation';
 import {classifyAssistantIntent} from '@/services/assistant-intent';
 import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
-import {assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
+import {assistantActionErrorMessage, assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
 import {calculateBurnoutDynamicInsight} from '@/services/dynamic-insights';
 import {baselineNightHours, loadSleepBaseline} from '@/services/sleep-log';
 import RiskMeter from '@/components/risk-meter';
@@ -37,7 +38,9 @@ import {
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {sanitizeAssistantMessages} from '@/services/assistant-message-sanitizer';
 import {transcribeAssistantAudio} from '@/services/assistant-voice';
-import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import {recordTaskCompleted} from '@/services/behavior-tracking';
+import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantPendingTaskShortcut, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import {activities, type ScheduleConflict} from '@/services/firestore';
 import type {Activity, Schedule, WithId} from '@/types/smartlife';
 import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
 
@@ -260,17 +263,21 @@ function actionDetails(action: AssistantProposedAction) {
 function MessageBubble({
   message,
   onAsk,
+  onCompleteTask,
   onConfirm,
   onFeedback,
   onReject,
   onSpeak,
   speaking,
   busy,
+  completingTaskId,
   savingActionId,
 }: {
   busy: boolean;
+  completingTaskId: string;
   message: AssistantChatMessage;
   onAsk: (message: string) => void;
+  onCompleteTask: (messageIdValue: string, task: AssistantPendingTaskShortcut) => void;
   onConfirm: (messageIdValue: string, action: AssistantProposedAction) => void;
   onFeedback: (message: AssistantChatMessage, rating: AssistantFeedbackRating) => void;
   onReject: (messageIdValue: string, action: AssistantProposedAction) => void;
@@ -292,6 +299,35 @@ function MessageBubble({
             onConfirm={(updatedAction) => onConfirm(message.id, updatedAction)}
             onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
           />
+        ) : null}
+        {!isUser && message.pendingTaskShortcuts?.length ? (
+          <View style={local.pendingTaskList}>
+            {message.pendingTaskShortcuts.map((task) => {
+              const completed = task.status === 'completed';
+              const completing = completingTaskId === task.id;
+              return (
+                <View key={task.id} style={local.pendingTaskRow}>
+                  <View style={local.pendingTaskCopy}>
+                    <Text numberOfLines={2} style={local.pendingTaskTitle}>{task.title}</Text>
+                    <Text style={local.pendingTaskDue}>{task.dueAt ? `กำหนด ${formatDate(task.dueAt)}` : 'ไม่ระบุกำหนด'}</Text>
+                  </View>
+                  <Pressable
+                    accessibilityLabel={completed ? `${task.title} เสร็จแล้ว` : `ทำเครื่องหมาย ${task.title} ว่าเสร็จแล้ว`}
+                    disabled={busy || Boolean(completingTaskId) || completed}
+                    onPress={() => onCompleteTask(message.id, task)}
+                    style={({pressed}) => [
+                      local.pendingTaskButton,
+                      completed && local.pendingTaskButtonDone,
+                      pressed && local.pressed,
+                      (busy || (Boolean(completingTaskId) && !completing) || completing) && local.disabled,
+                    ]}>
+                    {completing ? <ActivityIndicator color="#ffffff" size="small" /> : <MaterialIcon color={completed ? '#5b7c57' : '#ffffff'} name="check" size={15} />}
+                    <Text style={[local.pendingTaskButtonText, completed && local.pendingTaskButtonTextDone]}>{completed ? 'บันทึกแล้ว' : 'เสร็จแล้ว'}</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
         ) : null}
         {!isUser && message.suggestions?.length ? (
           <View style={local.suggestionList}>
@@ -400,6 +436,7 @@ function ActionCard({
         estimatedDurationMinutes: durationMinutes,
         generatedForTimeZone: scheduleTimeZone,
         startAt: startAt.toISOString(),
+        userSelectedTime: true,
       },
     };
   };
@@ -706,7 +743,7 @@ function ocrShortcutsKey(uid: string) {
 }
 
 function isAdaptiveSchedulingCommand(value: string) {
-  return /(หาเวลา(?:ให้|ทำ|อ่าน)|(?:ย้าย|เลื่อน|จัด|วาง|แบ่ง|แทรก).*(?:งาน|การบ้าน|อ่าน|เรียน|ออกกำลัง)|(?:งานค้าง|งานที่ยังไม่เสร็จ).*(?:ลง|ใส่|ย้าย|จัด).*(?:เวลาว่าง|ตาราง)|ตาราง.*(?:เบา|แน่น|ล้น)|(?:ช่วย)?จัด.*สัปดาห์|สัปดาห์.*(?:จัด|วาง|ปรับ)|สมดุล.*สัปดาห์|plan my|find time|move my unfinished|make tomorrow less busy|when am i most productive|productive|ประสิทธิภาพ|ช่วงไหน.*(?:ทำงาน|อ่าน|เรียน).*ดี|อย่า.*(?:จัด|วาง)|ไม่.*(?:จัด|วาง).*(?:เช้า|บ่าย|เย็น|ดึก)|do not schedule|always schedule|จัด.*(?:อ่าน|เรียน|ออกกำลัง|เขียนโปรแกรม).*(?:เช้า|บ่าย|เย็น|ดึก)|why.*move|ทำไม.*ย้าย)/i.test(value);
+  return /(หาเวลา(?:ให้|ทำ|อ่าน)|(?:ย้าย|เลื่อน|จัด|วาง|แบ่ง|แทรก).*(?:งาน|การบ้าน|อ่าน|เรียน|ออกกำลัง)|(?:จัด|วาง|เลื่อน|ย้าย|นัด).{0,100}(?:ช่วง(?:เช้า|สาย|บ่าย|เย็น|กลางคืน)|วัน(?:นี้|พรุ่งนี้|มะรืน|จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์)|เวลา\s*\d{1,2}(?::\d{2})?|\d{1,2}\s*(?:โมง|ทุ่ม))|(?:งานค้าง|งานที่ยังไม่เสร็จ).*(?:ลง|ใส่|ย้าย|จัด).*(?:เวลาว่าง|ตาราง)|ตาราง.*(?:เบา|แน่น|ล้น)|(?:ช่วย)?จัด.*สัปดาห์|สัปดาห์.*(?:จัด|วาง|ปรับ)|สมดุล.*สัปดาห์|plan my|find time|move my unfinished|make tomorrow less busy|when am i most productive|productive|ประสิทธิภาพ|ช่วงไหน.*(?:ทำงาน|อ่าน|เรียน).*ดี|อย่า.*(?:จัด|วาง)|ไม่.*(?:จัด|วาง).*(?:เช้า|บ่าย|เย็น|ดึก)|do not schedule|always schedule|จัด.*(?:อ่าน|เรียน|ออกกำลัง|เขียนโปรแกรม).*(?:เช้า|บ่าย|เย็น|ดึก)|why.*move|ทำไม.*ย้าย)/i.test(value);
 }
 
 function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantProposedAction {
@@ -716,8 +753,9 @@ function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantPr
     payload: {
       aiReason: proposal.explanation,
       aiScheduled: true,
-      allowAiReschedule: true,
+      allowAiReschedule: !proposal.dateLocked,
       category: proposal.activityCategory,
+      dateLocked: proposal.dateLocked,
       deadline: proposal.deadline,
       endAt: proposal.endAt,
       estimatedDurationMinutes: proposal.durationMinutes,
@@ -729,7 +767,9 @@ function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantPr
       type: 'task',
     },
     status: 'pending',
-    summary: `เพิ่มงานยืดหยุ่น "${proposal.title}" ลงช่วงว่างที่ AI ตรวจแล้ว`,
+    summary: proposal.dateLocked
+      ? `เพิ่มนัดหมาย "${proposal.title}" ในวันที่กำหนด โดยเลือกช่วงว่างที่ AI ตรวจแล้ว`
+      : `เพิ่มงานยืดหยุ่น "${proposal.title}" ลงช่วงว่างที่ AI ตรวจแล้ว`,
     type: 'create',
   };
 }
@@ -895,10 +935,12 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const inlineAdaptiveActionInFlightRef = useRef(false);
   const retryInlineAdaptiveActionRef = useRef<{action: () => Promise<unknown>; key: string; successMessage: string; title: string} | null>(null);
   const [busy, setBusy] = useState(false);
+  const [completingTaskId, setCompletingTaskId] = useState('');
   const [adaptiveActivationStatus, setAdaptiveActivationStatus] = useState<AsyncActionStatus>('idle');
   const [adaptiveActivationError, setAdaptiveActivationError] = useState('');
   const [confirmationActionStatus, setConfirmationActionStatus] = useState<AsyncActionStatus>('idle');
   const [confirmationActionError, setConfirmationActionError] = useState('');
+  const [pendingScheduleConflict, setPendingScheduleConflict] = useState<{action: Extract<AssistantProposedAction, {entity: 'schedule'}>; conflicts: ScheduleConflict[]; targetMessageId: string} | null>(null);
   const [pendingNavigationPage, setPendingNavigationPage] = useState('');
   const [savingActionId, setSavingActionId] = useState('');
   const [inlineAdaptiveBusyKey, setInlineAdaptiveBusyKey] = useState('');
@@ -1116,7 +1158,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const appendAssistant = (
     content: string,
     proposedAction?: AssistantProposedAction,
-    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'source' | 'suggestions'>> = {},
+    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'pendingTaskShortcuts' | 'source' | 'suggestions'>> = {},
     id = messageId('assistant'),
     state = conversationState,
   ) => {
@@ -1147,6 +1189,33 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       persistMessagePayload(updated);
       return updated;
     }));
+  };
+
+  const updatePendingTaskShortcutStatus = (targetMessageId: string, taskId: string, status: AssistantPendingTaskShortcut['status']) => {
+    setMessages((current) => current.map((message) => {
+      if (message.id !== targetMessageId || !message.pendingTaskShortcuts?.length) return message;
+      const updated = {
+        ...message,
+        pendingTaskShortcuts: message.pendingTaskShortcuts.map((task) => task.id === taskId ? {...task, status} : task),
+      };
+      persistMessagePayload(updated);
+      return updated;
+    }));
+  };
+
+  const completePendingTask = async (targetMessageId: string, task: AssistantPendingTaskShortcut) => {
+    if (busy || completingTaskId || task.status === 'completed') return;
+    setCompletingTaskId(task.id);
+    updatePendingTaskShortcutStatus(targetMessageId, task.id, 'completed');
+    try {
+      await activities.update(uid, task.id, {status: 'completed'});
+      void recordTaskCompleted(task.id);
+    } catch (error) {
+      updatePendingTaskShortcutStatus(targetMessageId, task.id, 'pending');
+      Alert.alert('อัปเดตงานไม่สำเร็จ', assistantErrorMessage(classifyAssistantError(error)));
+    } finally {
+      setCompletingTaskId('');
+    }
   };
 
   const rateAssistant = (target: AssistantChatMessage, rating: AssistantFeedbackRating) => {
@@ -1430,6 +1499,11 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setSavingActionId(action.id);
     try {
       const result = await confirmAssistantAction(uid, action);
+      if (action.entity === 'schedule' && 'requiresConflictConfirmation' in result && result.requiresConflictConfirmation) {
+        setPendingScheduleConflict({action, conflicts: result.conflicts, targetMessageId});
+        setConfirmationActionStatus('idle');
+        return;
+      }
       const stayInAssistant = action.entity === 'memory' || (action.entity === 'schedule' && action.payload.aiScheduled === true);
       updateActionStatus(targetMessageId, 'confirmed', action);
       appendAssistant(action.entity === 'memory'
@@ -1440,7 +1514,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setPendingNavigationPage(stayInAssistant ? '' : result.page);
       setConfirmationActionStatus('success');
     } catch (error) {
-      setConfirmationActionError(isAppCheckError(error) ? appCheckErrorMessage(error) : 'ยังบันทึกไม่สำเร็จ ข้อมูลเดิมยังไม่เปลี่ยน กรุณาลองอีกครั้งได้เลย');
+      setConfirmationActionError(isAppCheckError(error) ? appCheckErrorMessage(error) : assistantActionErrorMessage(error));
       setConfirmationActionStatus('error');
     } finally {
       confirmActionInFlightRef.current = false;
@@ -1783,6 +1857,21 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         successMessage="ตรวจสอบและบันทึกเรียบร้อยแล้ว"
         title={confirmationActionStatus === 'success' ? 'บันทึกสำเร็จ' : confirmationActionStatus === 'error' ? 'บันทึกไม่สำเร็จ' : 'กำลังยืนยันรายการ'}
       />
+      <ScheduleConflictDialog
+        conflicts={pendingScheduleConflict?.conflicts ?? []}
+        onConfirm={() => {
+          const pending = pendingScheduleConflict;
+          if (!pending) return;
+          setPendingScheduleConflict(null);
+          void confirmAction(pending.targetMessageId, {...pending.action, payload: {...pending.action.payload, allowOverlap: true}});
+        }}
+        onEdit={() => setPendingScheduleConflict(null)}
+        proposedEndAt={pendingScheduleConflict?.action.payload.endAt ?? pendingScheduleConflict?.action.payload.startAt ?? new Date().toISOString()}
+        proposedStartAt={pendingScheduleConflict?.action.payload.startAt ?? new Date().toISOString()}
+        saving={Boolean(savingActionId)}
+        timeZone={pendingScheduleConflict?.action.payload.generatedForTimeZone}
+        visible={Boolean(pendingScheduleConflict)}
+      />
       {/* Refactored UI: keep the floating composer above the software keyboard. */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
@@ -1865,7 +1954,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} />
+              <MessageBubble busy={busy} completingTaskId={completingTaskId} key={message.id} message={message} onAsk={sendMessage} onCompleteTask={(messageIdValue, task) => void completePendingTask(messageIdValue, task)} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} />
             ))}
             <InlineAdaptivePanel
               busyKey={inlineAdaptiveBusyKey}
@@ -2206,6 +2295,15 @@ const local = StyleSheet.create({
   modalSheet: {backgroundColor: '#ffffff', borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingBottom: 24, paddingHorizontal: 18, paddingTop: 10},
   modalTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 18},
   pressed: {opacity: .7, transform: [{translateY: -1}]},
+  pendingTaskButton: {alignItems: 'center', backgroundColor: '#5d8059', borderRadius: 12, flexDirection: 'row', gap: 5, justifyContent: 'center', minHeight: 38, paddingHorizontal: 10},
+  pendingTaskButtonDone: {backgroundColor: '#e8f1e5', borderColor: '#cdddc9', borderWidth: 1},
+  pendingTaskButtonText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 10},
+  pendingTaskButtonTextDone: {color: '#5b7c57'},
+  pendingTaskCopy: {flex: 1, minWidth: 0},
+  pendingTaskDue: {color: '#7f8a7a', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 2},
+  pendingTaskList: {gap: 7, marginTop: 10},
+  pendingTaskRow: {alignItems: 'center', backgroundColor: '#f5f8f2', borderColor: '#e0e8dc', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 9, padding: 9},
+  pendingTaskTitle: {color: '#33412e', fontFamily: 'Prompt_700Bold', fontSize: 11, lineHeight: 16},
   quickAddCopy: {flex: 1, minWidth: 0},
   quickAddBack: {alignItems: 'center', backgroundColor: '#edf4ea', borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
   quickAddCategoryHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},

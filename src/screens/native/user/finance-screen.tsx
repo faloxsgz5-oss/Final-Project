@@ -2,6 +2,7 @@
 import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {SpendingCharts} from '@/components/spending-charts';
 
 import {thailandRange} from '@/lib/thailand-time';
 import {calculateDailyAllowance, calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
@@ -165,6 +166,8 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
           <MaterialIcon color={C.muted} name="chevron_right" size={20} />
         </Pressable> : null}
         <View style={styles.summaryRow}>{filter === 'income' ? <><Summary amount={income} icon="north" label="รับแล้ว" tone="income" /><Summary amount={Math.max(0, income - shown.reduce((sum, item) => sum + Number(item.amount ?? 0), 0))} icon="schedule" label="รอรับ" tone="neutral" /></> : filter === 'expense' ? <><Summary amount={expense} icon="south" label="ใช้ไปแล้ว" tone="expense" /><Summary amount={Math.max(0, balance)} icon="schedule" label="เหลือ" tone="neutral" /></> : <><Summary amount={income} icon="north" label="รายรับ" tone="income" /><Summary amount={expense} icon="south" label="รายจ่าย" tone="expense" /></>}</View>
+
+        {period !== 'day' ? <SpendingCharts period={period} referenceDate={referenceDate} transactions={all} /> : null}
 
         <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.menuCard, {backgroundColor: '#faecea', marginTop: 16}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#d89182'}]}><MaterialIcon color="#fff" name="savings" size={20} /></View>

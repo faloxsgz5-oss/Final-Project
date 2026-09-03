@@ -2,8 +2,10 @@ import {useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 import NativeDateTimePicker from '@/components/date-time-picker';
+import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
 
 import {runLegacyDataAction} from '@/services/legacy-data';
+import {findScheduleConflicts, type ScheduleConflict} from '@/services/firestore';
 import {getActivitySuggestions, recommendationLevel, type ActivitySuggestion} from '@/services/smartlife-recommendations';
 import {Card, MaterialIcon, PrimaryButton, UserHeader, UserShell, type UserNavigate, userStyles} from './user-ui';
 
@@ -105,6 +107,7 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   const [color, setColor] = useState(colors[0]);
   const [aiSuggestions, setAiSuggestions] = useState<ActivitySuggestion[]>([]);
   const [loadingAiSuggestions, setLoadingAiSuggestions] = useState(false);
+  const [pendingConflictSave, setPendingConflictSave] = useState<{conflicts: ScheduleConflict[]; endAt: string; payload: Record<string, unknown>; startAt: string} | null>(null);
   const [saving, setSaving] = useState(false);
   const isTransaction = form.action === 'create-transaction';
   const copy = activityCopy[isTransaction ? 'activity' : activityType];
@@ -128,6 +131,26 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     };
   }, [formMode, isTransaction, uid]);
 
+  const commitPayload = async (payload: Record<string, unknown>) => {
+    setSaving(true);
+    try {
+      await runLegacyDataAction(uid, `user/${page}`, {action: form.action, payload});
+    } catch (error) {
+      Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    setPendingConflictSave(null);
+    Alert.alert(
+      'บันทึกสำเร็จ',
+      isTransaction
+        ? `เพิ่ม${transactionType === 'income' ? 'รายรับ' : 'รายจ่าย'} ${Number(amount.replace(/,/g, '').trim()).toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
+        : `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`,
+    );
+    onNavigate(form.target);
+  };
+
   const save = async () => {
     if (!title.trim()) return Alert.alert('กรอกชื่อรายการก่อนบันทึก');
     const parsedAmount = Number(amount.replace(/,/g, '').trim());
@@ -143,12 +166,10 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     }
     const startDate = new Date(`${date}T${time}:00`);
     if (Number.isNaN(startDate.getTime())) return Alert.alert('ตรวจสอบวันที่และเวลาอีกครั้ง');
-    setSaving(true);
-    try {
-      const payload = isTransaction
-        ? {type: transactionType, amount: parsedAmount, merchant: title.trim(), category, note, occurredAt: startDate.toISOString()}
-        : {
-          title,
+    const payload: Record<string, unknown> = isTransaction
+      ? {type: transactionType, amount: parsedAmount, merchant: title.trim(), category, note, occurredAt: startDate.toISOString()}
+      : {
+           title,
           type: entryMode === 'reminder' ? 'task' : activityType,
           location,
           color,
@@ -160,20 +181,24 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
           startAt: startDate.toISOString(),
           endAt: new Date(startDate.getTime() + durationMinutes * 60 * 1000).toISOString(),
         };
-      await runLegacyDataAction(uid, `user/${page}`, {action: form.action, payload});
-    } catch (error) {
-      Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+    if (!isTransaction) {
+      const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+      setSaving(true);
+      try {
+        const conflicts = await findScheduleConflicts(uid, startDate, endDate);
+        if (conflicts.length) {
+          setPendingConflictSave({conflicts, endAt: endDate.toISOString(), payload, startAt: startDate.toISOString()});
+          setSaving(false);
+          return;
+        }
+      } catch (error) {
+        Alert.alert('ตรวจสอบตารางไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+        setSaving(false);
+        return;
+      }
       setSaving(false);
-      return;
     }
-    setSaving(false);
-    Alert.alert(
-      'บันทึกสำเร็จ',
-      isTransaction
-        ? `เพิ่ม${transactionType === 'income' ? 'รายรับ' : 'รายจ่าย'} ${parsedAmount.toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
-        : `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`,
-    );
-    onNavigate(form.target);
+    await commitPayload(payload);
   };
 
   const useSuggestion = (suggestion: ActivitySuggestion) => {
@@ -263,6 +288,15 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
         <Pressable disabled={saving || !title.trim()} onPress={save} style={[styles.saveShell, (saving || !title.trim()) && styles.disabled]}><LinearGradient colors={['#6f966f', '#476d43']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : entryMode === 'reminder' ? 'บันทึกการเตือน' : copy.save}</Text></LinearGradient></Pressable>
       </>}
     </View>
+    <ScheduleConflictDialog
+      conflicts={pendingConflictSave?.conflicts ?? []}
+      onConfirm={() => pendingConflictSave ? void commitPayload(pendingConflictSave.payload) : undefined}
+      onEdit={() => setPendingConflictSave(null)}
+      proposedEndAt={pendingConflictSave?.endAt ?? new Date().toISOString()}
+      proposedStartAt={pendingConflictSave?.startAt ?? new Date().toISOString()}
+      saving={saving}
+      visible={Boolean(pendingConflictSave)}
+    />
   </UserShell>;
 
   /* Kept temporarily unreachable while the redesigned form is validated against the same save pipeline. */

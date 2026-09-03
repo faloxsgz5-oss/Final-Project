@@ -7,6 +7,7 @@ import {PlainDateTimeField} from '@/components/date-time-picker';
 import {appCheckErrorMessage, isAppCheckError} from '@/lib/app-check';
 import {
   adaptiveScheduling,
+  type AdaptiveCreateConflict,
   type AdaptiveDashboard,
   type AdaptiveHistory,
   type AdaptivePattern,
@@ -14,6 +15,7 @@ import {
   type AdaptiveProposedActivity,
   type AdaptiveSuggestion,
 } from '@/services/adaptive-scheduling';
+import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
 import {MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 import {registerAdaptivePushNotifications} from '@/services/push-notifications';
 
@@ -23,10 +25,11 @@ type Planner = {activeTab: PlannerTab; onTabChange: (tab: PlannerTab) => void};
 type ConfirmationFlow = {
   adjusted?: boolean;
   clientRequestId?: string;
+  conflicts?: AdaptiveCreateConflict[];
   error?: string;
   proposal: AdaptiveProposedActivity | null;
   savedStartAt?: string;
-  stage: 'analyzing' | 'confirm' | 'error' | 'saving' | 'success';
+  stage: 'analyzing' | 'confirm' | 'conflict' | 'error' | 'saving' | 'success';
 };
 type ActionFeedback = {
   error?: string;
@@ -227,6 +230,10 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
     setConfirmationFlow({clientRequestId, proposal, stage: 'saving'});
     try {
       const result = await adaptiveScheduling.createActivity(proposal, clientRequestId);
+      if (!result.saved) {
+        setConfirmationFlow({clientRequestId, conflicts: result.conflicts, proposal, stage: 'conflict'});
+        return;
+      }
       setCommand('');
       await load();
       setConfirmationFlow({adjusted: result.adjusted, clientRequestId, proposal, savedStartAt: result.startAt, stage: 'success'});
@@ -384,7 +391,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
         <Section title="ประวัติการปรับตาราง" subtitle="บอกว่าใครเปลี่ยน เหตุผล เวลาเดิม/ใหม่ และสถานะการซิงก์"><View style={styles.historyFilters}>{([['all', 'ทั้งหมด'], ['user', 'ยืนยันโดยคุณ'], ['ai', 'คำแนะนำ AI'], ['automatic', 'อัตโนมัติ'], ['errors', 'ซิงก์ผิดพลาด']] as [HistoryFilter, string][]).map(([key, label]) => <Pressable accessibilityRole="button" accessibilityState={{selected: historyFilter === key}} key={key} onPress={() => setHistoryFilter(key)} style={[styles.historyFilter, historyFilter === key && styles.historyFilterActive]}><Text style={[styles.historyFilterText, historyFilter === key && styles.historyFilterTextActive]}>{label}</Text></Pressable>)}</View><View style={styles.historyList}>{filteredHistory.length ? filteredHistory.map((item) => <ActivityLogItem busy={busy} item={item} key={item.id} now={Math.max(loadedAt, clockNow)} onUndo={() => void act(`undo-${item.id}`, () => adaptiveScheduling.undo(item.id), 'คืนเวลาเดิมแล้ว')} />) : <Empty label={dashboard.history.length ? 'ไม่มีประวัติในตัวกรองนี้' : 'ยังไม่มีการเปลี่ยนตารางจากคำแนะนำ'} />}</View></Section>
       </> : null}
     </View>
-    <Modal animationType="fade" onRequestClose={() => confirmationFlow?.stage !== 'saving' && confirmationFlow?.stage !== 'analyzing' ? setConfirmationFlow(null) : undefined} transparent visible={Boolean(confirmationFlow)}>
+    <Modal animationType="fade" onRequestClose={() => confirmationFlow?.stage !== 'saving' && confirmationFlow?.stage !== 'analyzing' ? setConfirmationFlow(null) : undefined} transparent visible={Boolean(confirmationFlow) && confirmationFlow?.stage !== 'conflict'}>
       <View style={styles.flowOverlay}>
         <View style={styles.flowCard}>
           {confirmationFlow?.stage === 'analyzing' ? <FlowLoading icon="auto_awesome" label="กำลังตรวจช่วงว่างและเงื่อนไขในตาราง..." title="Adaptive AI กำลังวางแผน" /> : null}
@@ -446,6 +453,26 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
         </View>
       </View>
     </Modal>
+    <ScheduleConflictDialog
+      conflicts={confirmationFlow?.conflicts ?? []}
+      onConfirm={() => confirmationFlow?.proposal ? void saveProposedActivity({...confirmationFlow.proposal, allowOverlap: true}, confirmationFlow.clientRequestId) : undefined}
+      onEdit={() => {
+        if (!confirmationFlow?.proposal) return setConfirmationFlow(null);
+        const timeZone = resolveTimeZone(confirmationFlow.proposal.generatedForTimeZone, dashboard?.preferences.timeZone);
+        const [datePart = '', timePart = ''] = localInput(confirmationFlow.proposal.startAt, timeZone).split(' ');
+        setProposalDateDraft(datePart);
+        setProposalTimeDraft(timePart);
+        setProposalDurationDraft(String(confirmationFlow.proposal.durationMinutes));
+        setProposalEditorError('');
+        setProposalEditorOpen(true);
+        setConfirmationFlow({...confirmationFlow, stage: 'confirm'});
+      }}
+      proposedEndAt={confirmationFlow?.proposal?.endAt ?? confirmationFlow?.proposal?.startAt ?? new Date().toISOString()}
+      proposedStartAt={confirmationFlow?.proposal?.startAt ?? new Date().toISOString()}
+      saving={confirmationFlow?.stage === 'saving'}
+      timeZone={confirmationFlow?.proposal?.generatedForTimeZone}
+      visible={confirmationFlow?.stage === 'conflict'}
+    />
   </UserShell>;
 }
 

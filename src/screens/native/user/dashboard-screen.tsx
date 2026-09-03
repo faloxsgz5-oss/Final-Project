@@ -4,6 +4,7 @@ import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSh
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import SleepLogCard from '@/components/sleep-log-card';
+import {SpendingDonut} from '@/components/spending-charts';
 import {LinearGradient} from 'expo-linear-gradient';
 import {Timestamp} from 'firebase/firestore';
 
@@ -13,6 +14,7 @@ import {loadMonthlyBudget} from '@/services/monthly-budget';
 import {buildNotificationFeed, isRankable, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
 import {recordTaskCompleted} from '@/services/behavior-tracking';
+import {aggregateSpending, type SpendingTransactionInput} from '@/services/spending-analytics';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 
 /**
@@ -50,14 +52,17 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const [allowance, setAllowance] = useState<DailyAllowance | null>(null);
   const [budgetAmount, setBudgetAmount] = useState(0);
   const [monthTransactions, setMonthTransactions] = useState<{amount: number; occurredAt: never; type: 'expense' | 'income'}[]>([]);
+  const [weekTransactions, setWeekTransactions] = useState<SpendingTransactionInput[]>([]);
   // `user/index` is a one-day window, so its transactions cannot answer what is
   // left of the monthly limit. The month's spending and the saved limit are
   // fetched alongside it, and neither failing may stop the dashboard loading.
   const load = useCallback(async () => {
-    const [pageData, monthData, savedBudget] = await Promise.all([
+    const [pageData, monthData, weekData, savedBudget] = await Promise.all([
       loadLegacyPageData(uid, 'user/index') as Promise<Item>,
       (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>)
         .catch((error) => { console.error('[Dashboard] Month transactions load failed', error); return null; }),
+      (loadLegacyPageData(uid, 'user/smartlife_finance_week') as Promise<{transactions?: unknown}>)
+        .catch((error) => { console.error('[Dashboard] Week transactions load failed', error); return null; }),
       loadMonthlyBudget(uid).catch((error) => { console.error('[Dashboard] Saved budget load failed', error); return null; }),
     ]);
     const monthly = savedBudget?.amount ?? 0;
@@ -66,6 +71,12 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
       occurredAt: item.occurredAt as never,
       type: item.type === 'income' ? 'income' as const : 'expense' as const,
     }));
+    setWeekTransactions(items(weekData?.transactions).map((item) => ({
+      amount: item.amount,
+      category: string(item, 'category', 'อื่น ๆ'),
+      occurredAt: item.occurredAt,
+      type: item.type,
+    })));
     setBudgetAmount(monthly);
     setMonthTransactions(spending);
     setAllowance(calculateDailyAllowance({monthlyBudget: monthly, transactions: spending}));
@@ -92,6 +103,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const activities = useMemo(() => items(data?.activities), [data]);
   const notes = useMemo(() => items(data?.notes), [data]);
   const transactions = useMemo(() => items(data?.transactions), [data]);
+  const weeklySpending = useMemo(() => aggregateSpending(weekTransactions, 'week'), [weekTransactions]);
   const notifications = useMemo(() => items(data?.notifications), [data]);
   // The badge counts what is true right now: derived alerts while their
   // condition holds, plus stored notifications that are genuinely unread. It
@@ -188,6 +200,11 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
         </View>
 
         {notes[0] ? <SoftPress onPress={() => onNavigate('smartlife_notes_study')} style={styles.noteLink}><View style={styles.noteIcon}><MaterialIcon color={colors.note} name="note_alt" size={20} /></View><View style={{flex: 1}}><Text style={styles.noteEyebrow}>โน้ตที่เชื่อมกับตารางวันนี้</Text><Text numberOfLines={1} style={styles.noteTitle}>{string(notes[0], 'title')}</Text></View><MaterialIcon color={colors.sageDark} name="chevron_right" size={23} /></SoftPress> : null}
+
+        <View style={styles.weeklySpendingCard}>
+          <View style={styles.weeklySpendingHead}><View><Text style={styles.weeklySpendingEyebrow}>สรุปการใช้เงิน</Text><Text style={styles.weeklySpendingTitle}>รายจ่ายสัปดาห์นี้</Text></View><Pressable accessibilityLabel="ดูรายละเอียดรายจ่ายรายสัปดาห์" onPress={() => onNavigate('smartlife_finance_week')} style={styles.weeklySpendingLink}><Text style={styles.weeklySpendingLinkText}>ดูทั้งหมด</Text><MaterialIcon color={colors.sageDark} name="chevron_right" size={18} /></Pressable></View>
+          <SpendingDonut byCategory={weeklySpending.byCategory} compact total={weeklySpending.total} />
+        </View>
       </>}
     </ScrollView>
     <UserTabBar active="index" onNavigate={onNavigate} />
@@ -300,4 +317,10 @@ const styles = StyleSheet.create({
   unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 7},
   urgency: {backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4},
   urgencyText: {color: colors.note, fontFamily: font.semibold, fontSize: 8},
+  weeklySpendingCard: {...shadow, backgroundColor: '#fff', borderColor: 'rgba(111,143,109,.16)', borderRadius: 19, borderWidth: 1, marginBottom: 5, marginTop: 12, padding: 14},
+  weeklySpendingEyebrow: {color: colors.finance, fontFamily: font.bold, fontSize: 9},
+  weeklySpendingHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
+  weeklySpendingLink: {alignItems: 'center', flexDirection: 'row', gap: 2, paddingVertical: 5},
+  weeklySpendingLinkText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 9},
+  weeklySpendingTitle: {color: colors.pine, fontFamily: font.extra, fontSize: 15, marginTop: 1},
 });

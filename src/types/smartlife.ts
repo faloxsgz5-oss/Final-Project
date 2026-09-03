@@ -44,6 +44,7 @@ export type Activity = OwnedDocument & {
   deadline?: Timestamp | null;
   endAt: Timestamp;
   estimatedDurationMinutes?: number;
+  fixedLocalDate?: string;
   googleCalendarId?: string;
   googleEventId?: string;
   googleSyncStatus?: 'failed' | 'not_required' | 'pending' | 'synced';
@@ -60,6 +61,7 @@ export type Activity = OwnedDocument & {
   status: ActivityStatus;
   title: string;
   type: ActivityType;
+  userSelectedTime?: boolean;
 };
 
 export type Note = OwnedDocument & {
