@@ -4,7 +4,7 @@ import {getFunctions, httpsCallable} from 'firebase/functions';
 import {isDemoMode} from '@/lib/demo-mode';
 import {ensureAppCheckReady} from '@/lib/app-check';
 import {auth, firebaseApp} from '@/lib/firebase';
-import {thailandRange} from '@/lib/thailand-time';
+import {shiftDateKey, thailandAtHour, thailandRange, thailandDateKey, thailandDayStart, thailandTimeKey, thailandWallClockToDate, thailandWeekday} from '@/lib/thailand-time';
 import {
   explicitMutationClause,
   financeMutationKind,
@@ -175,27 +175,52 @@ const THAI_MONTHS: [RegExp, number][] = [
 
 function parseThaiNamedDate(message: string, now = new Date()) {
   for (const [monthPattern, monthIndex] of THAI_MONTHS) {
+    // The year group must not swallow the hour of a time that follows the
+    // month: in "1 มกราคม 09:00" it captured "09" and produced the year 2009.
+    // The lookahead rejects a number that runs on into more digits or into a
+    // clock separator, while still accepting a year at the end of a sentence
+    // ("1 มกราคม 2027.") and a year that is itself followed by a time.
     const match = message.match(
-      new RegExp(`(\\d{1,2})\\s*(${monthPattern.source})(?:\\s*(\\d{2,4}))?`, 'i'),
+      new RegExp(`(\\d{1,2})\\s*(${monthPattern.source})(?:\\s*(\\d{2,4})(?!\\d|[:.]\\d))?`, 'i'),
     );
     if (!match) continue;
 
-    let year = match[3] ? Number(match[3]) : now.getFullYear();
+    let year = match[3] ? Number(match[3]) : Number(thailandDateKey(now).slice(0, 4));
     if (year < 100) year += year >= 50 ? 2500 : 2000;
     if (year > 2400) year -= 543;
 
-    const date = new Date(year, monthIndex, Number(match[1]));
+    // "12 มีนาคม" names a day on a Thai calendar, so it resolves to midnight in
+    // Bangkok. `new Date(year, monthIndex, day)` resolves it to midnight on the
+    // device instead -- a different instant, and anywhere but UTC+7 a different
+    // day, while every screen renders the result in Bangkok.
+    const dayKey = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(Number(match[1])).padStart(2, '0')}`;
+    const date = thailandWallClockToDate(dayKey, '00:00');
     if (!Number.isNaN(date.getTime())) return date;
   }
   return null;
 }
 
+/**
+ * Turns "พรุ่งนี้บ่าย 3" into the instant it names.
+ *
+ * The day and the time are both wall clock as a user in Thailand means them,
+ * and every caller renders the result with `timeZone: 'Asia/Bangkok'`, so this
+ * works in Bangkok keys and converts once at the end. Building it with
+ * `new Date(y, m, d)` and `setHours` reads and writes the device's clock, which
+ * agrees with Bangkok only on a UTC+7 device -- the same bug the activity form
+ * had, and worse here, because "พรุ่งนี้" was resolved from the device's idea of
+ * what today is.
+ */
 function parseStartAt(message: string) {
   const now = new Date();
   const explicitDate = message.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/) ??
     message.match(/\b(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})\b/);
   const thaiNamedDate = parseThaiNamedDate(message, now);
-  let target = new Date(now);
+  const todayKey = thailandDateKey(now);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const at = (hour: number, minute: number) => `${pad(Math.max(0, Math.min(23, hour)))}:${pad(Math.max(0, Math.min(59, minute)))}`;
+  let dateKey = todayKey;
+  let timeKey = thailandTimeKey(now);
   if (explicitDate) {
     const isIso = explicitDate[0].includes('-') && explicitDate[1].length === 4;
     let year = Number(isIso ? explicitDate[1] : explicitDate[3]);
@@ -203,9 +228,9 @@ function parseStartAt(message: string) {
     const day = Number(isIso ? explicitDate[3] : explicitDate[1]);
     if (year < 100) year += 2000;
     if (year > 2400) year -= 543;
-    target = new Date(year, month - 1, day);
+    dateKey = `${year}-${pad(month)}-${pad(day)}`;
   } else if (thaiNamedDate) {
-    target = thaiNamedDate;
+    dateKey = thailandDateKey(thaiNamedDate);
   } else {
     const weekdayMatch = message.match(/วัน?(อาทิตย์|จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์)/i)?.[1];
     const weekdayIndexes: Record<string, number> = {
@@ -219,42 +244,33 @@ function parseStartAt(message: string) {
       เสาร์: 6,
     };
     if (weekdayMatch) {
-      let offset = (weekdayIndexes[weekdayMatch] - now.getDay() + 7) % 7;
+      let offset = (weekdayIndexes[weekdayMatch] - thailandWeekday(now) + 7) % 7;
       if (/สัปดาห์หน้า|อาทิตย์หน้า|วีคหน้า/i.test(message)) offset += 7;
-      target.setDate(now.getDate() + offset);
+      dateKey = shiftDateKey(todayKey, offset);
     } else {
       const dayOffset = /มะรืน/i.test(message) ? 2 : /พรุ่งนี้|tomorrow/i.test(message) ? 1 : 0;
-      target.setDate(now.getDate() + dayOffset);
+      dateKey = shiftDateKey(todayKey, dayOffset);
     }
   }
 
+  const half = /ครึ่ง/.test(message) ? 30 : 0;
   const explicit = message.match(/([01]?\d|2[0-3])[:.](\d{2})/);
-  if (explicit) {
-    target.setHours(Number(explicit[1]), Number(explicit[2]), 0, 0);
-    return target;
-  }
-  if (/เที่ยง/.test(message)) {
-    target.setHours(12, /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
-    return target;
-  }
-  if (/บ่าย/.test(message)) {
-    const hour = Number(message.match(/บ่าย\s*(\d)/)?.[1] ?? 1);
-    target.setHours(Math.min(23, hour + 12), /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
-    return target;
-  }
-  if (/เย็น/.test(message)) {
-    const hour = Number(message.match(/(\d{1,2})\s*(?:โมง)?\s*เย็น/)?.[1] ?? 5);
-    target.setHours(hour >= 12 ? hour : hour + 12, /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
-    return target;
-  }
   const evening = message.match(/(\d{1,2})\s*ทุ่ม/);
-  if (evening) {
-    target.setHours(Math.min(23, Number(evening[1]) + 18), /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
-    return target;
+  if (explicit) {
+    timeKey = at(Number(explicit[1]), Number(explicit[2]));
+  } else if (/เที่ยง/.test(message)) {
+    timeKey = at(12, half);
+  } else if (/บ่าย/.test(message)) {
+    timeKey = at(Number(message.match(/บ่าย\s*(\d)/)?.[1] ?? 1) + 12, half);
+  } else if (/เย็น/.test(message)) {
+    const hour = Number(message.match(/(\d{1,2})\s*(?:โมง)?\s*เย็น/)?.[1] ?? 5);
+    timeKey = at(hour >= 12 ? hour : hour + 12, half);
+  } else if (evening) {
+    timeKey = at(Number(evening[1]) + 18, half);
+  } else {
+    timeKey = at(Number(message.match(/(\d{1,2})\s*โมง/)?.[1] ?? 9), half);
   }
-  const hour = Number(message.match(/(\d{1,2})\s*โมง/)?.[1] ?? 9);
-  target.setHours(Math.min(23, hour), /ครึ่ง/.test(message) ? 30 : 0, 0, 0);
-  return target;
+  return thailandWallClockToDate(dateKey, timeKey);
 }
 
 function hasExplicitTime(message: string) {
@@ -269,10 +285,10 @@ function hasExplicitDate(message: string) {
 function parseEndAt(message: string, start: Date) {
   const range = message.match(/([01]?\d|2[0-3])[:.](\d{2})\s*(?:-|–|ถึง)\s*([01]?\d|2[0-3])[:.](\d{2})/);
   if (!range) return new Date(start.getTime() + 60 * 60 * 1000);
-  const end = new Date(start);
-  end.setHours(Number(range[3]), Number(range[4]), 0, 0);
-  if (end <= start) end.setDate(end.getDate() + 1);
-  return end;
+  // "13:00-15:00" is a Bangkok wall-clock range on the same Bangkok day as the
+  // start, rolling to the next one when the end reads earlier than the start.
+  const end = thailandAtHour(start, Number(range[3]), Number(range[4]));
+  return end <= start ? thailandAtHour(start, Number(range[3]), Number(range[4]), 1) : end;
 }
 
 function isAdviceOrLookupIntent(message: string) {
@@ -958,8 +974,8 @@ function noteDeadlineCandidate(note: WithId<Note>): TaskDeadlineCandidate | null
   }
   const hasTime = hasExplicitTime(text);
   const dueAt = parseStartAt(text);
-  if (!hasTime) dueAt.setHours(23, 59, 0, 0);
-  return {dueAt, hasTime, source: 'note', title: note.title};
+  // A deadline with no time given is the end of that day in Bangkok.
+  return {dueAt: hasTime ? dueAt : thailandAtHour(dueAt, 23, 59), hasTime, source: 'note', title: note.title};
 }
 
 function upcomingTaskCandidates(context: AssistantContext) {
@@ -1261,16 +1277,25 @@ function activityCalendarCategory(item: WithId<Activity>): CalendarCategory {
   return 'personal';
 }
 
+// A day the user names -- "2026-09-10", "10/9/2569", "10 กันยายน" -- is a day on
+// a Thai calendar, so it resolves to Bangkok midnight. `new Date(y, m, d)` gave
+// the device's midnight, and `calendarLookupRange` then bucketed that instant
+// back into a Bangkok day: off by one whenever the device sits far enough east
+// or west, which showed the wrong day's schedule.
+function bangkokDay(year: number, monthIndex: number, day: number) {
+  return thailandWallClockToDate(`${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`, '00:00');
+}
+
 function parseExplicitCalendarDate(message: string) {
   const iso = message.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
-  if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  if (iso) return bangkokDay(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
 
   const numeric = message.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
   if (numeric) {
     let year = Number(numeric[3]);
     if (year < 100) year += 2000;
     if (year >= 2400) year -= 543;
-    return new Date(year, Number(numeric[2]) - 1, Number(numeric[1]));
+    return bangkokDay(year, Number(numeric[2]) - 1, Number(numeric[1]));
   }
 
   const thaiMonths: Record<string, number> = {
@@ -1289,9 +1314,9 @@ function parseExplicitCalendarDate(message: string) {
   };
   const thaiDate = message.match(/(\d{1,2})\s*(มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)(?:\s*(\d{4}))?/i);
   if (!thaiDate) return null;
-  let year = thaiDate[3] ? Number(thaiDate[3]) : new Date().getFullYear();
+  let year = thaiDate[3] ? Number(thaiDate[3]) : Number(thailandDateKey().slice(0, 4));
   if (year >= 2400) year -= 543;
-  return new Date(year, thaiMonths[thaiDate[2]], Number(thaiDate[1]));
+  return bangkokDay(year, thaiMonths[thaiDate[2]], Number(thaiDate[1]));
 }
 
 function calendarLookupRange(message: string) {
@@ -1493,33 +1518,32 @@ function isActivityLookupIntent(message: string) {
   return hasActivityWord && asksForFact && !asksToWrite;
 }
 
+// "วันนี้" and "พรุ่งนี้" mean the Bangkok day, so every boundary here is a
+// Bangkok midnight. `setHours(0, 0, 0, 0)` put them on the device's midnight,
+// which on a device west of Bangkok answered "what's on today?" with the wrong
+// day's schedule.
 function activityRange(message: string) {
   const now = new Date();
-  const start = new Date(now);
-  const end = new Date(now);
+  let start = now;
+  let end = now;
   let label = 'ช่วง 7 วันข้างหน้า';
 
   if (/พรุ่งนี้/i.test(message)) {
-    start.setDate(start.getDate() + 1);
-    start.setHours(0, 0, 0, 0);
-    end.setTime(start.getTime());
-    end.setDate(end.getDate() + 1);
+    start = thailandDayStart(now, 1);
+    end = thailandDayStart(now, 2);
     label = 'พรุ่งนี้';
   } else if (/วันนี้/i.test(message)) {
-    start.setHours(0, 0, 0, 0);
-    end.setTime(start.getTime());
-    end.setDate(end.getDate() + 1);
+    start = thailandDayStart(now);
+    end = thailandDayStart(now, 1);
     label = 'วันนี้';
   } else if (/(เดือนนี้|เดือน)/i.test(message)) {
-    start.setHours(0, 0, 0, 0);
-    end.setTime(start.getTime());
-    end.setDate(end.getDate() + 30);
+    start = thailandDayStart(now);
+    end = thailandDayStart(now, 30);
     label = 'ช่วง 30 วันข้างหน้า';
   } else {
-    end.setDate(end.getDate() + 7);
+    end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     if (/(อื่น|อีก)/i.test(message)) {
-      start.setDate(start.getDate() + 1);
-      start.setHours(0, 0, 0, 0);
+      start = thailandDayStart(now, 1);
       label = 'ช่วงที่เหลือของ 7 วันข้างหน้า';
     }
   }
@@ -1622,9 +1646,7 @@ function requestedStudyStart(message: string, targetDate: Date) {
   if (/บ่าย/i.test(matchedText) && hour < 12) hour += 12;
   if (/(เย็น|ค่ำ)/i.test(matchedText) && hour < 12) hour += 12;
   if (hour > 23 || minute > 59) return null;
-  const start = new Date(targetDate);
-  start.setHours(hour, minute, 0, 0);
-  return start;
+  return thailandAtHour(targetDate, hour, minute);
 }
 
 function studyEventsForDate(date: Date, context: AssistantContext) {
@@ -1643,12 +1665,9 @@ function suggestedStudyDate(
   period: ReturnType<typeof requestedStudyPeriod>,
 ) {
   for (let offset = 0; offset < 7; offset += 1) {
-    const date = new Date(now);
-    date.setDate(date.getDate() + offset);
-    const windowStart = new Date(date);
-    windowStart.setHours(period?.startHour ?? 9, 0, 0, 0);
-    const windowEnd = new Date(date);
-    windowEnd.setHours(period?.endHour ?? 21, 0, 0, 0);
+    const date = thailandDayStart(now, offset);
+    const windowStart = thailandAtHour(now, period?.startHour ?? 9, 0, offset);
+    const windowEnd = thailandAtHour(now, period?.endHour ?? 21, 0, offset);
     let cursor = Math.max(windowStart.getTime(), offset === 0 ? now.getTime() : windowStart.getTime());
     const events = studyEventsForDate(date, context)
       .filter((item) => item.endAt.toMillis() > windowStart.getTime() && item.startAt.toMillis() < windowEnd.getTime());
@@ -1669,20 +1688,20 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
   const targetDate = /วันไหน/i.test(message)
     ? suggestedStudyDate(context, now, minimumMinutes, period)
     : new Date(now);
-  if (!/วันไหน/i.test(message) && /พรุ่งนี้/i.test(message)) targetDate.setDate(targetDate.getDate() + 1);
-  const explicitStart = requestedStudyStart(message, targetDate);
-  const dayStart = new Date(targetDate);
-  dayStart.setHours(period?.startHour ?? 9, 0, 0, 0);
-  const dayEnd = new Date(targetDate);
-  dayEnd.setHours(period?.endHour ?? 21, 0, 0, 0);
-  const targetsToday = sameThailandDay(targetDate, now);
+  const searchDate = !/วันไหน/i.test(message) && /พรุ่งนี้/i.test(message)
+    ? thailandDayStart(targetDate, 1)
+    : targetDate;
+  const explicitStart = requestedStudyStart(message, searchDate);
+  const dayStart = thailandAtHour(searchDate, period?.startHour ?? 9, 0);
+  const dayEnd = thailandAtHour(searchDate, period?.endHour ?? 21, 0);
+  const targetsToday = sameThailandDay(searchDate, now);
   let cursor = Math.max(dayStart.getTime(), targetsToday ? now.getTime() : dayStart.getTime());
   const gaps: {end: Date; start: Date}[] = [];
   const scheduleSource = targetsToday ? context.todaySchedules : context.upcomingSchedules;
   const activitySource = targetsToday ? context.todayActivities : context.upcomingActivities;
   const events = [
-    ...scheduleSource.filter((item) => sameThailandDay(item.startAt.toDate(), targetDate)),
-    ...activitySource.filter((item) => item.status !== 'cancelled' && sameThailandDay(item.startAt.toDate(), targetDate)),
+    ...scheduleSource.filter((item) => sameThailandDay(item.startAt.toDate(), searchDate)),
+    ...activitySource.filter((item) => item.status !== 'cancelled' && sameThailandDay(item.startAt.toDate(), searchDate)),
   ]
     .filter((item) => item.endAt.toMillis() > dayStart.getTime() && item.startAt.toMillis() < dayEnd.getTime())
     .sort((left, right) => left.startAt.toMillis() - right.startAt.toMillis());
@@ -1721,8 +1740,7 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
       ) return [];
       start = explicitStart;
     } else if (period) {
-      const preferredStart = new Date(targetDate);
-      preferredStart.setHours(period.preferredStartHour, 0, 0, 0);
+      const preferredStart = thailandAtHour(searchDate, period.preferredStartHour, 0);
       if (
         preferredStart.getTime() >= gap.start.getTime() &&
         preferredStart.getTime() + duration * 60_000 <= gap.end.getTime()
@@ -1743,7 +1761,7 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
   tomorrow.setDate(tomorrow.getDate() + 1);
   const dayWord = targetsToday
     ? 'วันนี้'
-    : sameThailandDay(targetDate, tomorrow)
+    : sameThailandDay(searchDate, tomorrow)
       ? 'พรุ่งนี้'
       : new Intl.DateTimeFormat('th-TH', {
         day: 'numeric',
@@ -1751,7 +1769,7 @@ function buildFreeTime(message: string, context: AssistantContext, preferences: 
         timeZone: THAI_TIME_ZONE,
         weekday: 'long',
         year: 'numeric',
-      }).format(targetDate);
+      }).format(searchDate);
   if (!slots.length) {
     const requestedText = explicitMinutes ? `${explicitMinutes} นาที` : `${targetMinutes} นาที`;
     return `${dayWord}${period ? `${period.label}` : ''}ยังไม่มีช่วงว่างต่อเนื่อง ${requestedText} ตามตารางที่บันทึกไว้ครับ ลองลดระยะเวลาหรือเลือกช่วงอื่น แล้วฉันจะหาเวลาให้ใหม่`;
@@ -2323,9 +2341,7 @@ export async function confirmAssistantAction(uid: string, action: AssistantPropo
   if (action.entity === 'checklist') {
     const startAt = new Date(action.payload.startAt);
     const ids = await Promise.all(action.payload.items.map((title, index) => {
-      const taskStart = new Date(startAt);
-      taskStart.setDate(taskStart.getDate() + index);
-      taskStart.setHours(9, 0, 0, 0);
+      const taskStart = thailandAtHour(startAt, 9, 0, index);
       const taskEnd = new Date(taskStart.getTime() + 60 * 60 * 1000);
       return activities.create(uid, {
         color: '#BB9293',
