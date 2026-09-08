@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {showToast} from '@/components/app-toast';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Modal,
   Pressable,
@@ -13,7 +14,7 @@ import {
   useWindowDimensions,
   type GestureResponderEvent,
 } from "react-native";
-import NativeDateTimePicker from "@expo/ui/community/datetime-picker";
+import NativeDateTimePicker from "@/components/date-time-picker";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
@@ -1075,6 +1076,8 @@ export default function ScanScreen({
   const [imageAspectRatio, setImageAspectRatio] = useState(1);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Holds the text of the "check before saving" prompt while it is open.
+  const [reviewPrompt, setReviewPrompt] = useState<string | null>(null);
   const [saveComplete, setSaveComplete] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<"end" | "start" | null>(
     null,
@@ -1145,12 +1148,9 @@ export default function ScanScreen({
           source,
           status: permission.status,
         });
-        Alert.alert(
-          "ต้องอนุญาตสิทธิ์",
-          permission.canAskAgain
+        showToast("ต้องอนุญาตสิทธิ์", permission.canAskAgain
             ? "กรุณาอนุญาตให้ SmartLife ใช้กล้องหรือคลังรูปภาพ"
-            : "กรุณาเปิดสิทธิ์ SmartLife จาก Settings > Apps > SmartLife > Permissions",
-        );
+            : "กรุณาเปิดสิทธิ์ SmartLife จาก Settings > Apps > SmartLife > Permissions");
         return;
       }
 
@@ -1238,7 +1238,7 @@ export default function ScanScreen({
         source,
       });
       showFeedback(null);
-      Alert.alert("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
+      showToast("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
     }
   };
 
@@ -1414,13 +1414,29 @@ export default function ScanScreen({
       });
       setSaving(false);
       showFeedback(null);
-      Alert.alert(
-        "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08",
-        message ||
-          "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07",
-      );
+      showToast("\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08", message ||
+          "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07");
     }
   };
+
+  // Rendered by both branches below, because the receipt dashboard returns
+  // early and the review gate belongs to whichever one is on screen.
+  const reviewDialog = (
+    <ConfirmDialog
+      confirmLabel="ตรวจสอบแล้ว บันทึก"
+      icon="save"
+      message={reviewPrompt ?? ""}
+      onCancel={() => setReviewPrompt(null)}
+      onConfirm={() => {
+        setReviewPrompt(null);
+        void persistOcrResult();
+      }}
+      cancelLabel="กลับไปตรวจสอบ"
+      title="ตรวจสอบข้อมูลก่อนบันทึก"
+      tone="neutral"
+      visible={Boolean(reviewPrompt)}
+    />
+  );
 
   const confirmAndSave = () => {
     if (!result || saving) return;
@@ -1435,34 +1451,31 @@ export default function ScanScreen({
           .filter((reason) => typeof reason === "string")
           .join("\n• ")
       : "";
-    Alert.alert(
-      "ตรวจสอบข้อมูลก่อนบันทึก",
+    // `Alert.alert` does nothing on react-native-web, so on web this review
+    // gate silently blocked the save instead of asking about it.
+    setReviewPrompt(
       `ระบบจะไม่บันทึกข้อมูลที่ไม่แน่นอนโดยอัตโนมัติ${
         reasons ? `\n\n• ${reasons}` : ""
       }\n\nหากตรวจสอบและแก้ไขข้อมูลแล้ว จึงยืนยันบันทึกได้`,
-      [
-        { style: "cancel", text: "กลับไปตรวจสอบ" },
-        {
-          onPress: () => void persistOcrResult(),
-          text: "ตรวจสอบแล้ว บันทึก",
-        },
-      ],
     );
   };
 
   if (page === "smartlife_scan_finance") {
     return (
-      <ReceiptScanDashboard
-        confirmAndSave={confirmAndSave}
-        draft={draft}
-        imageUri={imageUri}
-        onDraftChange={updateDraft}
-        onNavigate={onNavigate}
-        pick={pick}
-        result={result}
-        saving={saving}
-        updateReceiptItem={updateReceiptItem}
-      />
+      <>
+        <ReceiptScanDashboard
+          confirmAndSave={confirmAndSave}
+          draft={draft}
+          imageUri={imageUri}
+          onDraftChange={updateDraft}
+          onNavigate={onNavigate}
+          pick={pick}
+          result={result}
+          saving={saving}
+          updateReceiptItem={updateReceiptItem}
+        />
+        {reviewDialog}
+      </>
     );
   }
 
@@ -1995,10 +2008,7 @@ export default function ScanScreen({
               <Pressable
                 accessibilityLabel="ดูข้อความ OCR ทั้งหมด"
                 onPress={() =>
-                  Alert.alert(
-                    "ข้อความที่ OCR อ่านได้",
-                    rawOcrText.slice(0, 3000) || "ไม่มีข้อความ OCR",
-                  )
+                  showToast("ข้อความที่ OCR อ่านได้", rawOcrText.slice(0, 3000) || "ไม่มีข้อความ OCR")
                 }
                 style={localStyles.rawButton}
               >
@@ -2227,6 +2237,7 @@ export default function ScanScreen({
           onClose={() => setReceiptHtmlOpen(false)}
           visible={receiptHtmlOpen}
         />
+        {reviewDialog}
       </View>
     </UserShell>
   );

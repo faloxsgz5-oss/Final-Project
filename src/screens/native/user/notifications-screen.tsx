@@ -4,6 +4,9 @@ import {ActivityIndicator, Pressable, StyleSheet, Text, View} from 'react-native
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {aiRecommendations, notifications} from '@/services/firestore';
+import {loadLegacyPageData} from '@/services/legacy-data';
+import {loadMonthlyBudget} from '@/services/monthly-budget';
+import {buildNotificationFeed, itemsOf, type FeedItem} from '@/services/notification-feed';
 import type {AiRecommendation, Notification, WithId} from '@/types/smartlife';
 import {MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 
@@ -11,8 +14,8 @@ type Page = 'smartlife_notifications' | 'smartlife_notifications_urgent' | 'smar
 
 type ViewModel = {
   ai: WithId<AiRecommendation>[];
-  all: WithId<Notification>[];
-  items: WithId<Notification>[];
+  /** Everything the bell is currently saying: derived alerts plus stored ones. */
+  feed: FeedItem[];
 };
 
 const tabs: {label: string; page: Page}[] = [
@@ -61,22 +64,6 @@ const pageMeta: Record<Page, {eyebrow: string; title: string; heroSubtitle: stri
   },
 };
 
-function kindForPage(page: Page): Notification['kind'] | undefined {
-  if (page === 'smartlife_notifications_urgent') return 'urgent';
-  if (page === 'smartlife_notifications_ai') return 'ai';
-  if (page === 'smartlife_notifications_finance') return 'finance';
-  if (page === 'smartlife_notifications_schedule') return 'schedule';
-  return undefined;
-}
-
-function fmtTime(value?: unknown) {
-  const date = value && typeof value === 'object' && 'toDate' in value && typeof (value as {toDate?: unknown}).toDate === 'function'
-    ? (value as {toDate: () => Date}).toDate()
-    : null;
-  if (!date) return '';
-  return new Intl.DateTimeFormat('th-TH', {hour: '2-digit', hour12: false, minute: '2-digit', timeZone: 'Asia/Bangkok'}).format(date);
-}
-
 function toneFor(kind: Notification['kind']) {
   if (kind === 'urgent') return {bg: '#fff1ef', fg: '#d9675f', icon: 'schedule'};
   if (kind === 'finance') return {bg: '#eef5ed', fg: '#6f8f6d', icon: 'account_balance_wallet'};
@@ -102,11 +89,22 @@ function Header({onNavigate, meta}: {meta: typeof pageMeta[Page]; onNavigate: Us
   );
 }
 
+/**
+ * Which alerts a tab shows. Derived alerts are matched on their source as well
+ * as their kind, so a budget alert computed on this device lands under
+ * "การเงิน" exactly like a stored one the server wrote.
+ */
+function feedForPage(page: Page, feed: FeedItem[]) {
+  if (page === 'smartlife_notifications') return feed;
+  if (page === 'smartlife_notifications_urgent') return feed.filter((item) => item.severity === 'urgent');
+  if (page === 'smartlife_notifications_ai') return feed.filter((item) => item.kind === 'ai');
+  if (page === 'smartlife_notifications_finance') return feed.filter((item) => item.source === 'finance' || item.kind === 'finance');
+  return feed.filter((item) => item.source === 'calendar' || item.kind === 'schedule');
+}
+
 function pageCount(page: Page, model: ViewModel) {
-  if (page === 'smartlife_notifications') return model.all.length + model.ai.length;
-  if (page === 'smartlife_notifications_ai') return model.all.filter((item) => item.kind === 'ai').length + model.ai.length;
-  const kind = kindForPage(page);
-  return kind ? model.all.filter((item) => item.kind === kind).length : model.all.length;
+  const count = feedForPage(page, model.feed).length;
+  return page === 'smartlife_notifications' || page === 'smartlife_notifications_ai' ? count + model.ai.length : count;
 }
 
 function heroTitleFor(page: Page, count: number) {
@@ -125,9 +123,9 @@ function heroTitleFor(page: Page, count: number) {
 }
 
 function Hero({meta, model, page}: {meta: typeof pageMeta[Page]; model: ViewModel; page: Page}) {
-  const urgent = model.all.filter((item) => item.kind === 'urgent').length;
-  const ai = model.ai.length + model.all.filter((item) => item.kind === 'ai').length;
-  const today = model.all.length + model.ai.length;
+  const urgent = model.feed.filter((item) => item.severity === 'urgent').length;
+  const ai = model.ai.length + model.feed.filter((item) => item.kind === 'ai').length;
+  const today = model.feed.length + model.ai.length;
   const current = pageCount(page, model);
   return (
     <LinearGradient colors={['#6f966f', '#8fac94']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.hero}>
@@ -180,20 +178,29 @@ function SectionHeader({meta}: {meta: typeof pageMeta[Page]}) {
   );
 }
 
-function NotificationCard({item, onPress}: {item: WithId<Notification>; onPress: () => void}) {
+const sourceLabel: Record<FeedItem['source'], string> = {
+  calendar: 'ตารางและงาน',
+  finance: 'งบประมาณ',
+  note: 'โน้ต',
+  stored: 'ระบบ',
+};
+
+function FeedCard({item, onPress}: {item: FeedItem; onPress: () => void}) {
   const tone = toneFor(item.kind);
-  const time = fmtTime(item.createdAt);
+  const urgent = item.severity === 'urgent';
   return (
-    <Pressable onPress={onPress} style={[styles.itemCard, {borderColor: item.kind === 'urgent' ? '#f2d7d2' : '#e7ece2'}]}>
+    <Pressable onPress={onPress} style={[styles.itemCard, {borderColor: urgent ? '#f2d7d2' : '#e7ece2'}]}>
       <View style={[styles.itemIcon, {backgroundColor: tone.bg}]}>
         <MaterialIcon color={tone.fg} name={tone.icon} size={18} />
       </View>
       <View style={{flex: 1}}>
-        <Text numberOfLines={1} style={styles.itemTitle}>{item.title || 'การแจ้งเตือน SmartLife'}{time ? ` ${time}` : ''}</Text>
-        <Text numberOfLines={2} style={styles.itemText}>{item.message || 'ไม่มีรายละเอียด'}</Text>
+        <Text numberOfLines={2} style={styles.itemTitle}>{item.title || 'การแจ้งเตือน SmartLife'}</Text>
+        <Text numberOfLines={3} style={styles.itemText}>{item.message || 'ไม่มีรายละเอียด'}</Text>
         <View style={styles.chips}>
-          <Chip tone={item.kind === 'urgent' ? 'red' : 'green'}>{item.kind === 'urgent' ? 'ด่วน' : item.kind === 'finance' ? 'การเงิน' : item.kind === 'schedule' ? 'เรียน' : 'AI'}</Chip>
-          {!item.read ? <Chip tone="green">ใหม่</Chip> : null}
+          <Chip tone={urgent ? 'red' : 'green'}>{urgent ? 'ด่วน' : 'ควรดู'}</Chip>
+          <Chip tone="green">{sourceLabel[item.source]}</Chip>
+          {item.reasons.map((reason) => <Chip key={reason} tone="green">{reason}</Chip>)}
+          {item.unread ? <Chip tone="purple">ใหม่</Chip> : null}
         </View>
       </View>
     </Pressable>
@@ -227,29 +234,53 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
   const [model, setModel] = useState<ViewModel | null>(null);
   const meta = pageMeta[page];
 
+  // The same three sources the dashboard bell counts, gathered here so the list
+  // and the badge are computed from one feed rather than two.
   const load = useCallback(async () => {
-    const kind = kindForPage(page);
-    const [all, items, ai] = await Promise.all([
-      notifications.list(uid),
-      notifications.list(uid, kind),
-      page === 'smartlife_notifications_ai' || page === 'smartlife_notifications' ? aiRecommendations.list(uid) : Promise.resolve([]),
+    const [pageData, monthData, savedBudget, stored, ai] = await Promise.all([
+      (loadLegacyPageData(uid, 'user/index') as Promise<Record<string, unknown>>)
+        .catch((error) => { console.error('[Notifications] Day data load failed', error); return {} as Record<string, unknown>; }),
+      (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>)
+        .catch((error) => { console.error('[Notifications] Month transactions load failed', error); return null; }),
+      loadMonthlyBudget(uid).catch((error) => { console.error('[Notifications] Saved budget load failed', error); return null; }),
+      notifications.list(uid).catch(() => []),
+      page === 'smartlife_notifications_ai' || page === 'smartlife_notifications' ? aiRecommendations.list(uid).catch(() => []) : Promise.resolve([]),
     ]);
-    setModel({ai, all, items: kind ? items : all});
+    setModel({
+      ai,
+      feed: buildNotificationFeed({
+        activities: pageData.activities,
+        monthlyBudget: savedBudget?.amount ?? 0,
+        monthTransactions: itemsOf(monthData?.transactions).map((item) => ({
+          amount: Number(item.amount ?? 0),
+          occurredAt: item.occurredAt as never,
+          type: item.type === 'income' ? 'income' : 'expense',
+        })),
+        notes: pageData.notes,
+        stored,
+        todayExpenses: itemsOf(pageData.transactions)
+          .filter((item) => item.type === 'expense')
+          .map((item) => ({amount: Number(item.amount ?? 0)})),
+      }),
+    });
   }, [page, uid]);
 
   useEffect(() => {
-    load().catch(() => setModel({ai: [], all: [], items: []}));
+    load().catch(() => setModel({ai: [], feed: []}));
   }, [load]);
 
   const visibleAi = useMemo(() => model?.ai.slice(0, page === 'smartlife_notifications_ai' ? 4 : 2) ?? [], [model?.ai, page]);
-  const visibleItems = useMemo(() => model?.items.slice(0, page === 'smartlife_notifications' ? 3 : 5) ?? [], [model?.items, page]);
+  const visibleItems = useMemo(() => feedForPage(page, model?.feed ?? []).slice(0, 8), [model?.feed, page]);
 
-  const markRead = async (id: string) => {
+  // Only stored notifications have a read flag to set; a derived alert is
+  // cleared by resolving what caused it, not by tapping it.
+  const markRead = async (item: FeedItem) => {
+    if (item.source !== 'stored') return;
+    const id = item.id.replace('stored:', '');
     await notifications.markRead(uid, id);
     setModel((current) => current ? {
       ai: current.ai,
-      all: current.all.map((item) => item.id === id ? {...item, read: true} : item),
-      items: current.items.map((item) => item.id === id ? {...item, read: true} : item),
+      feed: current.feed.map((entry) => entry.id === item.id ? {...entry, unread: false} : entry),
     } : current);
   };
 
@@ -268,7 +299,7 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
           <SectionHeader meta={meta} />
           <View style={styles.list}>
             {visibleItems.length ? visibleItems.map((item) => (
-              <NotificationCard item={item} key={item.id} onPress={() => markRead(item.id)} />
+              <FeedCard item={item} key={item.id} onPress={() => void markRead(item)} />
             )) : null}
             {(page === 'smartlife_notifications_ai' || page === 'smartlife_notifications') && visibleAi.length ? visibleAi.map((item) => (
               <AiCard item={item} key={item.id} />

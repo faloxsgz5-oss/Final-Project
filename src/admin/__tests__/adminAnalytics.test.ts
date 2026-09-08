@@ -10,6 +10,7 @@ import {
   summarizeActivities,
   summarizeFinance,
   summarizeNotes,
+  summarizeRecommendations,
 } from '../analytics.ts';
 import type {AdminEventInput, AdminNoteInput, AdminTransactionInput, AdminUserInput} from '../analytics.ts';
 
@@ -76,6 +77,13 @@ export async function runAdminAnalyticsTests() {
   testUserSeriesRanksAndNormalises();
   testUserSeriesFoldsOverflowInsteadOfDropping();
   testUserSeriesHandlesAllZeroAndEmpty();
+  testRecommendationSourceCountsAllowMultipleTags();
+  testRecommendationAcceptanceIsNullWithoutDecisions();
+  testRecommendationAcceptanceUsesOnlyDecidedItems();
+  testRecommendationMissingStatusIsNotAssumedNew();
+  testRecommendationTracksRealReadFlagCoverage();
+  testRecommendationCountsActivitySourceFromRealData();
+  testRecommendationUntaggedItemsAreCountedSeparately();
 }
 
 /* ------------------------------------------------------------------ users */
@@ -334,4 +342,83 @@ function testUserSeriesHandlesAllZeroAndEmpty() {
 
   const negative = buildUserSeries([{count: -5, label: 'A', uid: 'u1'}]);
   assert.equal(negative.points[0].count, 0, 'negative counts clamp to zero:');
+}
+
+
+/* -------------------------------------------------- ai recommendations */
+
+function testRecommendationSourceCountsAllowMultipleTags() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: ['schedule', 'note'], status: 'new'},
+    {id: 'r2', contextSources: ['schedule', 'finance'], status: 'new'},
+    {id: 'r3', contextSources: ['schedule', 'schedule'], status: 'new'},
+  ]);
+  assert.equal(summary.total, 3);
+  assert.equal(summary.sourceCounts.schedule, 3, 'each item counts once per source:');
+  assert.equal(summary.sourceCounts.note, 1);
+  assert.equal(summary.sourceCounts.finance, 1);
+  assert.equal(summary.sourceCounts.behavior, 0);
+}
+
+function testRecommendationAcceptanceIsNullWithoutDecisions() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: ['schedule'], status: 'new'},
+    {id: 'r2', contextSources: ['finance'], status: 'new'},
+  ]);
+  assert.equal(summary.acceptanceRate, null, 'no decisions means not measurable, not 0%:');
+  assert.equal(summary.dismissalRate, null);
+  assert.equal(summary.decidedCount, 0);
+  assert.ok(summary.statusesWithoutData.includes('accepted'));
+  assert.ok(summary.statusesWithoutData.includes('seen'));
+  assert.ok(!summary.statusesWithoutData.includes('new'));
+}
+
+function testRecommendationAcceptanceUsesOnlyDecidedItems() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: ['schedule'], status: 'accepted'},
+    {id: 'r2', contextSources: ['schedule'], status: 'accepted'},
+    {id: 'r3', contextSources: ['schedule'], status: 'dismissed'},
+    {id: 'r4', contextSources: ['schedule'], status: 'new'},
+  ]);
+  assert.equal(summary.decidedCount, 3, 'pending items stay out of the rate:');
+  assert.equal(summary.acceptanceRate, 0.667);
+  assert.equal(summary.dismissalRate, 0.333);
+}
+
+function testRecommendationMissingStatusIsNotAssumedNew() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: ['note'], status: 'something-else'},
+    {id: 'r2', contextSources: ['note'], status: null},
+    {id: 'r3', contextSources: ['note'], status: 'new'},
+  ]);
+  assert.equal(summary.missingStatusCount, 2, 'absent status is reported, never invented:');
+  assert.equal(summary.statusCounts.new, 1, 'only a real "new" counts as new:');
+  assert.equal(summary.total, 3);
+}
+
+function testRecommendationTracksRealReadFlagCoverage() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: ['note'], read: true, status: 'new'},
+    {id: 'r2', contextSources: ['note'], read: false, status: 'new'},
+    {id: 'r3', contextSources: ['note'], status: 'new'},
+  ]);
+  assert.deepEqual(summary.readCoverage, {missing: 1, read: 1, unread: 1});
+}
+
+function testRecommendationCountsActivitySourceFromRealData() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: ['schedule', 'activity', 'note'], status: 'new'},
+  ]);
+  assert.equal(summary.sourceCounts.activity, 1, 'activity is a real production tag:');
+  assert.equal(summary.untaggedCount, 0, 'activity must not read as untagged:');
+}
+
+function testRecommendationUntaggedItemsAreCountedSeparately() {
+  const summary = summarizeRecommendations([
+    {id: 'r1', contextSources: [], status: 'new'},
+    {id: 'r2', contextSources: ['mystery'], status: 'new'},
+    {id: 'r3', contextSources: ['note'], status: 'new'},
+  ]);
+  assert.equal(summary.untaggedCount, 2, 'unknown tags are not folded into a real source:');
+  assert.equal(summary.sourceCounts.note, 1);
 }

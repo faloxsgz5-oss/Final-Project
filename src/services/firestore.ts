@@ -3,16 +3,16 @@ import {
   collection,
   deleteDoc,
   doc,
-  DocumentData,
+  type DocumentData,
   endAt,
   getDoc,
   getDocs,
   limit,
   onSnapshot,
   orderBy,
-  QueryConstraint,
+  type QueryConstraint,
   query,
-  QueryDocumentSnapshot,
+  type QueryDocumentSnapshot,
   serverTimestamp,
   startAt,
   Timestamp,
@@ -58,6 +58,14 @@ type UserCollection =
   | 'transactions';
 
 type CreateFields = { createdAt: ReturnType<typeof serverTimestamp>; ownerId: string; updatedAt: ReturnType<typeof serverTimestamp> };
+
+export type ScheduleConflict = {
+  endAt: string;
+  id: string;
+  kind: 'activity' | 'schedule';
+  startAt: string;
+  title: string;
+};
 
 function userCollection(uid: string, name: UserCollection) {
   return collection(db, 'users', uid, name);
@@ -176,6 +184,39 @@ export const activities = {
     orderBy('startAt'), startAt(Timestamp.fromDate(from)), endAt(Timestamp.fromDate(to)),
   ]),
 };
+
+export async function findScheduleConflicts(uid: string, proposedStart: Date, proposedEnd: Date): Promise<ScheduleConflict[]> {
+  if (!uid || Number.isNaN(proposedStart.getTime()) || Number.isNaN(proposedEnd.getTime()) || proposedStart >= proposedEnd) return [];
+
+  const sourceItems = isDemoMode
+    ? [
+      ...(demoCollection('schedules') as WithId<Schedule>[]).map((item) => ({data: item, id: item.id, kind: 'schedule' as const})),
+      ...(demoCollection('activities') as WithId<Activity>[]).map((item) => ({data: item, id: item.id, kind: 'activity' as const})),
+    ]
+    : (await Promise.all((['schedules', 'activities'] as const).map(async (name) => {
+      const snapshot = await getDocs(query(
+        userCollection(uid, name),
+        where('startAt', '<', Timestamp.fromDate(proposedEnd)),
+        orderBy('startAt', 'desc'),
+        limit(500),
+      ));
+      return snapshot.docs.map((item) => ({data: item.data(), id: item.id, kind: name === 'schedules' ? 'schedule' as const : 'activity' as const}));
+    }))).flat();
+
+  return sourceItems.flatMap(({data, id, kind}) => {
+    if (kind === 'activity' && ['cancelled', 'completed'].includes(String(data.status ?? ''))) return [];
+    const startMs = timestampMillis(data.startAt);
+    const endMs = timestampMillis(data.endAt);
+    if (!startMs || !endMs || startMs >= proposedEnd.getTime() || endMs <= proposedStart.getTime()) return [];
+    return [{
+      endAt: new Date(endMs).toISOString(),
+      id,
+      kind,
+      startAt: new Date(startMs).toISOString(),
+      title: String(data.title || ('courseName' in data ? data.courseName : '') || 'รายการในตาราง').slice(0, 120),
+    }];
+  }).sort((left, right) => left.startAt.localeCompare(right.startAt));
+}
 
 export const notes = {
   create: (uid: string, data: Omit<Note, keyof CreateFields | 'ownerId'>) => isDemoMode ? demoCreate('notes') : createOwned(uid, 'notes', data),

@@ -454,6 +454,7 @@ export const styles = StyleSheet.create({
   statusDegraded: {backgroundColor: C.amber},
   statusOperational: {backgroundColor: C.sage},
   statusOutage: {backgroundColor: C.red},
+  statusUnknown: {backgroundColor: C.purple},
   summaryAction: {...shadow, alignItems: 'center', borderColor: 'rgba(255,255,255,.9)', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 12, minHeight: 78, paddingHorizontal: 15, paddingVertical: 10},
   summaryCopy: {flex: 1},
   summaryHint: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1},
