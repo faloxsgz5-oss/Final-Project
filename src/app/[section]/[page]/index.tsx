@@ -196,6 +196,14 @@ export default function LegacyPageRoute() {
 
   if (initializing) return <View style={styles.loading}><ActivityIndicator color="#6f966f" size="large" /></View>;
   if (section === 'login' && user) {
+    // `role` resolves *after* `user`: the auth listener sets the user, then
+    // awaits the `admin` custom claim. Redirecting while the role is still
+    // null sent an admin to the user app, because null falls to the `:`
+    // branch -- an intermittent failure, since the sign-in handler usually
+    // won the race by awaiting `getUserRole` itself. Wait for the answer
+    // instead of guessing it; the listener always resolves the role to
+    // 'admin' or 'user', including on error, so this cannot hang.
+    if (role === null) return <View style={styles.loading}><ActivityIndicator color="#6f966f" size="large" /></View>;
     return <Redirect href={(role === 'admin' ? '/admin/admin_dashboard' : '/user/index') as Href} />;
   }
   if (section === 'login') return <AuthPortal mode={page === 'register' ? 'register' : 'login'} onFacebook={onFacebookAuthenticate} onGoogle={onGoogleAuthenticate} onSubmit={onAuthenticate} onSwitch={(target) => router.push(`/login/${target}` as Href)} />;

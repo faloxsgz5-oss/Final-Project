@@ -394,10 +394,6 @@ function serializeDocuments(
   }));
 }
 
-function sortByCreatedAt(items: Record<string, unknown>[]) {
-  return items.sort((first, second) => String(second.createdAt ?? "").localeCompare(String(first.createdAt ?? "")));
-}
-
 function cleanOcrText(text: string) {
   return text.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\r/g, "").trim();
 }
@@ -2524,17 +2520,25 @@ export const adminMonitoringData = onCall({region}, async (request) => {
       .get();
     return {items: serializeDocuments(snapshot)};
   }
+  // Both of these order in the query rather than after it. `limit(100)` with
+  // no `orderBy` takes an arbitrary 100 documents and only then sorts those,
+  // so the admin saw a stable-looking list that was never the newest 100 --
+  // once a collection passed 100 documents, recent entries could simply be
+  // missing. The collection-group `createdAt` descending indexes these need
+  // are already declared in firestore.indexes.json.
   if (view === "scanLogs") {
     const snapshot = await db.collectionGroup("scanLogs")
+      .orderBy("createdAt", "desc")
       .limit(100)
       .get();
-    return {items: sortByCreatedAt(serializeDocuments(snapshot))};
+    return {items: serializeDocuments(snapshot)};
   }
   if (view === "recommendations") {
     const snapshot = await db.collectionGroup("aiRecommendations")
+      .orderBy("createdAt", "desc")
       .limit(100)
       .get();
-    return {items: sortByCreatedAt(serializeDocuments(snapshot))};
+    return {items: serializeDocuments(snapshot)};
   }
   if (view === "assistantQuality") {
     const [interactions, metrics] = await Promise.all([
