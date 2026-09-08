@@ -14,6 +14,7 @@ import {
   query,
   type QueryDocumentSnapshot,
   serverTimestamp,
+  setDoc,
   startAt,
   Timestamp,
   updateDoc,
@@ -27,6 +28,7 @@ import {
   demoBetween,
   demoCollection,
   demoCreate,
+  demoNoteFolders,
   demoNotes,
   demoNotifications,
   demoRecommendations,
@@ -37,6 +39,8 @@ import type {
   AiRecommendation,
   Feedback,
   Note,
+  NoteFolder,
+  NoteLock,
   Notification,
   PendingLineReview,
   ScanLog,
@@ -50,6 +54,7 @@ type UserCollection =
   | 'aiRecommendations'
   | 'bankNotifications'
   | 'feedback'
+  | 'noteFolders'
   | 'notes'
   | 'notifications'
   | 'pendingReview'
@@ -220,11 +225,54 @@ export async function findScheduleConflicts(uid: string, proposedStart: Date, pr
 
 export const notes = {
   create: (uid: string, data: Omit<Note, keyof CreateFields | 'ownerId'>) => isDemoMode ? demoCreate('notes') : createOwned(uid, 'notes', data),
+  /** Reads one note, for the detail/edit screen. Returns null when it is gone. */
+  get: async (uid: string, id: string) => {
+    if (isDemoMode) return (demoNotes().find((item) => (item as {id?: string}).id === id) ?? null) as WithId<Note> | null;
+    const snapshot = await getDoc(doc(db, 'users', uid, 'notes', id));
+    return snapshot.exists() ? ({id: snapshot.id, ...snapshot.data()} as WithId<Note>) : null;
+  },
   update: (uid: string, id: string, data: Partial<Omit<Note, keyof CreateFields | 'ownerId'>>) => isDemoMode ? Promise.resolve() : updateOwned(uid, 'notes', id, data),
   remove: (uid: string, id: string) => isDemoMode ? Promise.resolve() : removeOwned(uid, 'notes', id),
   list: (uid: string, category?: Note['category']) => isDemoMode ? Promise.resolve(demoNotes(category) as WithId<Note>[]) : listOwned<Note>(uid, 'notes', [
     ...(category ? [where('category', '==', category)] : []), orderBy('updatedAt', 'desc'), limit(100),
   ]),
+};
+
+export const noteFolders = {
+  create: (uid: string, data: Omit<NoteFolder, keyof CreateFields | 'ownerId'>) => isDemoMode ? demoCreate('noteFolders') : createOwned(uid, 'noteFolders', data),
+  update: (uid: string, id: string, data: Partial<Omit<NoteFolder, keyof CreateFields | 'ownerId'>>) => isDemoMode ? Promise.resolve() : updateOwned(uid, 'noteFolders', id, data),
+  remove: (uid: string, id: string) => isDemoMode ? Promise.resolve() : removeOwned(uid, 'noteFolders', id),
+  list: (uid: string) => isDemoMode
+    ? Promise.resolve(demoNoteFolders() as unknown as WithId<NoteFolder>[])
+    : listOwned<NoteFolder>(uid, 'noteFolders', [orderBy('sortOrder'), limit(50)]),
+};
+
+/**
+ * The per-user note PIN, stored at `users/{uid}/settings/noteLock`.
+ *
+ * Only a salted digest is ever written -- see `note-lock.ts` for the hashing --
+ * and the rules make this document readable by its owner alone, not by admins.
+ */
+export const noteLock = {
+  get: async (uid: string) => {
+    if (isDemoMode) return null;
+    const snapshot = await getDoc(doc(db, 'users', uid, 'settings', 'noteLock'));
+    return snapshot.exists() ? (snapshot.data() as NoteLock) : null;
+  },
+  set: async (uid: string, data: {biometricEnabled?: boolean; hash: string; hint?: string; salt: string}) => {
+    if (isDemoMode) return;
+    const reference = doc(db, 'users', uid, 'settings', 'noteLock');
+    const existing = await getDoc(reference);
+    if (existing.exists()) {
+      await updateDoc(reference, {...data, updatedAt: serverTimestamp()});
+      return;
+    }
+    await setDoc(reference, {...data, ownerId: uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()});
+  },
+  clear: async (uid: string) => {
+    if (isDemoMode) return;
+    await deleteDoc(doc(db, 'users', uid, 'settings', 'noteLock'));
+  },
 };
 
 export const transactions = {

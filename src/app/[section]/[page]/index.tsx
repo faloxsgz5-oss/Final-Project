@@ -68,7 +68,7 @@ function authErrorMessage(error: unknown) {
 }
 
 export default function LegacyPageRoute() {
-  const params = useLocalSearchParams<{ page: string; section: string }>();
+  const params = useLocalSearchParams<{ id?: string; page: string; section: string }>();
   const router = useRouter();
   const {initializing, role, signOut, user} = useAuth();
   const section = String(params.section ?? '').toLowerCase();
@@ -225,7 +225,7 @@ export default function LegacyPageRoute() {
   if (section === 'user' && user && ['smartlife_notifications', 'smartlife_notifications_urgent', 'smartlife_notifications_ai', 'smartlife_notifications_finance', 'smartlife_notifications_schedule'].includes(page)) return <NotificationsScreen page={page as 'smartlife_notifications' | 'smartlife_notifications_urgent' | 'smartlife_notifications_ai' | 'smartlife_notifications_finance' | 'smartlife_notifications_schedule'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_profile') return <ProfileScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} onLogout={handleLogout} />;
   if (section === 'user' && user && ['smartlife_add_activity', 'smartlife_add_task', 'smartlife_add_appointment', 'smartlife_add_income', 'smartlife_add_expense', 'smartlife_save_activity', 'smartlife_save_task', 'smartlife_save_appointment'].includes(page)) return <ActivityFormScreen page={page as 'smartlife_add_activity' | 'smartlife_add_task' | 'smartlife_add_appointment' | 'smartlife_add_income' | 'smartlife_add_expense' | 'smartlife_save_activity' | 'smartlife_save_task' | 'smartlife_save_appointment'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
-  if (section === 'user' && user && page === 'smartlife_add_note') return <NoteFormScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
+  if (section === 'user' && user && page === 'smartlife_add_note') return <NoteFormScreen noteId={params.id ? String(params.id) : undefined} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_ocr_history') return <OcrHistoryScreen uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_scan_schedule', 'smartlife_scan_finance', 'smartlife_scan_result', 'smartlife_receipt_scan', 'smartlife_receipt_result'].includes(page)) return <ScanScreen page={page as 'smartlife_scan_schedule' | 'smartlife_scan_finance' | 'smartlife_scan_result' | 'smartlife_receipt_scan' | 'smartlife_receipt_result'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_schedule_finance_sync', 'smartlife_schedule_finance_sync_week', 'smartlife_schedule_finance_sync_month'].includes(page)) return <ScheduleFinanceScreen page={page as 'smartlife_schedule_finance_sync' | 'smartlife_schedule_finance_sync_week' | 'smartlife_schedule_finance_sync_month'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
