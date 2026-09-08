@@ -1,17 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View, } from 'react-native';
 import {CalendarList, CalendarProvider, WeekCalendar, type DateData} from 'react-native-calendars';
 import {Timestamp} from 'firebase/firestore';
 
@@ -19,9 +8,11 @@ import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-local
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
 import {recordTaskCompleted, recordTaskPostponed} from '@/services/behavior-tracking';
 import {MaterialIcon, UserTabBar} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 type Page = 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month';
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
@@ -152,6 +143,8 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   const [completingId, setCompletingId] = useState('');
   const [postponing, setPostponing] = useState<EventItem | null>(null);
   const [postponeBusy, setPostponeBusy] = useState(false);
+  const [deleting, setDeleting] = useState<EventItem | null>(null);
+  const [deleteError, setDeleteError] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -202,28 +195,33 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   };
   const goToday = () => { setSelectedDate(today); setVisibleDate(today); };
 
+  // A course row deletes the whole series, a one-off row deletes just itself,
+  // so the confirmation has to say which. `deleting` holds the pending row and
+  // `ConfirmDialog` renders from it; this used to be `Alert.alert`, which is an
+  // empty function on react-native-web and so never ran the delete at all.
+  const seriesKey = (event: EventItem) => typeof event.courseCode === 'string' && event.courseCode.trim()
+    ? event.courseCode.replace(/\s+/g, '').toUpperCase()
+    : eventTitle(event);
   const deleteEvent = useCallback((event: EventItem) => {
     if (!event.id || !event.entityType) return;
+    setDeleting(event);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    const event = deleting;
+    if (!event?.id) return;
+    setDeleting(null);
+    const failed = () => { load().catch(() => undefined); setDeleteError(true); };
     if (event.entityType === 'schedule') {
-      const courseCode = typeof event.courseCode === 'string' && event.courseCode.trim() ? event.courseCode.replace(/\s+/g, '').toUpperCase() : eventTitle(event);
+      const courseCode = seriesKey(event);
       const seriesId = typeof event.seriesId === 'string' && event.seriesId.trim() ? event.seriesId : undefined;
-      Alert.alert('ลบวิชานี้ทั้งหมดหรือไม่?', `ตารางทั้งหมดของ ${courseCode} จะถูกลบออก`, [
-        {text: 'ยกเลิก', style: 'cancel'},
-        {text: 'ลบทั้งหมด', style: 'destructive', onPress: () => {
-          setEvents((current) => current.filter((item) => seriesId ? item.seriesId !== seriesId : item.courseCode?.replace(/\s+/g, '').toUpperCase() !== courseCode));
-          deleteCourseSeries(uid, courseCode, seriesId).catch(() => { load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'); });
-        }},
-      ]);
+      setEvents((current) => current.filter((item) => seriesId ? item.seriesId !== seriesId : seriesKey(item) !== courseCode));
+      await deleteCourseSeries(uid, courseCode, seriesId).catch(failed);
       return;
     }
-    Alert.alert('ลบกิจกรรมนี้หรือไม่?', eventTitle(event), [
-      {text: 'ยกเลิก', style: 'cancel'},
-      {text: 'ลบ', style: 'destructive', onPress: () => {
-        setEvents((current) => current.filter((item) => item.id !== event.id));
-        activities.remove(uid, event.id as string).catch(() => { load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'); });
-      }},
-    ]);
-  }, [load, uid]);
+    setEvents((current) => current.filter((item) => item.id !== event.id));
+    await activities.remove(uid, event.id as string).catch(failed);
+  }, [deleting, load, uid]);
 
   const completeEvent = useCallback(async (event: EventItem) => {
     if (!event.id || event.entityType !== 'activity' || completingId) return;
@@ -238,7 +236,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       void recordTaskCompleted(id, {scheduledEndAt: toDate(event.endAt), scheduledStartAt: toDate(event.startAt)});
     } catch (error) {
       await load().catch(() => undefined);
-      Alert.alert('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+      showToast('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
     } finally {
       setCompletingId('');
     }
@@ -261,7 +259,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       setPostponing(null);
       await load();
     } catch (error) {
-      Alert.alert('เลื่อนไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+      showToast('เลื่อนไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
     } finally {
       setPostponeBusy(false);
     }
@@ -386,7 +384,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             {loading ? <View style={styles.calendarLoading}><ActivityIndicator color={C.accent} /><Text style={styles.loadingText}>กำลังโหลดปฏิทิน…</Text></View> : null}
           </View>
 
-          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onOpen={() => setDetailsOpen(true)} onPostpone={setPostponing} /></View> : null}
+          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onDelete={deleteEvent} onOpen={() => setDetailsOpen(true)} onPostpone={setPostponing} /></View> : null}
         </ScrollView>
 
         <Pressable accessibilityLabel="เพิ่มกิจกรรมใหม่" accessibilityRole="button" onPress={() => onNavigate('smartlife_add_activity')} style={({pressed}) => [styles.fab, pressed && styles.fabPressed]}><MaterialIcon color={C.accent} name="add" size={30} /></Pressable>
@@ -437,14 +435,40 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             </View>
           </View>
         </Modal>
+
+        <ConfirmDialog
+          confirmLabel={deleting?.entityType === 'schedule' ? 'ลบทั้งหมด' : 'ลบ'}
+          message={deleting?.entityType === 'schedule'
+            ? `ตารางทั้งหมดของ ${deleting ? seriesKey(deleting) : ''} จะถูกลบออก`
+            : deleting ? eventTitle(deleting) : ''}
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => void confirmDelete()}
+          title={deleting?.entityType === 'schedule' ? 'ลบวิชานี้ทั้งหมดหรือไม่?' : 'ลบกิจกรรมนี้หรือไม่?'}
+          visible={Boolean(deleting)}
+        />
+        <ConfirmDialog
+          cancelLabel="ปิด"
+          confirmLabel="ลองใหม่"
+          icon="refresh"
+          message="กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่"
+          onCancel={() => setDeleteError(false)}
+          onConfirm={() => { setDeleteError(false); load().catch(() => undefined); }}
+          title="ลบไม่สำเร็จ"
+          tone="neutral"
+          visible={deleteError}
+        />
       </View>
     </ResponsiveSafeArea>
   );
 }
 
-function AgendaList({completingId, events, onComplete, onOpen, onPostpone}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onOpen: () => void; onPostpone: (event: EventItem) => void}) {
+// `onDelete` is threaded through the same way `onComplete` and `onPostpone`
+// already were. `EventRow` has always known how to draw the trash button; it
+// simply was never handed a handler here, so deleting from the agenda meant
+// opening the day sheet first to reach the identical row.
+function AgendaList({completingId, events, onComplete, onDelete, onOpen, onPostpone}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onDelete: (event: EventItem) => void; onOpen: () => void; onPostpone: (event: EventItem) => void}) {
   if (!events.length) return <EmptyAgenda />;
-  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onPostpone={event.entityType === 'activity' ? () => onPostpone(event) : undefined} onPress={onOpen} />)}</View>;
+  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onDelete={() => onDelete(event)} onPostpone={event.entityType === 'activity' ? () => onPostpone(event) : undefined} onPress={onOpen} />)}</View>;
 }
 
 const HOUR_HEIGHT = 62;

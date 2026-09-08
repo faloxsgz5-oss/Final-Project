@@ -1,8 +1,9 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {SpendingCharts} from '@/components/spending-charts';
+import ConfirmDialog from '@/components/confirm-dialog';
 
 import {thailandRange} from '@/lib/thailand-time';
 import {calculateDailyAllowance, calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
@@ -72,6 +73,8 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [referenceDate, setReferenceDate] = useState(() => new Date());
   const [period, setPeriod] = useState<Period>(() => periodForPage(page));
+  const [deleting, setDeleting] = useState<Item | null>(null);
+  const [deleteError, setDeleteError] = useState(false);
   const [filter, setFilter] = useState<Filter>(() => page === 'smartlife_finance_income' ? 'income' : page === 'smartlife_finance_expense' ? 'expense' : 'all');
   const periodPage = `smartlife_finance_${period}` as 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month';
   const load = useCallback(async () => {
@@ -130,9 +133,14 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
       : {over: false, title: `งบเดือนนี้เหลือ ${money(insight.remainingBudget)}`, detail: `ใช้ไป ${money(insight.spentSoFar)} จากลิมิต ${money(insight.monthlyBudget)}`};
   }, [isCurrentPeriod, monthTransactions, monthlyBudget, period]);
   const categoryTotals = useMemo(() => Array.from(all.filter((item) => item.type === 'expense').reduce((map, item) => { const category = str(item, 'category', 'ทั่วไป'); map.set(category, (map.get(category) ?? 0) + Number(item.amount ?? 0)); return map; }, new Map<string, number>()).entries()).slice(0, 3), [all]);
-  const deleteTransaction = (item: Item) => {
-    const id = str(item, 'id', ''); if (!id) return;
-    Alert.alert('ลบรายการการเงินนี้หรือไม่?', 'ข้อมูลจะถูกลบออกจาก Firebase อย่างถาวร', [{text: 'ยกเลิก', style: 'cancel'}, {text: 'ลบถาวร', style: 'destructive', onPress: () => { setData((current) => current ? {...current, transactions: list(current.transactions).filter((entry) => str(entry, 'id', '') !== id)} : current); transactions.remove(uid, id).catch((error) => { console.error('[Finance] Delete failed', error); load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'ลองใหม่อีกครั้ง'); }); }}]);
+  // `Alert.alert` is an empty function on react-native-web, so this dialog --
+  // and the delete behind its confirm button -- never appeared there at all.
+  const confirmDeleteTransaction = () => {
+    const id = str(deleting ?? {}, 'id', '');
+    setDeleting(null);
+    if (!id) return;
+    setData((current) => current ? {...current, transactions: list(current.transactions).filter((entry) => str(entry, 'id', '') !== id)} : current);
+    transactions.remove(uid, id).catch((error) => { console.error('[Finance] Delete failed', error); load().catch(() => undefined); setDeleteError(true); });
   };
   const headerAction = filter === 'income'
     ? {icon: 'add', label: 'เพิ่มรายรับ', page: 'smartlife_add_income'}
@@ -214,9 +222,28 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
         </>}
 
         <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text>{filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>เพิ่มรายรับ</Text></Pressable> : filter === 'expense' ? <Pressable onPress={() => onNavigate('smartlife_add_expense')}><Text style={styles.allLink}>เพิ่มรายจ่าย</Text></Pressable> : null}</View>
-        <View style={styles.transactionList}>{shown.length ? shown.map((item, index) => <TransactionRow item={item} key={str(item, 'id', String(index))} onDelete={() => deleteTransaction(item)} />) : <View style={styles.empty}><MaterialIcon color="#a1aaa0" name="receipt_long" size={32} /><Text style={styles.emptyText}>ยังไม่มีรายการในช่วงนี้</Text></View>}</View>
+        <View style={styles.transactionList}>{shown.length ? shown.map((item, index) => <TransactionRow item={item} key={str(item, 'id', String(index))} onDelete={() => setDeleting(item)} />) : <View style={styles.empty}><MaterialIcon color="#a1aaa0" name="receipt_long" size={32} /><Text style={styles.emptyText}>ยังไม่มีรายการในช่วงนี้</Text></View>}</View>
       </>}
     </ScrollView><UserTabBar active="smartlife_finance_day" onNavigate={onNavigate} />
+    <ConfirmDialog
+      confirmLabel="ลบถาวร"
+      message="ข้อมูลจะถูกลบออกจาก Firebase อย่างถาวร"
+      onCancel={() => setDeleting(null)}
+      onConfirm={confirmDeleteTransaction}
+      title="ลบรายการการเงินนี้หรือไม่?"
+      visible={Boolean(deleting)}
+    />
+    <ConfirmDialog
+      cancelLabel="ปิด"
+      confirmLabel="ลองใหม่"
+      icon="refresh"
+      message="ลองใหม่อีกครั้ง"
+      onCancel={() => setDeleteError(false)}
+      onConfirm={() => { setDeleteError(false); load().catch(() => undefined); }}
+      title="ลบไม่สำเร็จ"
+      tone="neutral"
+      visible={deleteError}
+    />
   </View></ResponsiveSafeArea>;
 }
 

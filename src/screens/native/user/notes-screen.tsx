@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Timestamp} from 'firebase/firestore';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
@@ -8,6 +8,7 @@ import AiActivityRecommendationCard from '@/components/ai-activity-recommendatio
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {notes as notesStore} from '@/services/firestore';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 type Page = 'smartlife_notes' | 'smartlife_notes_study' | 'smartlife_notes_work' | 'smartlife_notes_ideas';
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
@@ -53,7 +54,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
       await notesStore.update(uid, id, {completedAt: Timestamp.fromDate(new Date()), status: 'completed'});
     } catch (error) {
       await load().catch(() => undefined);
-      Alert.alert('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+      showToast('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
     } finally {
       setCompletingId('');
     }

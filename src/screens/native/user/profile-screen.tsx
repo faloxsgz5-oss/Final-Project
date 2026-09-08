@@ -1,11 +1,13 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Modal, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import SleepLogCard from '@/components/sleep-log-card';
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
 import {Card, LoadingBlock, MaterialIcon, UserShell, type UserNavigate} from './user-ui';
+import {showToast} from '@/components/app-toast';
+import ConfirmDialog from '@/components/confirm-dialog';
 
 type Profile = {displayName?: string; email?: string; studentId?: string};
 type Counts = {schedules?: number; notes?: number; transactions?: number};
@@ -16,16 +18,17 @@ const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold
 const feedbackTypes: [FeedbackType, string, string][] = [['ai', 'AI แนะนำไม่ตรง', 'auto_awesome'], ['schedule-scan', 'สแกนตารางผิด', 'document_scanner'], ['expense-category', 'หมวดรายจ่ายไม่ถูก', 'receipt_long'], ['other', 'ข้อเสนอแนะอื่น', 'chat_bubble']];
 
 export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string; onNavigate: UserNavigate; onLogout: () => Promise<void>}) {
+  const [seedConfirmOpen, setSeedConfirmOpen] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null); const [counts, setCounts] = useState<Counts>({}); const [feedbackType, setFeedbackType] = useState<FeedbackType>('ai'); const [feedback, setFeedback] = useState(''); const [sending, setSending] = useState(false); const [success, setSuccess] = useState(false); const [seeding, setSeeding] = useState(false); const [logoutOpen, setLogoutOpen] = useState(false); const [loggingOut, setLoggingOut] = useState(false); const [logoutError, setLogoutError] = useState('');
   const load = useCallback(async () => { const result = await loadLegacyPageData(uid, 'user/smartlife_profile') as {profile?: Profile; counts?: Counts}; setProfile(result.profile ?? {}); setCounts(result.counts ?? {}); }, [uid]);
   useEffect(() => { load().catch(() => setProfile({})); }, [load]);
   const initials = useMemo(() => (profile?.displayName || 'SL').trim().split(/\s+/).map((word) => word[0]).join('').slice(0, 2).toUpperCase(), [profile]);
 
   const submit = async () => {
-    if (!feedback.trim()) return Alert.alert('กรอกรายละเอียดก่อนส่ง', 'บอกเราได้ว่าอยากให้ปรับปรุงอะไร');
+    if (!feedback.trim()) return showToast('กรอกรายละเอียดก่อนส่ง', 'บอกเราได้ว่าอยากให้ปรับปรุงอะไร');
     setSending(true); setSuccess(false);
     try { await runLegacyDataAction(uid, 'user/smartlife_profile', {action: 'feedback', payload: {type: feedbackType, message: feedback}}); setFeedback(''); setSuccess(true); }
-    catch { Alert.alert('ส่งไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'); }
+    catch { showToast('ส่งไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'); }
     finally { setSending(false); }
   };
 
@@ -36,19 +39,24 @@ export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string;
     try { await onLogout(); }
     catch { setLogoutError('ออกจากระบบไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง'); setLoggingOut(false); }
   };
-  const seedAiDynamicData = () => Alert.alert('เพิ่มข้อมูลทดสอบ AI Dynamic', 'ระบบจะเพิ่มตาราง งาน โน้ต และรายการการเงินจำลองเข้า Firebase ของบัญชีนี้ เหมือนผู้ใช้เพิ่มเอง ต้องการทำต่อไหม?', [{text: 'ยกเลิก', style: 'cancel'}, {text: 'เพิ่มข้อมูล', onPress: async () => {
+  // Asked through `ConfirmDialog`: `Alert.alert` is an empty function on
+  // react-native-web, so on web this prompt never appeared and the seed it
+  // guards could not be reached at all.
+  const runSeedAiDynamicData = async () => {
+    setSeedConfirmOpen(false);
     setSeeding(true);
     try {
       const result = await runLegacyDataAction(uid, 'user/smartlife_profile', {action: 'seed-ai-dynamic-test-data'});
       await load();
       const summary = result && typeof result === 'object' ? Object.entries(result).map(([key, value]) => `${key}: ${value}`).join('\n') : '';
-      Alert.alert('เพิ่มข้อมูลสำเร็จ', summary || 'เพิ่มข้อมูลทดสอบเรียบร้อยแล้ว');
+      showToast('เพิ่มข้อมูลสำเร็จ', summary || 'เพิ่มข้อมูลทดสอบเรียบร้อยแล้ว', 'success');
     } catch (error) {
-      Alert.alert('เพิ่มข้อมูลไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+      showToast('เพิ่มข้อมูลไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
     } finally {
       setSeeding(false);
     }
-  }}]);
+  };
+  const seedAiDynamicData = () => setSeedConfirmOpen(true);
 
   return <UserShell active="smartlife_profile" onNavigate={onNavigate}>
     <View style={styles.pageHead}><Pressable onPress={() => onNavigate('index')} style={({pressed}) => [styles.back, pressed && styles.pressed]}><MaterialIcon name="arrow_back_ios_new" size={18} /></Pressable><View><Text style={styles.title}>โปรไฟล์ของฉัน</Text><Text style={styles.subtitle}>บัญชี ความคิดเห็น และความเป็นส่วนตัว</Text></View></View>
@@ -81,6 +89,16 @@ export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string;
         </View>
       </View>
     </Modal>
+    <ConfirmDialog
+      confirmLabel="เพิ่มข้อมูล"
+      icon="dataset"
+      message="ระบบจะเพิ่มตาราง งาน โน้ต และรายการการเงินจำลองเข้า Firebase ของบัญชีนี้ เหมือนผู้ใช้เพิ่มเอง ต้องการทำต่อไหม?"
+      onCancel={() => setSeedConfirmOpen(false)}
+      onConfirm={() => void runSeedAiDynamicData()}
+      title="เพิ่มข้อมูลทดสอบ AI Dynamic"
+      tone="neutral"
+      visible={seedConfirmOpen}
+    />
   </UserShell>;
 }
 

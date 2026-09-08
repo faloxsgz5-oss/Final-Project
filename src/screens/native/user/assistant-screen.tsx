@@ -2,7 +2,8 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NativeDateTimePicker from '@/components/date-time-picker';
 import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
-import {ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import ConfirmDialog from '@/components/confirm-dialog';
+import {ActivityIndicator, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
@@ -43,6 +44,7 @@ import type {AssistantChatMessage, AssistantConversationState, AssistantFeedback
 import {activities, type ScheduleConflict} from '@/services/firestore';
 import type {Activity, Schedule, WithId} from '@/types/smartlife';
 import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 function nowIso() {
   return new Date().toISOString();
@@ -774,15 +776,6 @@ function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantPr
   };
 }
 
-function confirmAdaptivePreference() {
-  return new Promise<boolean>((resolve) => Alert.alert(
-    'ยืนยันการตั้งค่า Adaptive',
-    'บันทึกช่วงเวลานี้เป็นข้อกำหนดสำหรับการจัดตารางครั้งต่อไปไหม?',
-    [{onPress: () => resolve(false), style: 'cancel', text: 'ยังไม่บันทึก'}, {onPress: () => resolve(true), text: 'บันทึก'}],
-    {cancelable: true, onDismiss: () => resolve(false)},
-  ));
-}
-
 function parseOcrShortcuts(raw: string | null): QuickAddSuggestion[] {
   if (!raw) return defaultOcrShortcuts;
   try {
@@ -952,6 +945,18 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const [chatHistory, setChatHistory] = useState<AssistantConversationSummary[]>([]);
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
+  const [deletingConversation, setDeletingConversation] = useState<AssistantConversationSummary | null>(null);
+  // The Adaptive preference gate is awaited mid-conversation, so the dialog has
+  // to hand its answer back to that `await`. `Alert.alert` could resolve from a
+  // button callback; on react-native-web it resolved nothing at all, because
+  // the alert never appeared -- the await simply hung until the dismiss path
+  // that also never ran. The resolver is parked in state instead.
+  const [adaptivePreferenceGate, setAdaptivePreferenceGate] = useState<{resolve: (value: boolean) => void} | null>(null);
+  const confirmAdaptivePreference = () => new Promise<boolean>((resolve) => setAdaptivePreferenceGate({resolve}));
+  const answerAdaptivePreference = (value: boolean) => {
+    adaptivePreferenceGate?.resolve(value);
+    setAdaptivePreferenceGate(null);
+  };
   const [conversationId, setConversationId] = useState(() => createAssistantConversationId());
   const [conversationState, setConversationState] = useState<AssistantConversationState>(() => createAssistantConversationState(conversationId));
   const [historyReady, setHistoryReady] = useState(false);
@@ -1212,7 +1217,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       void recordTaskCompleted(task.id);
     } catch (error) {
       updatePendingTaskShortcutStatus(targetMessageId, task.id, 'pending');
-      Alert.alert('อัปเดตงานไม่สำเร็จ', assistantErrorMessage(classifyAssistantError(error)));
+      showToast('อัปเดตงานไม่สำเร็จ', assistantErrorMessage(classifyAssistantError(error)));
     } finally {
       setCompletingTaskId('');
     }
@@ -1260,7 +1265,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     try {
       setChatHistory(await listAssistantConversations(uid));
     } catch {
-      Alert.alert('เปิดประวัติไม่สำเร็จ', 'กรุณาตรวจการเชื่อมต่อแล้วลองอีกครั้ง');
+      showToast('เปิดประวัติไม่สำเร็จ', 'กรุณาตรวจการเชื่อมต่อแล้วลองอีกครั้ง');
     } finally {
       setChatHistoryLoading(false);
     }
@@ -1282,21 +1287,22 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setChatHistoryOpen(false);
       await AsyncStorage.setItem(assistantActiveConversationKey(uid), conversation.id);
     } catch {
-      Alert.alert('เปิดแชทไม่สำเร็จ', 'ไม่สามารถโหลดข้อความของแชทนี้ได้');
+      showToast('เปิดแชทไม่สำเร็จ', 'ไม่สามารถโหลดข้อความของแชทนี้ได้');
     } finally {
       setChatHistoryLoading(false);
     }
   };
 
-  const askDeleteHistoryConversation = (conversation: AssistantConversationSummary) => {
-    Alert.alert('ลบแชทนี้?', 'ข้อความในแชทนี้จะถูกลบออกจากบัญชีของคุณ', [
-      {style: 'cancel', text: 'ยกเลิก'},
-      {style: 'destructive', text: 'ลบ', onPress: () => {
-        deleteAssistantConversation(uid, conversation.id)
-          .then(() => setChatHistory((current) => current.filter((item) => item.id !== conversation.id)))
-          .catch(() => Alert.alert('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'));
-      }},
-    ]);
+  // Asked through `ConfirmDialog`, not `Alert.alert`: the latter is an empty
+  // function on react-native-web, so on web no prompt appeared and the delete
+  // it guarded was never reached.
+  const confirmDeleteHistoryConversation = () => {
+    const conversation = deletingConversation;
+    setDeletingConversation(null);
+    if (!conversation) return;
+    deleteAssistantConversation(uid, conversation.id)
+      .then(() => setChatHistory((current) => current.filter((item) => item.id !== conversation.id)))
+      .catch(() => showToast('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'));
   };
 
   const sendMessage = async (message?: string) => {
@@ -1548,7 +1554,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       return [{detail: prompt.slice(0, 90), icon: 'document_scanner', prompt, title}];
     });
     if (!validShortcuts.length) {
-      Alert.alert('ยังบันทึกไม่ได้', 'กรุณาใส่ชื่อและคำถามอย่างน้อย 1 รายการ');
+      showToast('ยังบันทึกไม่ได้', 'กรุณาใส่ชื่อและคำถามอย่างน้อย 1 รายการ');
       return;
     }
     setOcrShortcuts(validShortcuts);
@@ -1872,6 +1878,25 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         timeZone={pendingScheduleConflict?.action.payload.generatedForTimeZone}
         visible={Boolean(pendingScheduleConflict)}
       />
+      <ConfirmDialog
+        confirmLabel="ลบ"
+        message="ข้อความในแชทนี้จะถูกลบออกจากบัญชีของคุณ"
+        onCancel={() => setDeletingConversation(null)}
+        onConfirm={confirmDeleteHistoryConversation}
+        title="ลบแชทนี้?"
+        visible={Boolean(deletingConversation)}
+      />
+      <ConfirmDialog
+        cancelLabel="ยังไม่บันทึก"
+        confirmLabel="บันทึก"
+        icon="tune"
+        message="บันทึกช่วงเวลานี้เป็นข้อกำหนดสำหรับการจัดตารางครั้งต่อไปไหม?"
+        onCancel={() => answerAdaptivePreference(false)}
+        onConfirm={() => answerAdaptivePreference(true)}
+        title="ยืนยันการตั้งค่า Adaptive"
+        tone="neutral"
+        visible={Boolean(adaptivePreferenceGate)}
+      />
       {/* Refactored UI: keep the floating composer above the software keyboard. */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
@@ -2122,7 +2147,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                       <Text numberOfLines={1} style={local.historyPreview}>{conversation.lastMessagePreview || `${conversation.messageCount} ข้อความ`}</Text>
                       <Text style={local.historyDate}>{formatDate(conversation.updatedAt.toISOString())}</Text>
                     </View>
-                    <Pressable accessibilityLabel="ลบแชท" hitSlop={8} onPress={(event) => {event.stopPropagation(); askDeleteHistoryConversation(conversation);}} style={local.historyDelete}><MaterialIcon color="#9a6b6b" name="delete_outline" size={19} /></Pressable>
+                    <Pressable accessibilityLabel="ลบแชท" hitSlop={8} onPress={(event) => {event.stopPropagation(); setDeletingConversation(conversation);}} style={local.historyDelete}><MaterialIcon color="#9a6b6b" name="delete_outline" size={19} /></Pressable>
                   </Pressable>
                 ))}
                 {!chatHistory.length ? <View style={local.emptyHistory}><MaterialIcon color="#91a08d" name="history" size={34} /><Text style={local.modalOptionText}>ยังไม่มีแชทที่บันทึกไว้</Text></View> : null}

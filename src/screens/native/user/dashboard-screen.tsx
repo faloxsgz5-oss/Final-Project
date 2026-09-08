@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import SleepLogCard from '@/components/sleep-log-card';
@@ -16,6 +16,7 @@ import {activities as activitiesStore, notes as notesStore} from '@/services/fir
 import {recordTaskCompleted} from '@/services/behavior-tracking';
 import {aggregateSpending, type SpendingTransactionInput} from '@/services/spending-analytics';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 /**
  * Page data arrives already serialised to ISO strings, so the slot times the
@@ -90,9 +91,9 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
       const result = await runLegacyDataAction(uid, 'user/index', {action: 'seed-ai-dynamic-test-data'});
       await load();
       const summary = result && typeof result === 'object' ? Object.entries(result).map(([key, value]) => `${key}: ${value}`).join('\n') : '';
-      Alert.alert('เพิ่มข้อมูลสำเร็จ', summary || 'เพิ่มข้อมูลทดสอบเรียบร้อยแล้ว');
+      showToast('เพิ่มข้อมูลสำเร็จ', summary || 'เพิ่มข้อมูลทดสอบเรียบร้อยแล้ว', 'success');
     } catch (error) {
-      Alert.alert('เพิ่มข้อมูลไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+      showToast('เพิ่มข้อมูลไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
     } finally {
       setSeeding(false);
     }
@@ -157,7 +158,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
       }
     } catch (error) {
       await load().catch(() => undefined);
-      Alert.alert('อัปเดตงานไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+      showToast('อัปเดตงานไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
     } finally {
       setCompletingId('');
     }

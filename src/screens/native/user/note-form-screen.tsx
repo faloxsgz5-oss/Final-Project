@@ -1,11 +1,12 @@
 import {useEffect, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {runLegacyDataAction} from '@/services/legacy-data';
 import {getNoteSuggestions, recommendationLevel, type NoteSuggestion} from '@/services/smartlife-recommendations';
 import type {NoteCategory} from '@/types/smartlife';
 import {MaterialIcon, UserShell, type UserNavigate} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 type FormMode = 'manual' | 'ai';
 type PriorityValue = 'normal' | 'important' | 'urgent';
@@ -46,12 +47,12 @@ export default function NoteFormScreen({uid, onNavigate}: {uid: string; onNaviga
   }, [uid]);
 
   const save = async () => {
-    if (!title.trim()) return Alert.alert('กรอกชื่อโน้ตก่อนบันทึก');
+    if (!title.trim()) return showToast('กรอกชื่อโน้ตก่อนบันทึก');
     setSaving(true);
     try {
       await runLegacyDataAction(uid, 'user/smartlife_add_note', {action: 'create-note', payload: {title, content, category, color, priority}});
-      Alert.alert('บันทึกโน้ตสำเร็จ'); onNavigate('smartlife_planner_notes');
-    } catch (error) { Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง'); }
+      showToast('บันทึกโน้ตสำเร็จ', undefined, 'success'); onNavigate('smartlife_planner_notes');
+    } catch (error) { showToast('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง'); }
     finally { setSaving(false); }
   };
   const applySuggestion = (suggestion: NoteSuggestion) => { setTitle(suggestion.title); setContent(`${suggestion.content}\n\nเหตุผลที่ AI เลือก: ${suggestion.reasons.join(', ')}`); setCategory(suggestion.category); setPriority(suggestion.score >= 80 ? 'urgent' : suggestion.score >= 60 ? 'important' : 'normal'); setMode('manual'); };

@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Alert, Animated, Easing, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Animated, Easing, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
@@ -16,8 +16,10 @@ import {
   type AdaptiveSuggestion,
 } from '@/services/adaptive-scheduling';
 import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 import {registerAdaptivePushNotifications} from '@/services/push-notifications';
+import {showToast} from '@/components/app-toast';
 
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
 type HistoryFilter = 'ai' | 'all' | 'automatic' | 'errors' | 'user';
@@ -149,6 +151,10 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
   const [loadedAt, setLoadedAt] = useState(0);
   const [clockNow, setClockNow] = useState(0);
   const [confirmationFlow, setConfirmationFlow] = useState<ConfirmationFlow | null>(null);
+  // `Alert.alert` does nothing on react-native-web, so these two confirmations
+  // -- and the deletes behind them -- were unreachable there.
+  const [deletingPatternId, setDeletingPatternId] = useState('');
+  const [deletingHistory, setDeletingHistory] = useState(false);
   const [proposalDateDraft, setProposalDateDraft] = useState('');
   const [proposalDurationDraft, setProposalDurationDraft] = useState('60');
   const [proposalEditorError, setProposalEditorError] = useState('');
@@ -183,7 +189,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
   const load = useCallback(async () => {
     setLoading(true);
     try { setDashboard(await adaptiveScheduling.getDashboard()); setLoadedAt(Date.now()); }
-    catch (error) { Alert.alert('โหลด Adaptive Scheduling ไม่สำเร็จ', errorMessage(error)); }
+    catch (error) { showToast('โหลด Adaptive Scheduling ไม่สำเร็จ', errorMessage(error)); }
     finally { setLoading(false); }
   }, []);
 
@@ -254,7 +260,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
     // messages also has to land somewhere the web build can actually show it.
     const reject = (title: string, detail: string) => {
       setProposalEditorError(detail);
-      Alert.alert(title, detail);
+      showToast(title, detail);
     };
     if (!startAt) {
       reject('วันหรือเวลาไม่ถูกต้อง', `กรุณาใช้วันที่แบบ YYYY-MM-DD และเวลา HH:mm ในเขตเวลา ${timeZone}`);
@@ -318,7 +324,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
   const submitAlternative = useCallback((suggestion: AdaptiveSuggestion) => {
     const timeZone = resolveTimeZone(suggestion.generatedForTimeZone, dashboard?.preferences.timeZone);
     const parsed = parseLocalInput(alternativeTime, timeZone);
-    if (!parsed) return Alert.alert('รูปแบบเวลาไม่ถูกต้อง', `ใช้รูปแบบ YYYY-MM-DD HH:mm ในเขตเวลา ${timeZone}`);
+    if (!parsed) return showToast('รูปแบบเวลาไม่ถูกต้อง', `ใช้รูปแบบ YYYY-MM-DD HH:mm ในเขตเวลา ${timeZone}`);
     void act(`alternative-${suggestion.id}`, () => adaptiveScheduling.chooseAlternative(suggestion.id, parsed), 'ตรวจสอบและเปลี่ยนเวลาที่เสนอแล้ว');
     setAlternativeId('');
   }, [act, alternativeTime, dashboard?.preferences.timeZone]);
@@ -385,12 +391,28 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
           />) : <Empty label="ยังไม่มีคำแนะนำใหม่ เพิ่มงานแบบยืดหยุ่นหรือใช้คำสั่งด้านบนได้" />}
         </Section>
         <Section title="ภาระงาน 7 วัน" subtitle={`รวม ${dashboard.weeklyWorkloadMinutes.toLocaleString('th-TH')} นาที`}><View style={styles.workloadGrid}>{workload.map((item) => <View key={item.date} style={[styles.workloadDay, item.highWorkload && styles.workloadHigh]}><Text style={styles.workloadDate}>{new Intl.DateTimeFormat('th-TH', {day: 'numeric', month: 'short'}).format(new Date(`${item.date}T12:00:00`))}</Text><Text style={styles.workloadMinutes}>{item.minutes} นาที</Text>{item.highWorkload ? <Text style={styles.risk}>ภาระสูง</Text> : null}</View>)}</View><View style={styles.actionRow}><SmallButton disabled={Boolean(busy)} label="ปรับวันพรุ่งนี้ให้เบาลง" loading={busy === 'day'} onPress={() => void act('day', () => adaptiveScheduling.rebalanceDay(), 'สร้างคำแนะนำสำหรับวันพรุ่งนี้แล้ว')} /><SmallButton disabled={Boolean(busy)} label="สมดุลทั้งสัปดาห์" loading={busy === 'week'} onPress={() => void act('week', () => adaptiveScheduling.rebalanceWeek(), 'ตรวจทั้งสัปดาห์และสร้างตัวเลือกที่ผ่านเงื่อนไขแล้ว')} /></View></Section>
-        <Section title="รูปแบบที่เรียนรู้" subtitle="คำนวณแยกตามประเภทกิจกรรม และไม่สรุปแรงเกินไปเมื่อข้อมูลยังน้อย"><View style={styles.patternList}>{dashboard.patterns.length ? dashboard.patterns.map((pattern) => <PatternRow key={pattern.id} onDelete={() => Alert.alert('ลบรูปแบบนี้?', 'ระบบจะเริ่มเรียนรู้หมวดนี้ใหม่จากประวัติที่ยังเหลืออยู่', [{style: 'cancel', text: 'ยกเลิก'}, {style: 'destructive', onPress: () => void act(`pattern-${pattern.id}`, () => adaptiveScheduling.deletePattern(pattern.id)), text: 'ลบ'}])} pattern={pattern} />) : <Empty label="ยังมีข้อมูลไม่ถึง 3 เหตุการณ์ต่อหมวด จึงยังไม่ตั้งรูปแบบถาวร" />}</View><SmallButton label="คำนวณรูปแบบใหม่ตอนนี้" onPress={() => void act('patterns', () => adaptiveScheduling.calculatePatterns(), 'คำนวณจากพฤติกรรมล่าสุดแล้ว')} /></Section>
+        <Section title="รูปแบบที่เรียนรู้" subtitle="คำนวณแยกตามประเภทกิจกรรม และไม่สรุปแรงเกินไปเมื่อข้อมูลยังน้อย"><View style={styles.patternList}>{dashboard.patterns.length ? dashboard.patterns.map((pattern) => <PatternRow key={pattern.id} onDelete={() => setDeletingPatternId(pattern.id)} pattern={pattern} />) : <Empty label="ยังมีข้อมูลไม่ถึง 3 เหตุการณ์ต่อหมวด จึงยังไม่ตั้งรูปแบบถาวร" />}</View><SmallButton label="คำนวณรูปแบบใหม่ตอนนี้" onPress={() => void act('patterns', () => adaptiveScheduling.calculatePatterns(), 'คำนวณจากพฤติกรรมล่าสุดแล้ว')} /></Section>
         <Section title="Productivity Insights" subtitle="ตัวเลขมาจากข้อมูลที่คำนวณแล้ว ไม่ให้ Gemini เดา"><View style={styles.insightList}>{dashboard.insights.length ? dashboard.insights.map((item) => <View key={item.id} style={styles.insight}><MaterialIcon color="#617e60" name="lightbulb" size={18} /><View style={{flex: 1}}><Text style={styles.insightText}>{item.message}</Text><Text style={styles.meta}>อิงจาก {item.observationCount} เหตุการณ์</Text></View></View>) : <Empty label="ยังไม่มี insight จนกว่าจะมีพฤติกรรมเพียงพอ" />}</View></Section>
-        <Section title="การตั้งค่าและความเป็นส่วนตัว" subtitle="ค่าที่คุณเลือกมีสิทธิ์เหนือรูปแบบที่ระบบเรียนรู้"><PreferenceControls busy={busy} onUpdate={updatePreference} preferences={dashboard.preferences} /><View style={styles.privacyActions}><SmallButton danger label="ลบประวัติพฤติกรรม" onPress={() => Alert.alert('ลบประวัติการเรียนรู้ทั้งหมด?', 'เหตุการณ์และรูปแบบที่เรียนรู้จะถูกลบ แต่ตารางงานเดิมจะไม่ถูกลบ', [{style: 'cancel', text: 'ยกเลิก'}, {style: 'destructive', onPress: () => void act('delete-history', () => adaptiveScheduling.deleteBehaviorHistory(), 'ลบประวัติการเรียนรู้แล้ว'), text: 'ลบ'}])} /></View></Section>
+        <Section title="การตั้งค่าและความเป็นส่วนตัว" subtitle="ค่าที่คุณเลือกมีสิทธิ์เหนือรูปแบบที่ระบบเรียนรู้"><PreferenceControls busy={busy} onUpdate={updatePreference} preferences={dashboard.preferences} /><View style={styles.privacyActions}><SmallButton danger label="ลบประวัติพฤติกรรม" onPress={() => setDeletingHistory(true)} /></View></Section>
         <Section title="ประวัติการปรับตาราง" subtitle="บอกว่าใครเปลี่ยน เหตุผล เวลาเดิม/ใหม่ และสถานะการซิงก์"><View style={styles.historyFilters}>{([['all', 'ทั้งหมด'], ['user', 'ยืนยันโดยคุณ'], ['ai', 'คำแนะนำ AI'], ['automatic', 'อัตโนมัติ'], ['errors', 'ซิงก์ผิดพลาด']] as [HistoryFilter, string][]).map(([key, label]) => <Pressable accessibilityRole="button" accessibilityState={{selected: historyFilter === key}} key={key} onPress={() => setHistoryFilter(key)} style={[styles.historyFilter, historyFilter === key && styles.historyFilterActive]}><Text style={[styles.historyFilterText, historyFilter === key && styles.historyFilterTextActive]}>{label}</Text></Pressable>)}</View><View style={styles.historyList}>{filteredHistory.length ? filteredHistory.map((item) => <ActivityLogItem busy={busy} item={item} key={item.id} now={Math.max(loadedAt, clockNow)} onUndo={() => void act(`undo-${item.id}`, () => adaptiveScheduling.undo(item.id), 'คืนเวลาเดิมแล้ว')} />) : <Empty label={dashboard.history.length ? 'ไม่มีประวัติในตัวกรองนี้' : 'ยังไม่มีการเปลี่ยนตารางจากคำแนะนำ'} />}</View></Section>
       </> : null}
     </View>
+    <ConfirmDialog
+      confirmLabel="ลบ"
+      message="ระบบจะเริ่มเรียนรู้หมวดนี้ใหม่จากประวัติที่ยังเหลืออยู่"
+      onCancel={() => setDeletingPatternId('')}
+      onConfirm={() => { const id = deletingPatternId; setDeletingPatternId(''); void act(`pattern-${id}`, () => adaptiveScheduling.deletePattern(id)); }}
+      title="ลบรูปแบบนี้?"
+      visible={Boolean(deletingPatternId)}
+    />
+    <ConfirmDialog
+      confirmLabel="ลบ"
+      message="เหตุการณ์และรูปแบบที่เรียนรู้จะถูกลบ แต่ตารางงานเดิมจะไม่ถูกลบ"
+      onCancel={() => setDeletingHistory(false)}
+      onConfirm={() => { setDeletingHistory(false); void act('delete-history', () => adaptiveScheduling.deleteBehaviorHistory(), 'ลบประวัติการเรียนรู้แล้ว'); }}
+      title="ลบประวัติการเรียนรู้ทั้งหมด?"
+      visible={deletingHistory}
+    />
     <Modal animationType="fade" onRequestClose={() => confirmationFlow?.stage !== 'saving' && confirmationFlow?.stage !== 'analyzing' ? setConfirmationFlow(null) : undefined} transparent visible={Boolean(confirmationFlow) && confirmationFlow?.stage !== 'conflict'}>
       <View style={styles.flowOverlay}>
         <View style={styles.flowCard}>
