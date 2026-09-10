@@ -73,7 +73,7 @@
     "deploy:firestore-rules": "npx -y firebase-tools@latest deploy --only firestore:rules --project smartlife-budget",
     "doctor": "node ./scripts/check-runtime-config.cjs",
     "doctor:release": "node ./scripts/check-release-readiness.cjs",
-    "test": "npm run test:activity-time && npm run test:timezone-sweep && npm run test:thai-date-parsing && npm run test:note-math && npm run test:dashboard-prioritization && npm run test:admin-dashboard && npm run test:monthly-budget && npm run test:monthly-budget-sync && npm run test:spending-analytics && npm run test:notification-feed && npm run test:wellbeing && npm run test:risk-meter-render",
+    "test": "npm run test:activity-time && npm run test:timezone-sweep && npm run test:thai-date-parsing && npm run test:note-math && npm run test:scan-classification && npm run test:dashboard-prioritization && npm run test:admin-dashboard && npm run test:monthly-budget && npm run test:monthly-budget-sync && npm run test:spending-analytics && npm run test:notification-feed && npm run test:wellbeing && npm run test:risk-meter-render",
     "test:dashboard-prioritization": "node --experimental-strip-types ./src/dashboard/__tests__/run-dashboard-tests.mjs",
     "test:activity-time": "node --experimental-strip-types --import ./scripts/register-ts-alias.mjs ./scripts/test-activity-time.mjs",
     "test:line-import": "node --experimental-strip-types ./scripts/test-line-bank-parser.mjs",
@@ -114,6 +114,7 @@
     "screenshots:production": "node ./scripts/screenshots/capture-production.mjs",
     "test:firestore-activity-delete-rules": "npm run emulator:clear && npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-activity-delete.rules.test.cjs\"",
     "test:timezone-sweep": "node --experimental-transform-types --import ./scripts/register-timezone-sweep.mjs ./scripts/test-timezone-sweep.mjs",
+    "test:scan-classification": "node --experimental-strip-types ./scripts/test-scan-classification.mjs",
     "test:note-math": "node --experimental-strip-types ./scripts/test-note-math.mjs",
     "test:thai-date-parsing": "node --experimental-transform-types --import ./scripts/register-timezone-sweep.mjs ./scripts/test-thai-date-parsing.mjs"
   },

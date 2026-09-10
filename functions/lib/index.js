@@ -918,10 +918,14 @@ exports.analyzeScan = (0, https_1.onCall)({
         throw new https_1.HttpsError("unauthenticated", "Please sign in before scanning.");
     const storagePath = requireString(request.data?.storagePath, "storagePath");
     const requestedType = requireString(request.data?.scanType, "scanType");
-    if (requestedType !== "auto" && requestedType !== "receipt" && requestedType !== "schedule") {
-        throw new https_1.HttpsError("invalid-argument", "scanType must be auto, receipt, or schedule.");
+    if (requestedType !== "auto" && requestedType !== "receipt" &&
+        requestedType !== "schedule" && requestedType !== "document") {
+        throw new https_1.HttpsError("invalid-argument", "scanType must be auto, receipt, schedule, or document.");
     }
-    const allowedFolders = requestedType === "auto" ? ["scans"] : [requestedType === "receipt" ? "receipts" : "schedules"];
+    // `document` is a general scan like `auto`, so it shares the scans folder.
+    const allowedFolders = requestedType === "auto" || requestedType === "document" ?
+        ["scans"] :
+        [requestedType === "receipt" ? "receipts" : "schedules"];
     if (!allowedFolders.some((folder) => storagePath.startsWith(`users/${uid}/${folder}/`))) {
         throw new https_1.HttpsError("permission-denied", "You can only scan your own uploaded files.");
     }
@@ -992,7 +996,18 @@ exports.analyzeScan = (0, https_1.onCall)({
             classification.type :
             requestedType;
         let rawParsed;
-        if (scanType === "receipt") {
+        if (scanType === "document") {
+            // Nothing to extract into a schema. Returning the text as-is is the
+            // honest answer, and it is what scan-to-note wants anyway; running the
+            // receipt extractor here is what produced merchant names like
+            // "กิจกรรม" and line items priced at zero.
+            rawParsed = {
+                documentText: rawText,
+                kind: "document",
+                lineCount: rawText.split(/\r?\n/).filter((line) => line.trim()).length,
+            };
+        }
+        else if (scanType === "receipt") {
             try {
                 const iapp = await (0, iapp_receipt_1.extractReceiptWithIapp)({
                     apiKey: iappApiKey.value(),

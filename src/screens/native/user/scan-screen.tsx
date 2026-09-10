@@ -1207,7 +1207,9 @@ export default function ScanScreen({
       setResult(response);
       setRawOcrText(response.rawText ?? "");
       setDraft(
-        response.scanType === "schedule"
+        response.scanType === "document"
+          ? {}
+          : response.scanType === "schedule"
           ? scheduleDraft(response.parsed, institutionType, schoolTerm)
           : {
               ...response.parsed,
@@ -1223,7 +1225,9 @@ export default function ScanScreen({
         {
           phase: "success",
           subtitle:
-            response.scanType === "receipt"
+            response.scanType === "document"
+              ? "ไม่ใช่ใบเสร็จหรือตารางเรียน จึงดึงเฉพาะข้อความ"
+              : response.scanType === "receipt"
               ? "ตรวจพบสลิปหรือใบเสร็จ"
               : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
           title: "อ่านเอกสารสำเร็จ",
@@ -1637,30 +1641,46 @@ export default function ScanScreen({
                     localStyles.resultIcon,
                     {
                       backgroundColor:
-                        result.scanType === "receipt" ? "#ececf6" : "#e5eee1",
+                        result.scanType === "document"
+                          ? "#eef0ec"
+                          : result.scanType === "receipt"
+                            ? "#ececf6"
+                            : "#e5eee1",
                     },
                   ]}
                 >
                   <MaterialIcon
-                    color={result.scanType === "receipt" ? C.finance : C.sage}
+                    color={
+                      result.scanType === "document"
+                        ? "#6d786c"
+                        : result.scanType === "receipt"
+                          ? C.finance
+                          : C.sage
+                    }
                     name={
-                      result.scanType === "receipt"
-                        ? "receipt_long"
-                        : "calendar_month"
+                      result.scanType === "document"
+                        ? "description"
+                        : result.scanType === "receipt"
+                          ? "receipt_long"
+                          : "calendar_month"
                     }
                     size={24}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={localStyles.resultEyebrow}>
-                    AI จำแนกเอกสารสำเร็จ
+                    {result.scanType === "document"
+                      ? "AI อ่านข้อความจากเอกสาร"
+                      : "AI จำแนกเอกสารสำเร็จ"}
                   </Text>
                   <Text style={localStyles.resultTitle}>
-                    {result.scanType === "receipt"
-                      ? "สลิป / ใบเสร็จการเงิน"
-                      : institutionType === "high-school"
-                        ? "ตารางเรียนมัธยมศึกษา"
-                        : "ตารางเรียนมหาวิทยาลัย"}
+                    {result.scanType === "document"
+                      ? "เอกสารทั่วไป (ข้อความล้วน)"
+                      : result.scanType === "receipt"
+                        ? "สลิป / ใบเสร็จการเงิน"
+                        : institutionType === "high-school"
+                          ? "ตารางเรียนมัธยมศึกษา"
+                          : "ตารางเรียนมหาวิทยาลัย"}
                   </Text>
                 </View>
                 <View style={localStyles.confidence}>
@@ -1670,11 +1690,24 @@ export default function ScanScreen({
                 </View>
               </View>
               <View style={localStyles.editNotice}>
-                <MaterialIcon color={C.sage} name="edit" size={16} />
+                <MaterialIcon
+                  color={C.sage}
+                  name={result.scanType === "document" ? "info" : "edit"}
+                  size={16}
+                />
                 <Text style={localStyles.editNoticeText}>
-                  แตะช่องข้อมูลเพื่อแก้ไขผล OCR ก่อนบันทึก
+                  {result.scanType === "document"
+                    ? "เอกสารนี้ไม่ใช่ใบเสร็จหรือตารางเรียน ระบบจึงไม่เดาเป็นรายการเงิน แต่ดึงข้อความออกมาให้ใช้ต่อในโน้ตได้"
+                    : "แตะช่องข้อมูลเพื่อแก้ไขผล OCR ก่อนบันทึก"}
                 </Text>
               </View>
+              {result.scanType === "document" ? (
+                <View style={localStyles.documentTextBox}>
+                  <Text selectable style={localStyles.documentText}>
+                    {rawOcrText.trim() || "ไม่พบข้อความในภาพนี้"}
+                  </Text>
+                </View>
+              ) : null}
               {receipt?.needsReview ? (
                 <View style={localStyles.reviewWarning}>
                   <MaterialIcon color="#a36b28" name="warning" size={18} />
@@ -2103,7 +2136,10 @@ export default function ScanScreen({
                   </Text>
                 </View>
               ) : null}
-              <Pressable
+              {/* A general document has no receipt or schedule to commit, so
+                  the save action is not offered at all rather than failing
+                  after the user has pressed it. */}
+              {result.scanType === "document" ? null : <Pressable
                 accessibilityLabel="\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"
                 accessibilityRole="button"
                 accessibilityState={{ disabled: saving }}
@@ -2143,9 +2179,11 @@ export default function ScanScreen({
                         : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"}
                   </Text>
                 </LinearGradient>
-              </Pressable>
+              </Pressable>}
               <Text style={localStyles.saveHint}>
-                {result.scanType === "receipt"
+                {result.scanType === "document"
+                  ? "คัดลอกข้อความด้านบน หรือใช้ปุ่ม สแกนเข้าโน้ต ในหน้าโน้ต"
+                  : result.scanType === "receipt"
                   ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e07\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"
                   : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"}
               </Text>
@@ -2458,6 +2496,21 @@ const shadow = {
   shadowRadius: 18,
 };
 const localStyles = StyleSheet.create({
+  documentText: {
+    color: "#41513f",
+    fontFamily: "Prompt_400Regular",
+    fontSize: 12,
+    lineHeight: 19,
+  },
+  documentTextBox: {
+    backgroundColor: "#f5f7f2",
+    borderColor: "#e1e7dd",
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 10,
+    maxHeight: 320,
+    padding: 12,
+  },
   academicLabel: { color: C.muted, fontFamily: F.r, fontSize: 10 },
   academicRow: {
     alignItems: "center",

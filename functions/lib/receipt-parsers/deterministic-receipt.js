@@ -29,6 +29,17 @@ function matchCount(text, pattern) {
 function weightedScore(text, signals) {
     return signals.reduce((total, signal) => total + matchCount(text, signal.pattern) * signal.weight, 0);
 }
+/**
+ * How much weighted evidence a document needs before it may be called a
+ * receipt or a schedule at all.
+ *
+ * Calibrated against real documents: a genuine receipt scores in the high
+ * tens (37 for a shop receipt with a tax-invoice header) and a real timetable
+ * higher still (52), while incidental matches in ordinary prose -- a couple of
+ * weekday names, a time range -- top out around 4. Anything under this bar has
+ * not shown it is a structured document, so it stays plain text.
+ */
+const MIN_STRUCTURED_EVIDENCE = 10;
 function classifyScanText(rawText) {
     const text = rawText.replace(/\u00a0/g, " ");
     let receipt = weightedScore(text, RECEIPT_SIGNALS);
@@ -46,16 +57,43 @@ function classifyScanText(rawText) {
         const courseCodes = text.match(/\b\d{6,7}(?:\s*[-,]\s*\d{1,2})?\b/g)?.length ?? 0;
         schedule += Math.min(4, courseCodes) * 2;
     }
+    // A category has to earn its claim, either through an unmistakable anchor
+    // phrase or through enough accumulated evidence. Without this gate the
+    // comparison below always picks a structured type, however little evidence
+    // there is.
+    const receiptClaimed = hardReceipt > 0 || receiptAnchors >= 2 || receipt >= MIN_STRUCTURED_EVIDENCE;
+    const scheduleClaimed = hardSchedule > 0 || weekdayCount >= 3 || schedule >= MIN_STRUCTURED_EVIDENCE;
+    if (!receiptClaimed && !scheduleClaimed) {
+        // Neither shape fits. Confidence here is confidence that this is *not* a
+        // receipt or a schedule, so it falls as the losing evidence approaches the
+        // bar rather than being pinned at a floor.
+        const strongest = Math.max(receipt, schedule);
+        const confidence = 0.55 + 0.44 * (1 - Math.min(1, strongest / MIN_STRUCTURED_EVIDENCE));
+        return {
+            confidence: Number(confidence.toFixed(2)),
+            scores: { receipt, schedule },
+            type: "document",
+        };
+    }
     let type = schedule > receipt ? "schedule" : "receipt";
-    if (hardReceipt > 0 && hardSchedule === 0)
+    if (!scheduleClaimed)
         type = "receipt";
-    if (receiptAnchors >= 2 && hardSchedule === 0)
+    if (!receiptClaimed)
+        type = "schedule";
+    if (receiptClaimed && hardReceipt > 0 && hardSchedule === 0)
         type = "receipt";
-    if (hardSchedule > 0 && hardReceipt === 0 && schedule >= receipt)
+    if (receiptClaimed && receiptAnchors >= 2 && hardSchedule === 0)
+        type = "receipt";
+    if (scheduleClaimed && hardSchedule > 0 && hardReceipt === 0 && schedule >= receipt)
         type = "schedule";
     const winner = type === "receipt" ? receipt : schedule;
     const loser = type === "receipt" ? schedule : receipt;
-    const confidence = Math.min(0.99, Math.max(0.55, 0.55 + (winner - loser) / Math.max(1, winner + loser) * 0.44));
+    // Confidence blends the margin over the other category with how much
+    // absolute evidence was found. Margin alone reported 0.99 for a document
+    // scoring 4 against 0, which read as near-certainty on almost no evidence.
+    const margin = (winner - loser) / Math.max(1, winner + loser);
+    const strength = Math.min(1, winner / (MIN_STRUCTURED_EVIDENCE * 2));
+    const confidence = Math.min(0.99, Math.max(0.55, 0.55 + margin * strength * 0.44));
     return {
         confidence: Number(confidence.toFixed(2)),
         scores: { receipt, schedule },

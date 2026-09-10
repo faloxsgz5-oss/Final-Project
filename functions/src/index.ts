@@ -318,7 +318,7 @@ function requireAdmin(request: {auth?: {token: Record<string, unknown>}}) {
   }
 }
 
-type ScanType = "receipt" | "schedule";
+type ScanType = "document" | "receipt" | "schedule";
 type ScanRequestType = ScanType | "auto";
 
 function requireString(value: unknown, field: string) {
@@ -1070,11 +1070,15 @@ export const analyzeScan = onCall(
 
     const storagePath = requireString(request.data?.storagePath, "storagePath");
     const requestedType = requireString(request.data?.scanType, "scanType") as ScanRequestType;
-    if (requestedType !== "auto" && requestedType !== "receipt" && requestedType !== "schedule") {
-      throw new HttpsError("invalid-argument", "scanType must be auto, receipt, or schedule.");
+    if (requestedType !== "auto" && requestedType !== "receipt" &&
+      requestedType !== "schedule" && requestedType !== "document") {
+      throw new HttpsError("invalid-argument", "scanType must be auto, receipt, schedule, or document.");
     }
 
-    const allowedFolders = requestedType === "auto" ? ["scans"] : [requestedType === "receipt" ? "receipts" : "schedules"];
+    // `document` is a general scan like `auto`, so it shares the scans folder.
+    const allowedFolders = requestedType === "auto" || requestedType === "document" ?
+      ["scans"] :
+      [requestedType === "receipt" ? "receipts" : "schedules"];
     if (!allowedFolders.some((folder) => storagePath.startsWith(`users/${uid}/${folder}/`))) {
       throw new HttpsError("permission-denied", "You can only scan your own uploaded files.");
     }
@@ -1157,7 +1161,17 @@ export const analyzeScan = onCall(
         requestedType;
       let rawParsed: Record<string, unknown>;
 
-      if (scanType === "receipt") {
+      if (scanType === "document") {
+        // Nothing to extract into a schema. Returning the text as-is is the
+        // honest answer, and it is what scan-to-note wants anyway; running the
+        // receipt extractor here is what produced merchant names like
+        // "กิจกรรม" and line items priced at zero.
+        rawParsed = {
+          documentText: rawText,
+          kind: "document",
+          lineCount: rawText.split(/\r?\n/).filter((line) => line.trim()).length,
+        };
+      } else if (scanType === "receipt") {
         try {
           const iapp = await extractReceiptWithIapp({
             apiKey: iappApiKey.value(),
