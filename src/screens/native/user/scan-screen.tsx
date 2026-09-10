@@ -1075,6 +1075,10 @@ export default function ScanScreen({
   const [receiptPickerTarget, setReceiptPickerTarget] = useState<
     "date" | "time" | null
   >(null);
+  /** The course awaiting delete confirmation, with the name to show. */
+  const [deletingEntry, setDeletingEntry] = useState<
+    { index: number; label: string } | null
+  >(null);
   const [rawOcrText, setRawOcrText] = useState("");
   const [imageViewerOpen, setImageViewerOpen] = useState(false);
   const [receiptHtmlOpen, setReceiptHtmlOpen] = useState(false);
@@ -1237,9 +1241,13 @@ export default function ScanScreen({
 
   const receipt = result?.scanType === "receipt" ? draft : null;
   const schedule = result?.scanType === "schedule" ? draft : null;
-  const entries = Array.isArray(schedule?.entries)
-    ? (schedule.entries as ScheduleEntry[])
-    : [];
+  // Memoised because `entryProblems` depends on it: rebuilding the array on
+  // every render would rebuild the problem map on every render too.
+  const scheduleEntryList = schedule?.entries;
+  const entries = useMemo(
+    () => (Array.isArray(scheduleEntryList) ? (scheduleEntryList as ScheduleEntry[]) : []),
+    [scheduleEntryList],
+  );
   const updateDraft = (key: string, value: string) =>
     setDraft((current) => ({ ...current, [key]: value }));
   const receiptItems = normalizeReceiptItems(receipt?.items);
@@ -1281,6 +1289,17 @@ export default function ScanScreen({
         ),
       })
     : "";
+  /** Removes a scanned course outright, for the ones OCR invented. */
+  const removeEntry = (index: number) =>
+    setDraft((current) => {
+      const currentEntries = Array.isArray(current.entries)
+        ? (current.entries as ScheduleEntry[])
+        : [];
+      return {
+        ...current,
+        entries: currentEntries.filter((_, entryIndex) => entryIndex !== index),
+      };
+    });
   const updateEntry = (
     index: number,
     key: keyof ScheduleEntry,
@@ -1297,6 +1316,29 @@ export default function ScanScreen({
         ),
       };
     });
+  /**
+   * The courses that cannot be saved, and why.
+   *
+   * Saving used to throw on the first bad course, which aborted the whole
+   * batch from inside the save call -- one blank field and nothing at all was
+   * written, with only a toast to say so. The same rules are checked here
+   * first so the problem is shown on the course it belongs to.
+   */
+  const entryProblems = useMemo(() => {
+    const problems = new Map<number, Partial<Record<'courseCode' | 'day' | 'endTime' | 'startTime', string>>>();
+    entries.forEach((entry, index) => {
+      const missing: Partial<Record<'courseCode' | 'day' | 'endTime' | 'startTime', string>> = {};
+      if (!textValue(entry.courseCode, "").trim() && !textValue(entry.courseName, "").trim()) {
+        missing.courseCode = "ต้องมีรหัสวิชาหรือชื่อวิชา";
+      }
+      if (!matchScanWeekday(textValue(entry.day, ""))) missing.day = "เลือกวันเรียน";
+      if (!/^\d{1,2}:\d{2}$/.test(textValue(entry.startTime, "").trim())) missing.startTime = "ต้องระบุเวลาเริ่ม";
+      if (!/^\d{1,2}:\d{2}$/.test(textValue(entry.endTime, "").trim())) missing.endTime = "ต้องระบุเวลาสิ้นสุด";
+      if (Object.keys(missing).length) problems.set(index, missing);
+    });
+    return problems;
+  }, [entries]);
+
   const selectedEntryTime = timePickerTarget
     ? entries[timePickerTarget.index]?.[timePickerTarget.field]
     : null;
@@ -1369,6 +1411,16 @@ export default function ScanScreen({
 
   const persistOcrResult = async () => {
     if (!result || saving) return;
+    if (result.scanType === "schedule" && entryProblems.size) {
+      // Named rather than counted: with the list scrolled, "2 รายการ" alone
+      // leaves the user hunting for which cards are marked.
+      const numbers = [...entryProblems.keys()].map((index) => index + 1).join(", ");
+      showToast(
+        "ยังบันทึกไม่ได้",
+        `รายวิชาที่ ${numbers} ยังกรอกไม่ครบ แก้ให้ครบหรือลบรายการนั้นออก`,
+      );
+      return;
+    }
     setSaving(true);
     showFeedback({
       phase: "loading",
@@ -1416,6 +1468,29 @@ export default function ScanScreen({
 
   // Rendered by both branches below, because the receipt dashboard returns
   // early and the review gate belongs to whichever one is on screen.
+  /**
+   * Removing a scanned course is destructive and easy to mis-tap next to the
+   * edit fields, so it goes through the same confirmation as every other
+   * delete in the app.
+   */
+  const deleteEntryDialog = (
+    <ConfirmDialog
+      confirmLabel="ลบรายวิชา"
+      message={
+        deletingEntry
+          ? `${deletingEntry.label} จะถูกลบออกจากรายการนี้ ยังไม่มีผลกับปฏิทินจนกว่าจะกดบันทึก`
+          : ""
+      }
+      onCancel={() => setDeletingEntry(null)}
+      onConfirm={() => {
+        if (deletingEntry) removeEntry(deletingEntry.index);
+        setDeletingEntry(null);
+      }}
+      title="ลบรายวิชานี้ออกหรือไม่?"
+      visible={Boolean(deletingEntry)}
+    />
+  );
+
   const reviewDialog = (
     <ConfirmDialog
       confirmLabel="ตรวจสอบแล้ว บันทึก"
@@ -1470,6 +1545,7 @@ export default function ScanScreen({
           updateReceiptItem={updateReceiptItem}
         />
         {reviewDialog}
+        {deleteEntryDialog}
       </>
     );
   }
@@ -1913,7 +1989,12 @@ export default function ScanScreen({
                         style={localStyles.courseCard}
                       >
                         <View style={localStyles.courseTop}>
-                          <View style={localStyles.courseNumber}>
+                          <View
+                            style={[
+                              localStyles.courseNumber,
+                              entryProblems.has(index) && localStyles.courseNumberProblem,
+                            ]}
+                          >
                             <Text style={localStyles.courseNumberText}>
                               {index + 1}
                             </Text>
@@ -1932,7 +2013,27 @@ export default function ScanScreen({
                             value={textValue(entry.courseCode, "")}
                           />
                           <MaterialIcon color={C.sage} name="edit" size={16} />
+                          <Pressable
+                            accessibilityLabel={`ลบรายวิชาที่ ${index + 1}`}
+                            accessibilityRole="button"
+                            onPress={() =>
+                              setDeletingEntry({
+                                index,
+                                label: textValue(entry.courseCode, "").trim() ||
+                                  textValue(entry.courseName, "").trim() ||
+                                  `รายวิชาที่ ${index + 1}`,
+                              })
+                            }
+                            style={localStyles.courseDelete}
+                          >
+                            <MaterialIcon color="#c1766f" name="delete_outline" size={17} />
+                          </Pressable>
                         </View>
+                        {entryProblems.get(index)?.courseCode ? (
+                          <Text style={localStyles.entryError}>
+                            {entryProblems.get(index)?.courseCode}
+                          </Text>
+                        ) : null}
                         <SmallInput
                           label="ชื่อวิชา"
                           onChangeText={(value) =>
@@ -1970,11 +2071,9 @@ export default function ScanScreen({
                               "",
                             )}
                           />
-                          <SmallInput
-                            label="วัน"
-                            onChangeText={(value) =>
-                              updateEntry(index, "day", value)
-                            }
+                          <DayPickerRow
+                            error={entryProblems.get(index)?.day}
+                            onChange={(value) => updateEntry(index, "day", value)}
                             value={textValue(entry.day, "")}
                           />
                           {entry.periodLabel ? (
@@ -2302,6 +2401,7 @@ export default function ScanScreen({
           visible={receiptHtmlOpen}
         />
         {reviewDialog}
+        {deleteEntryDialog}
       </View>
     </UserShell>
   );
@@ -2624,6 +2724,93 @@ function OcrTextModal({
   );
 }
 
+/**
+ * The days a class can fall on, in the order a Thai week is read.
+ *
+ * These are the exact strings `scan-save` matches when it turns a course into
+ * calendar entries, so picking from this list cannot produce a day the save
+ * step will reject -- which typing the day by hand very much could.
+ */
+const SCAN_WEEKDAYS = [
+  "จันทร์",
+  "อังคาร",
+  "พุธ",
+  "พฤหัสบดี",
+  "ศุกร์",
+  "เสาร์",
+  "อาทิตย์",
+] as const;
+
+/**
+ * The other spellings a scan can produce for each of those days.
+ *
+ * The grid parser writes Thai but the list parser writes "MON", and
+ * `scan-save` accepts both. Recognising only the Thai label here would have
+ * left a correctly scanned English timetable looking unset -- and, worse, the
+ * new save gate would have refused to save it.
+ */
+const WEEKDAY_ALIASES: Record<(typeof SCAN_WEEKDAYS)[number], string[]> = {
+  "จันทร์": ["จันทร์", "monday", "mon"],
+  "อังคาร": ["อังคาร", "tuesday", "tue"],
+  "พุธ": ["พุธ", "wednesday", "wed"],
+  "พฤหัสบดี": ["พฤหัสบดี", "พฤหัส", "thursday", "thu"],
+  "ศุกร์": ["ศุกร์", "friday", "fri"],
+  "เสาร์": ["เสาร์", "saturday", "sat"],
+  "อาทิตย์": ["อาทิตย์", "sunday", "sun"],
+};
+
+/** The listed day a scanned value means, or null when it means none of them. */
+function matchScanWeekday(value: string) {
+  const needle = value.trim().toLowerCase();
+  if (!needle) return null;
+  return SCAN_WEEKDAYS.find((weekday) =>
+    WEEKDAY_ALIASES[weekday].some((alias) => needle.includes(alias)),
+  ) ?? null;
+}
+
+/** Picks the day a scanned course falls on. */
+function DayPickerRow({
+  error,
+  onChange,
+  value,
+}: {
+  error?: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const current = matchScanWeekday(value);
+  return (
+    <View style={localStyles.dayPicker}>
+      <Text style={[localStyles.dayPickerLabel, error && localStyles.dayPickerLabelError]}>
+        {error ? `วัน · ${error}` : "วัน"}
+      </Text>
+      <View style={localStyles.dayRow}>
+        {SCAN_WEEKDAYS.map((weekday) => {
+          const active = weekday === current;
+          return (
+            <Pressable
+              accessibilityLabel={`ตั้งวัน ${weekday}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              key={weekday}
+              onPress={() => onChange(weekday)}
+              style={[
+                localStyles.dayChip,
+                active && localStyles.dayChipActive,
+                !current && error ? localStyles.dayChipError : null,
+              ]}
+            >
+              <Text style={[localStyles.dayChipText, active && localStyles.dayChipTextActive]}>
+                {weekday}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 const DOCUMENT_TYPES = [
   { icon: "receipt_long", label: "สลิป / ใบเสร็จ", value: "receipt" },
   { icon: "calendar_month", label: "ตารางเรียน", value: "schedule" },
@@ -2735,6 +2922,18 @@ function CategoryPickerRow({
 }
 
 const localStyles = StyleSheet.create({
+  courseDelete: { alignItems: "center", backgroundColor: "#fbeeed", borderRadius: 14, height: 28, justifyContent: "center", marginLeft: 6, width: 28 },
+  courseNumberProblem: { backgroundColor: "#e3a19a" },
+  dayChip: { backgroundColor: "#eef1eb", borderRadius: 99, paddingHorizontal: 10, paddingVertical: 7 },
+  dayChipActive: { backgroundColor: "#5f875f" },
+  dayChipError: { backgroundColor: "#fbeeed" },
+  dayChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  dayChipTextActive: { color: "#fff" },
+  dayPicker: { marginTop: 8 },
+  dayPickerLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9, marginBottom: 6 },
+  dayPickerLabelError: { color: "#c1766f" },
+  dayRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  entryError: { color: "#c1766f", fontFamily: "Prompt_600SemiBold", fontSize: 9, marginTop: 4 },
   categoryHeader: { alignItems: "center", flexDirection: "row", gap: 10, minHeight: 52 },
   categoryIcon: { alignItems: "center", backgroundColor: "#eef3ea", borderRadius: 12, height: 36, justifyContent: "center", width: 36 },
   categoryLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9 },
