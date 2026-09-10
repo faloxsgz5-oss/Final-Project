@@ -83,8 +83,16 @@ function bangkokParts(value: Date) {
 function todayKey() { const part = bangkokParts(new Date()); return `${part.year}-${part.month}-${part.day}`; }
 function dateKey(value: unknown) { const part = bangkokParts(toDate(value)); return `${part.year}-${part.month}-${part.day}`; }
 function formatTime(value: unknown) { return new Intl.DateTimeFormat('th-TH', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(toDate(value)); }
-function formatLongDate(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
-function formatMonth(value: string) { return new Intl.DateTimeFormat('th-TH', {month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
+/**
+ * The Buddhist year, computed rather than left to the locale.
+ *
+ * `th-TH` resolves to the Buddhist calendar on web's full-ICU build but to the
+ * Gregorian one on Android's Hermes, so the same screen printed "กันยายน 2569"
+ * in a browser and "กันยายน ค.ศ. 2026" in the app.
+ */
+function buddhistYear(value: string) { return Number(value.slice(0, 4)) + 543; }
+function formatLongDate(value: string) { return `${new Intl.DateTimeFormat('th-TH', {weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`))} ${buddhistYear(value)}`; }
+function formatMonth(value: string) { return `${new Intl.DateTimeFormat('th-TH', {month: 'long', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`))} ${buddhistYear(value)}`; }
 function shortDay(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'short', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
 function eventTitle(item: EventItem) { return typeof item.title === 'string' && item.title.trim() ? item.title : 'กิจกรรม'; }
 function textEvent(value: unknown, fallback: string) { return typeof value === 'string' && value.trim() ? value : fallback; }
@@ -286,9 +294,6 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     backgroundColor: 'transparent',
     monthTextColor: C.label,
     textMonthFontFamily: F.b,
-    // Android's native text renderer rejects fontSize: 0. Keep the built-in
-    // CalendarList month label visually hidden without crashing month mode.
-    textMonthFontSize: 1,
     textSectionTitleColor: C.secondary,
     textDayHeaderFontFamily: F.s,
     textDayHeaderFontSize: 10,
@@ -300,17 +305,38 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       <CalendarList
         calendarHeight={340}
         calendarWidth={calendarWidth}
-        current={visibleDate}
+        /* Anchored to the month, never the day. The list reports the 1st of
+           whatever month it settles on, so passing a full date here changed
+           `current` on every scroll -- and the library re-scrolls whenever
+           `current` changes. On iOS Safari that fought momentum scrolling and
+           the month view never came to rest. */
+        current={`${visibleDate.slice(0, 7)}-01`}
         dayComponent={DayCell}
         firstDay={1}
         futureScrollRange={24}
         horizontal
-        key={`month-${visibleDate.slice(0, 7)}`}
-        onVisibleMonthsChange={(months) => { if (months[0]?.dateString) setVisibleDate(months[0].dateString); }}
+        /* No `key` here on purpose: keying this on the visible month remounted
+           the whole paged list from inside its own scroll callback, which
+           threw away the scroll position mid-gesture. `current` already moves
+           the list. */
+        onVisibleMonthsChange={(months) => {
+          const next = months[0]?.dateString;
+          if (!next) return;
+          // Ignore the callback unless the month genuinely changed, so a
+          // settle within the same month cannot start another render pass.
+          setVisibleDate((previous) => next.slice(0, 7) === previous.slice(0, 7) ? previous : next);
+        }}
         pagingEnabled
         pastScrollRange={24}
+        /* Deliberately not `staticHeader`: that header is absolutely
+           positioned and only covers each page's own header when the theme
+           has an opaque background. This calendar is transparent by design,
+           so both were visible -- two month labels and two rows of weekday
+           names. One header per page instead, with its month text dropped
+           because the screen prints the Buddhist-era one just above; the
+           weekday row it renders is the one the user sees. */
+        renderHeader={() => null}
         showScrollIndicator={false}
-        staticHeader
         theme={calendarTheme}
       />
     );
