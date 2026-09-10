@@ -144,6 +144,27 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   const [mode, setMode] = useState<ViewMode>(page === 'smartlife_calendar_month' ? 'month' : page === 'smartlife_calendar_week' ? 'week' : 'day');
   const [selectedDate, setSelectedDate] = useState(today);
   const [visibleDate, setVisibleDate] = useState(today);
+  /**
+   * The month the list is anchored to. Moved only by a deliberate navigation,
+   * never by scrolling -- that separation is what stops the list from chasing
+   * its own scroll position, while `visibleDate` still follows the swipe so
+   * the header and the agenda track what is actually on screen.
+   */
+  const [monthAnchor, setMonthAnchor] = useState(today);
+  /**
+   * Bumped by every deliberate navigation, including one that re-selects the
+   * month already anchored. Swiping moves the list without moving the anchor,
+   * so after a swipe "วันนี้" sets an anchor that is already current -- without
+   * this the effect below would not re-run and the list would stay where the
+   * swipe left it.
+   */
+  const [reanchor, setReanchor] = useState(0);
+  const monthList = useRef<{scrollToMonth?: (date: string) => void} | null>(null);
+  /** Whether the user has actually dragged the month list since it was anchored. */
+  const monthDragged = useRef(false);
+  /** True while the list is still being pushed onto its anchor after a mount. */
+  const settling = useRef(true);
+
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -191,17 +212,89 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     return Array.from({length: 12}, (_, month) => ({month, days: miniMonthDays(year, month)}));
   }, [visibleDate]);
 
+  const anchorTo = (value: string) => { setMonthAnchor(value); setReanchor((count) => count + 1); };
   const openDay = (value: string, showDetails = false) => {
     setSelectedDate(value);
     setVisibleDate(value);
+    anchorTo(value);
     if (showDetails) setDetailsOpen(true);
   };
   const navigate = (direction: number) => {
     const next = shift(visibleDate, mode, direction);
     setVisibleDate(next);
     setSelectedDate(next);
+    anchorTo(next);
   };
-  const goToday = () => { setSelectedDate(today); setVisibleDate(today); };
+  const goToday = () => { setSelectedDate(today); setVisibleDate(today); anchorTo(today); };
+
+  /**
+   * Puts the list back on its anchor month once the list has actually been
+   * laid out.
+   *
+   * `CalendarList` positions itself with `initialScrollIndex` plus a
+   * `getItemLayout` that is memoised with an empty dependency list, and it
+   * applies both before the row has finished laying out. On WebKit that lands
+   * short by a varying number of months -- cold loads came up on index 12, 4
+   * and 14 of a 49-month window instead of the middle -- and because the list
+   * then reports whatever month it stopped on, the header agreed with it and
+   * the whole screen showed the wrong month. Re-asserting on layout costs
+   * nothing when the list is already in the right place, because the library
+   * skips a scroll of zero distance.
+   */
+  const anchorMonth = `${monthAnchor.slice(0, 7)}-01`;
+  const settleOnAnchor = useCallback(() => {
+    monthList.current?.scrollToMonth?.(anchorMonth);
+  }, [anchorMonth]);
+
+  /**
+   * Pushes the list onto its anchor until the layout stops moving under it.
+   *
+   * One assertion is not enough and the library's own callback cannot drive
+   * the retries: when a nudge lands on the same wrong month it reports
+   * nothing, so a callback-driven loop stalls exactly where it needs to keep
+   * going. A short timer does not care. Every attempt aims at the same fixed
+   * offset, so once the list is right the repeats are no-ops -- the library
+   * skips a scroll of zero distance -- and a drag ends it immediately so it
+   * can never fight the user.
+   */
+  useEffect(() => {
+    if (mode !== 'month') return undefined;
+    monthDragged.current = false;
+    settling.current = true;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const push = () => {
+      // Runs for a few seconds because the list can still be laying out well
+      // after mount on a slow load, and stopping early is exactly when it gets
+      // left on the wrong month. A real drag ends it at once.
+      if (monthDragged.current || attempts >= 24) {
+        settling.current = false;
+        return;
+      }
+      attempts += 1;
+      settleOnAnchor();
+      timer = setTimeout(push, 150);
+    };
+    push();
+    return () => { clearTimeout(timer); settling.current = false; };
+  }, [mode, reanchor, settleOnAnchor]);
+
+  /**
+   * Follows the list only once the user has actually dragged it.
+   *
+   * `CalendarList` reports `viewableItems[0]`, which during mount is not the
+   * centred page at all -- it fires repeatedly with months scattered either
+   * side, and whichever arrived last used to win, which is how the screen
+   * ended up captioned two years off. Until a drag there is nothing to learn
+   * from those reports: the month on display is the one the list was anchored
+   * to. After a drag the user has moved it somewhere only the list knows, so
+   * its reports are taken as they come.
+   */
+  const onMonthsVisible = (months: {dateString?: string}[]) => {
+    const next = months[0]?.dateString;
+    if (!next || !monthDragged.current) return;
+    setVisibleDate((previous) => next.slice(0, 7) === previous.slice(0, 7) ? previous : next);
+  };
 
   // A course row deletes the whole series, a one-off row deletes just itself,
   // so the confirmation has to say which. `deleting` holds the pending row and
@@ -305,27 +398,27 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       <CalendarList
         calendarHeight={340}
         calendarWidth={calendarWidth}
-        /* Anchored to the month, never the day. The list reports the 1st of
-           whatever month it settles on, so passing a full date here changed
-           `current` on every scroll -- and the library re-scrolls whenever
-           `current` changes. On iOS Safari that fought momentum scrolling and
-           the month view never came to rest. */
-        current={`${visibleDate.slice(0, 7)}-01`}
+        /* Anchored to a month the user actually chose, never to wherever the
+           list has scrolled. Passing the scrolled-to date back in made
+           `current` change on every scroll, and the library re-scrolls
+           whenever `current` changes -- on iOS Safari that fought momentum
+           scrolling and the view never came to rest. */
+        current={anchorMonth}
         dayComponent={DayCell}
         firstDay={1}
         futureScrollRange={24}
         horizontal
-        /* No `key` here on purpose: keying this on the visible month remounted
-           the whole paged list from inside its own scroll callback, which
-           threw away the scroll position mid-gesture. `current` already moves
-           the list. */
-        onVisibleMonthsChange={(months) => {
-          const next = months[0]?.dateString;
-          if (!next) return;
-          // Ignore the callback unless the month genuinely changed, so a
-          // settle within the same month cannot start another render pass.
-          setVisibleDate((previous) => next.slice(0, 7) === previous.slice(0, 7) ? previous : next);
-        }}
+        /* Remounted when the anchor month or the width changes, never from
+           the scroll callback. The width matters because the library captures
+           the page size into a `getItemLayout` memoised with an empty
+           dependency list, so a width that settles after mount -- normal in a
+           mobile browser, where the URL bar collapses -- would leave it
+           measuring pages at the old size. */
+        key={`${monthAnchor.slice(0, 7)}-${calendarWidth}`}
+        onLayout={settleOnAnchor}
+        ref={monthList}
+        onScrollBeginDrag={() => { monthDragged.current = true; }}
+        onVisibleMonthsChange={onMonthsVisible}
         pagingEnabled
         pastScrollRange={24}
         /* Deliberately not `staticHeader`: that header is absolutely
@@ -347,7 +440,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     );
     if (mode === 'year') return (
       <View style={styles.yearGrid}>{yearMonths.map(({month, days}) => (
-        <Pressable key={month} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); setMode('month'); }} style={styles.miniMonth}>
+        <Pressable key={month} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); anchorTo(next); setMode('month'); }} style={styles.miniMonth}>
           <Text style={styles.miniMonthTitle}>{THAI_MONTH_NAMES[month]}</Text>
           <View style={styles.miniDays}>{days.map((key, index) => key ? (
             <View key={key} style={[styles.miniDay, key === today && styles.miniToday]}><Text style={[styles.miniDayText, key === today && styles.miniTodayText]}>{Number(key.slice(-2))}</Text>{grouped[key]?.length ? <View style={styles.miniDot} /> : null}</View>
@@ -394,7 +487,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
           <AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} />
 
           <View accessibilityRole="tablist" style={styles.segment}>{(['day', 'week', 'month', 'year'] as ViewMode[]).map((item) => (
-            <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => { setMode(item); setVisibleDate(selectedDate); }} style={[styles.segmentItem, mode === item && styles.segmentActive]}>
+            <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => { setMode(item); setVisibleDate(selectedDate); anchorTo(selectedDate); }} style={[styles.segmentItem, mode === item && styles.segmentActive]}>
               <Text style={[styles.segmentText, mode === item && styles.segmentTextActive]}>{item === 'day' ? 'วัน' : item === 'week' ? 'สัปดาห์' : item === 'month' ? 'เดือน' : 'ปี'}</Text>
             </Pressable>
           ))}</View>
