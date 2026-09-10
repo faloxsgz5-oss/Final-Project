@@ -97,6 +97,7 @@
     "test:assistant-fuzz": "node --experimental-strip-types ./scripts/test-assistant-fuzz.mjs",
     "test:wellbeing": "node --experimental-strip-types --import ./scripts/register-ts-alias.mjs ./scripts/test-wellbeing-insights.mjs",
     "test:adaptive": "npm --prefix functions run test:adaptive",
+    "test:scanned-note-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-scanned-note.rules.test.cjs\"",
     "test:firestore-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-adaptive-scheduling.rules.test.cjs\"",
     "test:adaptive-transactions": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:adaptive-transactions:local\"",
     "test:admin-dashboard": "node --experimental-strip-types ./src/admin/__tests__/run-admin-tests.mjs",

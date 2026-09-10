@@ -503,26 +503,10 @@ function ReceiptScanDashboard({
           </>
         ) : (
           <>
-            <View style={receiptStyles.sourceImageCard}>
-              <View style={receiptStyles.sourceImageHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={receiptStyles.sourceImageTitle}>รูปต้นฉบับ</Text>
-                  <Text style={receiptStyles.sourceImageSubtitle}>
-                    ดูรูปเทียบกับข้อมูลด้านล่าง แล้วแตะช่องที่ต้องการแก้ไข
-                  </Text>
-                </View>
-                <Pressable onPress={() => pick("library")}>
-                  <MaterialIcon color={C.sage} name="refresh" size={20} />
-                </Pressable>
-              </View>
-              <Pressable onPress={() => setImageViewerOpen(true)}>
-                <Image
-                  contentFit="contain"
-                  source={{ uri: imageUri }}
-                  style={receiptStyles.sourceImage}
-                />
-              </Pressable>
-            </View>
+            {/* The source photo is deliberately not rendered once the receipt
+                has been read: the extracted fields are what the user works
+                with, and the image only pushed them down the page. The
+                timetable import keeps its image, by design. */}
             <View style={receiptStyles.editorCard}>
               <Text style={receiptStyles.editorTitle}>ตรวจและแก้ไขผล OCR</Text>
               <EditableRow
@@ -1396,9 +1380,11 @@ export default function ScanScreen({
       showFeedback({
         phase: "success",
         subtitle:
-          result.scanType === "receipt"
-            ? "เพิ่มรายการไปยังหน้าการเงินแล้ว"
-            : "เพิ่มรายวิชาไปยังปฏิทินแล้ว",
+          result.scanType === "document"
+            ? "บันทึกข้อความเป็นโน้ตแล้ว"
+            : result.scanType === "receipt"
+              ? "เพิ่มรายการไปยังหน้าการเงินแล้ว"
+              : "เพิ่มรายวิชาไปยังปฏิทินแล้ว",
         title: "บันทึกสำเร็จ",
       });
       setTimeout(() => {
@@ -1552,7 +1538,11 @@ export default function ScanScreen({
             </LinearGradient>
           </Card>
 
-          {imageUri ? (
+          {/* The source image stays visible while the timetable import is being
+              checked row by row, which is how that flow is meant to work. For a
+              receipt or a general document the result card is the point, so the
+              picture stops taking up the screen once the result arrives. */}
+          {imageUri && (!result || result.scanType === "schedule") ? (
             <View
               onLayout={(event) =>
                 setImageCardFrame({
@@ -1595,7 +1585,7 @@ export default function ScanScreen({
           {imageUri || result ? (
             <View style={localStyles.scanActions}>
               <Pressable
-                accessibilityLabel="\u0e2a\u0e41\u0e01\u0e19\u0e43\u0e2b\u0e21\u0e48"
+                accessibilityLabel="สแกนใหม่"
                 disabled={saving}
                 onPress={() => setPickerOpen(true)}
                 style={({ pressed }) => [
@@ -1614,7 +1604,7 @@ export default function ScanScreen({
               </Pressable>
               <Pressable
                 accessibilityHint="ล้างรูปและข้อมูล OCR ทั้งหมด"
-                accessibilityLabel="\u0e25\u0e49\u0e32\u0e07\u0e1c\u0e25\u0e2a\u0e41\u0e01\u0e19"
+                accessibilityLabel="ล้างผลสแกน"
                 accessibilityRole="button"
                 disabled={saving}
                 onPress={handleClearData}
@@ -1702,11 +1692,7 @@ export default function ScanScreen({
                 </Text>
               </View>
               {result.scanType === "document" ? (
-                <View style={localStyles.documentTextBox}>
-                  <Text selectable style={localStyles.documentText}>
-                    {rawOcrText.trim() || "ไม่พบข้อความในภาพนี้"}
-                  </Text>
-                </View>
+                <DocumentTextBox text={rawOcrText} />
               ) : null}
               {receipt?.needsReview ? (
                 <View style={localStyles.reviewWarning}>
@@ -2136,11 +2122,10 @@ export default function ScanScreen({
                   </Text>
                 </View>
               ) : null}
-              {/* A general document has no receipt or schedule to commit, so
-                  the save action is not offered at all rather than failing
-                  after the user has pressed it. */}
-              {result.scanType === "document" ? null : <Pressable
-                accessibilityLabel="\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"
+              {/* A general document has no receipt or schedule to commit, but
+                  it still saves -- as a note holding the extracted text. */}
+              <Pressable
+                accessibilityLabel="บันทึกข้อมูล"
                 accessibilityRole="button"
                 accessibilityState={{ disabled: saving }}
                 disabled={saving}
@@ -2176,13 +2161,15 @@ export default function ScanScreen({
                       ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08"
                       : saving
                         ? "\u0e01\u0e33\u0e25\u0e31\u0e07\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01..."
-                        : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"}
+                        : result.scanType === "document"
+                          ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e40\u0e1b\u0e47\u0e19\u0e42\u0e19\u0e49\u0e15"
+                          : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"}
                   </Text>
                 </LinearGradient>
-              </Pressable>}
+              </Pressable>
               <Text style={localStyles.saveHint}>
                 {result.scanType === "document"
-                  ? "คัดลอกข้อความด้านบน หรือใช้ปุ่ม สแกนเข้าโน้ต ในหน้าโน้ต"
+                  ? "เก็บข้อความที่อ่านได้ไว้เป็นโน้ตใหม่ แก้ไขต่อได้ในหน้าโน้ต"
                   : result.scanType === "receipt"
                   ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e07\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"
                   : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"}
@@ -2495,6 +2482,65 @@ const shadow = {
   shadowOpacity: 0.12,
   shadowRadius: 18,
 };
+/**
+ * Extracted text from a general document, kept inside a fixed box.
+ *
+ * OCR on a dense page -- especially a table, which comes back as a flat run of
+ * fragments rather than rows -- can be thousands of characters. Rendering it
+ * all inline pushed the result card and the save button far below the fold and
+ * left the user scrolling the whole page to get past it. A long document now
+ * shows a clamped preview that scrolls inside itself and expands on request.
+ */
+function DocumentTextBox({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = text.trim();
+  const isLong = trimmed.length > PREVIEW_CHARS;
+  const shown = !isLong || expanded ? trimmed : `${trimmed.slice(0, PREVIEW_CHARS).trimEnd()}...`;
+
+  if (!trimmed) {
+    return (
+      <View style={localStyles.documentTextBox}>
+        <Text style={localStyles.documentText}>ไม่พบข้อความในภาพนี้</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={localStyles.documentTextBox}>
+      <ScrollView
+        nestedScrollEnabled
+        style={expanded ? localStyles.documentScrollExpanded : localStyles.documentScroll}
+      >
+        <Text selectable style={localStyles.documentText}>
+          {shown}
+        </Text>
+      </ScrollView>
+      {isLong ? (
+        <Pressable
+          accessibilityLabel={expanded ? "ย่อข้อความที่สแกน" : "ดูข้อความที่สแกนทั้งหมด"}
+          accessibilityRole="button"
+          onPress={() => setExpanded((current) => !current)}
+          style={localStyles.documentToggle}
+        >
+          <MaterialIcon
+            color="#5f875f"
+            name={expanded ? "expand_less" : "expand_more"}
+            size={16}
+          />
+          <Text style={localStyles.documentToggleText}>
+            {expanded
+              ? "ย่อข้อความ"
+              : `ดูทั้งหมด (${trimmed.length.toLocaleString("th-TH")} ตัวอักษร)`}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+/** How much of a long scan to show before asking the user to expand. */
+const PREVIEW_CHARS = 320;
+
 const localStyles = StyleSheet.create({
   documentText: {
     color: "#41513f",
@@ -2502,14 +2548,30 @@ const localStyles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 19,
   },
+  documentScroll: { maxHeight: 150 },
+  documentScrollExpanded: { maxHeight: 340 },
   documentTextBox: {
     backgroundColor: "#f5f7f2",
     borderColor: "#e1e7dd",
     borderRadius: 14,
     borderWidth: 1,
     marginTop: 10,
-    maxHeight: 320,
     padding: 12,
+  },
+  documentToggle: {
+    alignItems: "center",
+    borderTopColor: "#e1e7dd",
+    borderTopWidth: 1,
+    flexDirection: "row",
+    gap: 5,
+    justifyContent: "center",
+    marginTop: 8,
+    paddingTop: 8,
+  },
+  documentToggleText: {
+    color: "#5f875f",
+    fontFamily: "Prompt_700Bold",
+    fontSize: 10,
   },
   academicLabel: { color: C.muted, fontFamily: F.r, fontSize: 10 },
   academicRow: {

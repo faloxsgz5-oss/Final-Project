@@ -1,6 +1,6 @@
 import {Timestamp} from 'firebase/firestore';
 
-import {schedules, transactions} from '@/services/firestore';
+import {notes, schedules, transactions} from '@/services/firestore';
 import type {OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
 
@@ -19,7 +19,7 @@ type ScheduleEntry = {
 };
 
 export type SavedScan = {
-  destination: 'smartlife_calendar_month' | 'smartlife_finance_month';
+  destination: 'smartlife_calendar_month' | 'smartlife_finance_month' | 'smartlife_planner_notes';
   documentIds: string[];
 };
 
@@ -282,6 +282,14 @@ function scheduleEntries(draft: Record<string, unknown>) {
   return Array.isArray(draft.entries) ? draft.entries as ScheduleEntry[] : [];
 }
 
+/** The first line with real words, used to title a scanned note. */
+function firstMeaningfulLine(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length >= 4 && /[\p{L}]/u.test(line)) ?? '';
+}
+
 export async function saveOcrResult({
   draft,
   result,
@@ -293,11 +301,31 @@ export async function saveOcrResult({
 }): Promise<SavedScan> {
   await ensureUserProfile();
 
-  // A general document has no schema to save into. Saving it as a transaction
-  // is exactly the failure this category was added to prevent, so refuse
-  // rather than invent an amount.
+  // A general document has no financial or timetable schema to fill, but it is
+  // still worth keeping: it becomes a note holding the extracted text. Saving
+  // it as a *transaction* is the failure this category was added to prevent --
+  // saving it at all is not.
   if (result.scanType === 'document') {
-    throw new Error('เอกสารนี้ไม่ใช่ใบเสร็จหรือตารางเรียน จึงบันทึกเป็นรายการเงินหรือตารางไม่ได้ ใช้ปุ่มสแกนเข้าโน้ตเพื่อเก็บข้อความแทน');
+    const scanned = String(
+      (typeof draft.documentText === 'string' && draft.documentText) ||
+      (typeof result.parsed?.documentText === 'string' && result.parsed.documentText) ||
+      result.rawText ||
+      '',
+    ).trim();
+    if (!scanned) throw new Error('ไม่พบข้อความในเอกสารนี้ จึงบันทึกเป็นโน้ตไม่ได้');
+    const title = String(draft.title ?? '').trim() || firstMeaningfulLine(scanned) ||
+      `สแกนเมื่อ ${new Date().toLocaleDateString('th-TH')}`;
+    const id = await notes.create(uid, {
+      category: 'study',
+      color: '#6F8F6D',
+      content: scanned.slice(0, 20000),
+      priority: 'normal',
+      relatedScheduleId: '',
+      scanLogId: typeof result.logId === 'string' ? result.logId : '',
+      status: 'pending',
+      title: title.slice(0, 160),
+    });
+    return {destination: 'smartlife_planner_notes', documentIds: [id]};
   }
 
   if (result.scanType === 'receipt') {
