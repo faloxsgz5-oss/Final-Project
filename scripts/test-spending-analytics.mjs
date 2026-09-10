@@ -22,7 +22,7 @@ assert.equal(week.total, 250);
 assert.equal(week.transactionCount, 3);
 assert.equal(week.highestDay?.key, '2026-08-03');
 assert.equal(week.highestDay?.amount, 200);
-assert.equal(week.highestCategory?.category, 'Food', 'category names should be merged case-insensitively');
+assert.equal(week.highestCategory?.category, 'อาหารและเครื่องดื่ม', 'categories resolve to the shared list, not the first spelling seen');
 assert.equal(week.highestCategory?.amount, 200);
 assert.equal(Math.round(week.highestCategory?.percentage ?? 0), 80);
 
@@ -30,7 +30,19 @@ const month = aggregateSpending(transactions, 'month', new Date(bangkokDate(10))
 assert.equal(month.byDay.length, 31, 'August must render every calendar day');
 assert.equal(month.total, 1_249);
 assert.equal(month.byDay.find((point) => point.key === '2026-08-20')?.amount, 999);
-assert.equal(month.highestCategory?.category, 'Shopping');
+assert.equal(month.highestCategory?.category, 'ช้อปปิ้ง/เสื้อผ้า');
+
+const mixedSpellings = aggregateSpending([
+  {amount: 100, category: 'Food', occurredAt: bangkokDate(3), type: 'expense'},
+  {amount: 100, category: 'อาหาร', occurredAt: bangkokDate(4), type: 'expense'},
+  {amount: 40, category: 'ค่าธรรมเนียม', occurredAt: bangkokDate(4), type: 'expense'},
+  {amount: 20, category: 'Fees', occurredAt: bangkokDate(4), type: 'expense'},
+], 'week', new Date(bangkokDate(5)));
+assert.equal(mixedSpellings.byCategory.length, 2, 'English and Thai spellings of one category must not chart separately');
+assert.equal(mixedSpellings.highestCategory?.category, 'อาหารและเครื่องดื่ม');
+assert.equal(mixedSpellings.highestCategory?.amount, 200);
+assert.equal(mixedSpellings.byCategory.find((entry) => entry.category === 'ค่าธรรมเนียม/โอนเงิน')?.amount, 60,
+  'a transfer fee from a bank slip and one typed by hand share a bucket');
 
 const empty = aggregateSpending([], 'month', new Date('2024-02-15T12:00:00+07:00'));
 assert.equal(empty.byDay.length, 29, 'leap-year February must render 29 days');

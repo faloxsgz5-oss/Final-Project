@@ -3,6 +3,7 @@ import {Timestamp} from 'firebase/firestore';
 import {noteFolders, notes, schedules, transactions} from '@/services/firestore';
 import type {OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
+import {normalizeExpenseCategory} from '@/config/expense-categories';
 
 type ScheduleEntry = {
   buildingName?: string;
@@ -370,7 +371,9 @@ export async function saveOcrResult({
 
     const id = await transactions.create(uid, {
       amount,
-      category: text(draft.category) || 'Others',
+      // Normalised so a scanned row lands in the same bucket as a manual one;
+      // the parser emits English ("Food", "Others") and the app speaks Thai.
+      category: normalizeExpenseCategory(text(draft.category)),
       confidence,
       items: receiptItemsForStorage(draft.items),
       merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',

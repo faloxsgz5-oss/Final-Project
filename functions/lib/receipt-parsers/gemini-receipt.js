@@ -32,13 +32,33 @@ PROCESSING RULES
 7. For a receipt, the sum of every item final_price must closely agree with grand_total, allowing only a reasonable VAT or rounding difference. If the difference is massive, re-check product/discount associations but never replace the printed grand total with a calculated value.
 8. Return exactly four top-level fields: document_type, merchant_name, grand_total, and items. Each item must contain exactly name, quantity, original_price, discount_amount, and final_price.
 9. Return only raw valid JSON required by the response schema. Do not return Markdown, backticks, explanations, or additional properties.`;
+/**
+ * Kept in step with `src/config/expense-categories.ts`, which is what the app
+ * displays and stores. Note the model is NOT asked for a category -- it is not
+ * in the response schema -- so these are produced solely by the ladder in
+ * `normalizeResult` below, from the merchant and item names.
+ *
+ * They stay English because the client maps each onto its Thai label; adding a
+ * value here without an alias there would strand it in "อื่นๆ".
+ *
+ * `Fees` is the concrete reason this list grew: a bank transfer slip carries a
+ * "ค่าธรรมเนียม" line and there was no category for it to land in.
+ */
 const CATEGORY_VALUES = [
     "Food",
     "Groceries",
-    "Utilities",
     "Transport",
-    "Entertainment",
+    "Education",
+    "Housing",
+    "Utilities",
     "Shopping",
+    "Health",
+    "Entertainment",
+    "Fees",
+    "PersonalCare",
+    "Insurance",
+    "Savings",
+    "Gifts",
     "Others",
 ];
 const DOCUMENT_TYPE_VALUES = ["receipt", "bank_slip", "e_wallet"];
@@ -159,7 +179,14 @@ function normalizeResult(value, fallbackDate) {
                 /(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC|ค่าไฟ|ค่าน้ำ|อินเทอร์เน็ต|โทรศัพท์)/i.test(categoryText) ? "Utilities" :
                     /(?:NETFLIX|SPOTIFY|STEAM|CINEMA|MAJOR\s*CINEPLEX|GAME|ภาพยนตร์|บันเทิง|เกม)/i.test(categoryText) ? "Entertainment" :
                         /(?:MR\.?\s*D\.?\s*I\.?\s*Y|SHOPEE|LAZADA|UNIQLO|ADVICE|ELECTRONIC|DEPARTMENT\s*STORE|ช้อป|ร้านค้า)/i.test(categoryText) ? "Shopping" :
-                            "Others";
+                            /(?:TRANSFER|BANK|FEE|ค่าธรรมเนียม|โอนเงิน|ธนาคาร)/i.test(categoryText) ? "Fees" :
+                                /(?:TUITION|BOOKSTORE|STATIONERY|ค่าเทอม|หนังสือ|เครื่องเขียน)/i.test(categoryText) ? "Education" :
+                                    /(?:PHARMACY|HOSPITAL|CLINIC|ยา|โรงพยาบาล|คลินิก)/i.test(categoryText) ? "Health" :
+                                        // A transfer slip carries no items and its payee is a
+                                        // person's name, so nothing above can match it. The
+                                        // transfer itself is the spend, which is what Fees means.
+                                        documentType === "bank_slip" ? "Fees" :
+                                            "Others";
     const confidenceScore = amount >= 0 && merchantName ? 0.9 : amount >= 0 || merchantName ? 0.7 : 0.4;
     return {
         category,

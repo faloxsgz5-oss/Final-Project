@@ -1,3 +1,4 @@
+import {normalizeExpenseCategory} from '@/config/expense-categories';
 import {thailandDateKey, thailandRange} from '@/lib/thailand-time';
 
 export type SpendingPeriod = 'week' | 'month';
@@ -56,8 +57,10 @@ function transactionDate(value: unknown) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+// Resolved through the shared list so a legacy English row ('Food') and a Thai
+// one land in one slice instead of being charted as two categories.
 function categoryName(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : 'อื่น ๆ';
+  return normalizeExpenseCategory(value);
 }
 
 function dayPoint(date: Date, period: SpendingPeriod): SpendingDayPoint {

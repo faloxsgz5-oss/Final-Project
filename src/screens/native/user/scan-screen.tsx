@@ -17,6 +17,7 @@ import {
 import NativeDateTimePicker from "@/components/date-time-picker";
 import { Image } from "expo-image";
 import HtmlDocumentView from "@/components/html-document-view";
+import {EXPENSE_CATEGORIES, expenseCategoryIcon, normalizeExpenseCategory} from "@/config/expense-categories";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -394,7 +395,7 @@ function ReceiptScanDashboard({
     firstPresentValue(draft.total, draft.amount, draft.totalAmount),
     "0",
   );
-  const category = textValue(draft.category, "Food / อาหาร");
+  const category = normalizeExpenseCategory(textValue(draft.category, ""));
   const confidenceValue = Number(
     draft.confidenceScore ?? result?.classification.confidence ?? 0,
   );
@@ -518,10 +519,8 @@ function ReceiptScanDashboard({
                 onChangeText={(value) => onDraftChange("total", value)}
                 value={String(firstPresentValue(draft.total, draft.amount, draft.totalAmount) ?? "")}
               />
-              <EditableRow
-                icon="category"
-                label="หมวดหมู่"
-                onChangeText={(value) => onDraftChange("category", value)}
+              <CategoryPickerRow
+                onChange={(value) => onDraftChange("category", value)}
                 value={textValue(draft.category, "")}
               />
               <PickerDataRow
@@ -1845,6 +1844,10 @@ export default function ScanScreen({
                       ) ?? "",
                     )}
                   />
+                  <CategoryPickerRow
+                    onChange={(value) => updateDraft("category", value)}
+                    value={textValue(receipt.category, "")}
+                  />
                   <PickerDataRow
                     icon="event"
                     label="วันที่"
@@ -2668,7 +2671,80 @@ function DocumentTypePicker({
   );
 }
 
+/**
+ * Picks the spending category for a scanned receipt.
+ *
+ * This was a free-text field, so the AI's guess could be corrected only by
+ * retyping it -- which produced spellings that grouped as separate categories
+ * in the spending charts. The list is the app's single shared one, so a
+ * scanned row and a manually entered one land in the same bucket.
+ */
+function CategoryPickerRow({
+  onChange,
+  value,
+}: {
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = normalizeExpenseCategory(value);
+  return (
+    <View style={localStyles.categoryRow}>
+      <Pressable
+        accessibilityLabel={`เลือกหมวดหมู่ ปัจจุบัน ${current}`}
+        accessibilityRole="button"
+        onPress={() => setOpen((previous) => !previous)}
+        style={localStyles.categoryHeader}
+      >
+        <View style={localStyles.categoryIcon}>
+          <MaterialIcon color={C.sage} name={expenseCategoryIcon(current)} size={18} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={localStyles.categoryLabel}>หมวดหมู่</Text>
+          <Text style={localStyles.categoryValue}>{current}</Text>
+        </View>
+        <MaterialIcon color={C.muted} name={open ? "expand_less" : "expand_more"} size={20} />
+      </Pressable>
+      {open ? (
+        <View style={localStyles.categoryOptions}>
+          {EXPENSE_CATEGORIES.map((entry) => {
+            const active = entry.label === current;
+            return (
+              <Pressable
+                accessibilityLabel={`ตั้งหมวดหมู่ ${entry.label}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={entry.label}
+                onPress={() => {
+                  onChange(entry.label);
+                  setOpen(false);
+                }}
+                style={[localStyles.categoryOption, active && localStyles.categoryOptionActive]}
+              >
+                <MaterialIcon color={active ? "#fff" : "#6d786c"} name={entry.icon} size={14} />
+                <Text style={[localStyles.categoryOptionText, active && localStyles.categoryOptionTextActive]}>
+                  {entry.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const localStyles = StyleSheet.create({
+  categoryHeader: { alignItems: "center", flexDirection: "row", gap: 10, minHeight: 52 },
+  categoryIcon: { alignItems: "center", backgroundColor: "#eef3ea", borderRadius: 12, height: 36, justifyContent: "center", width: 36 },
+  categoryLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9 },
+  categoryOption: { alignItems: "center", backgroundColor: "#f1f3ef", borderRadius: 99, flexDirection: "row", gap: 5, paddingHorizontal: 10, paddingVertical: 7 },
+  categoryOptionActive: { backgroundColor: "#5f875f" },
+  categoryOptionText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  categoryOptionTextActive: { color: "#fff" },
+  categoryOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingBottom: 10 },
+  categoryRow: { borderBottomColor: "rgba(44,52,27,.07)", borderBottomWidth: 1 },
+  categoryValue: { color: "#2f3d2c", fontFamily: "Prompt_700Bold", fontSize: 13, marginTop: 1 },
   ocrBody: { color: "#41513f", fontFamily: "Prompt_400Regular", fontSize: 12, lineHeight: 20 },
   ocrCard: { backgroundColor: "#fbfcf7", borderRadius: 24, maxHeight: "82%", maxWidth: 520, padding: 18, width: "94%" },
   ocrClose: { alignItems: "center", backgroundColor: "#eef2ea", borderRadius: 18, height: 36, justifyContent: "center", width: 36 },
