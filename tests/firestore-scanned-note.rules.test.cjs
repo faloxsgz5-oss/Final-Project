@@ -75,6 +75,22 @@ async function main() {
   delete plain.scanLogId;
   await assertSucceeds(setDoc(doc(alice, 'users/alice/notes/manual-note'), plain));
 
+  console.log('the scanned-documents folder can be created and used');
+  await assertSucceeds(setDoc(doc(alice, 'users/alice/noteFolders/scanned'), {
+    color: '#6F8F6D',
+    createdAt: serverTimestamp(),
+    icon: 'document_scanner',
+    name: 'เอกสารสแกน',
+    ownerId: 'alice',
+    sortOrder: 0,
+    updatedAt: serverTimestamp(),
+  }));
+  await assertSucceeds(setDoc(doc(alice, 'users/alice/notes/filed-scan'), scannedNote({folderId: 'scanned'})));
+  await env.withSecurityRulesDisabled(async (context) => {
+    const filed = await getDoc(doc(context.firestore(), 'users/alice/notes/filed-scan'));
+    assert.equal(filed.data().folderId, 'scanned', 'the scanned note should be filed in the folder');
+  });
+
   console.log('a stranger cannot write a note into someone else\'s account');
   await assertFails(setDoc(doc(mallory, 'users/alice/notes/intruder'), scannedNote()));
 

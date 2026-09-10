@@ -1,6 +1,6 @@
 import {Timestamp} from 'firebase/firestore';
 
-import {notes, schedules, transactions} from '@/services/firestore';
+import {noteFolders, notes, schedules, transactions} from '@/services/firestore';
 import type {OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
 
@@ -282,6 +282,36 @@ function scheduleEntries(draft: Record<string, unknown>) {
   return Array.isArray(draft.entries) ? draft.entries as ScheduleEntry[] : [];
 }
 
+/**
+ * The folder scanned documents land in.
+ *
+ * Only the general-document path uses it, and deliberately so: a receipt scan
+ * becomes a transaction and a timetable scan becomes calendar entries -- those
+ * never produce a note to file. If either ever starts producing notes, this is
+ * the place to reuse.
+ */
+const SCANNED_FOLDER_NAME = 'เอกสารสแกน';
+
+/** Finds the scanned-documents folder, creating it the first time. */
+async function scannedDocumentsFolderId(uid: string) {
+  try {
+    const existing = await noteFolders.list(uid);
+    const match = existing.find((folder) => String(folder.name ?? '').trim() === SCANNED_FOLDER_NAME);
+    if (match) return match.id;
+    return await noteFolders.create(uid, {
+      color: '#6F8F6D',
+      icon: 'document_scanner',
+      name: SCANNED_FOLDER_NAME,
+      sortOrder: 0,
+    });
+  } catch (error) {
+    // Filing is a convenience. A folder that cannot be read or created must
+    // not cost the user the scanned note itself.
+    console.warn('[SmartScan] Could not resolve the scanned-documents folder', error);
+    return '';
+  }
+}
+
 /** The first line with real words, used to title a scanned note. */
 function firstMeaningfulLine(text: string) {
   return text
@@ -315,10 +345,12 @@ export async function saveOcrResult({
     if (!scanned) throw new Error('ไม่พบข้อความในเอกสารนี้ จึงบันทึกเป็นโน้ตไม่ได้');
     const title = String(draft.title ?? '').trim() || firstMeaningfulLine(scanned) ||
       `สแกนเมื่อ ${new Date().toLocaleDateString('th-TH')}`;
+    const folderId = await scannedDocumentsFolderId(uid);
     const id = await notes.create(uid, {
       category: 'study',
       color: '#6F8F6D',
       content: scanned.slice(0, 20000),
+      folderId,
       priority: 'normal',
       relatedScheduleId: '',
       scanLogId: typeof result.logId === 'string' ? result.logId : '',

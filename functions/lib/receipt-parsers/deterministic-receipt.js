@@ -70,6 +70,7 @@ function classifyScanText(rawText) {
         const strongest = Math.max(receipt, schedule);
         const confidence = 0.55 + 0.44 * (1 - Math.min(1, strongest / MIN_STRUCTURED_EVIDENCE));
         return {
+            certain: false,
             confidence: Number(confidence.toFixed(2)),
             scores: { receipt, schedule },
             type: "document",
@@ -95,6 +96,7 @@ function classifyScanText(rawText) {
     const strength = Math.min(1, winner / (MIN_STRUCTURED_EVIDENCE * 2));
     const confidence = Math.min(0.99, Math.max(0.55, 0.55 + margin * strength * 0.44));
     return {
+        certain: type === "receipt" ? hardReceipt > 0 : hardSchedule > 0,
         confidence: Number(confidence.toFixed(2)),
         scores: { receipt, schedule },
         type,

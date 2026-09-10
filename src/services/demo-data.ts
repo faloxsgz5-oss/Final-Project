@@ -100,6 +100,7 @@ const systemStatus: DemoDocument[] = [
 const noteFolders = [
   {id: 'demo-folder-course', ownerId: demoUid, name: 'วิชาเรียน', color: '#628660', icon: 'folder', sortOrder: 0, createdAt: plusHours(-240), updatedAt: plusHours(-12)},
   {id: 'demo-folder-project', ownerId: demoUid, name: 'โปรเจกต์จบ', color: '#c49497', icon: 'folder_special', sortOrder: 1, createdAt: plusHours(-180), updatedAt: plusHours(-6)},
+  {id: 'demo-folder-scanned', ownerId: demoUid, name: 'เอกสารสแกน', color: '#6F8F6D', icon: 'document_scanner', sortOrder: 0, createdAt: plusHours(-120), updatedAt: plusHours(-3)},
 ];
 
 const collections: Record<DemoCollection, DemoDocument[]> = {

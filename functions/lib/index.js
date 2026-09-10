@@ -11,6 +11,7 @@ const storage_1 = require("firebase-admin/storage");
 const firestore_2 = require("firebase-functions/v2/firestore");
 const https_1 = require("firebase-functions/v2/https");
 const params_1 = require("firebase-functions/params");
+const gemini_classifier_1 = require("./receipt-parsers/gemini-classifier");
 const iapp_document_1 = require("./document-ocr/iapp-document");
 const deterministic_receipt_1 = require("./receipt-parsers/deterministic-receipt");
 const gemini_document_timestamp_1 = require("./receipt-parsers/gemini-document-timestamp");
@@ -992,6 +993,30 @@ exports.analyzeScan = (0, https_1.onCall)({
             throw new https_1.HttpsError("not-found", "No readable text was found in this image.");
         }
         let classification = classifyDocument(rawText);
+        let classifiedBy = "keywords";
+        // Keyword scoring is trustworthy only when it found an unmistakable
+        // anchor -- "ใบเสร็จรับเงิน", "ตารางเรียน". Everything else is a guess
+        // from counting words, which is what let a Kasikorn transfer slip fall
+        // through as a plain document. Those cases go to a model that reads the
+        // text instead. A clear receipt or timetable never pays for the call.
+        if (requestedType === "auto" && !classification.certain) {
+            const verdict = await (0, gemini_classifier_1.classifyScanWithGemini)(rawText, geminiOcrApiKey.value());
+            if (verdict) {
+                classifiedBy = "gemini";
+                classification = {
+                    certain: true,
+                    confidence: verdict.confidence,
+                    scores: classification.scores,
+                    type: verdict.type,
+                };
+                console.log("[Scan classify] Gemini decided the document type.", {
+                    keywordType: classifyDocument(rawText).type,
+                    model: verdict.model,
+                    reason: verdict.reason,
+                    type: verdict.type,
+                });
+            }
+        }
         const scanType = requestedType === "auto" ?
             classification.type :
             requestedType;
@@ -1021,6 +1046,7 @@ exports.analyzeScan = (0, https_1.onCall)({
                 };
                 ocrConfidence = iapp.overallConfidence;
                 classification = {
+                    certain: true,
                     confidence: Math.max(0.75, iapp.overallConfidence),
                     scores: {
                         receipt: Math.max(classification.scores.receipt, 10),
@@ -1175,6 +1201,9 @@ exports.analyzeScan = (0, https_1.onCall)({
             extractedText: rawText,
             characterCount: rawText.length,
             classification,
+            // Which layer decided the type, so a misclassification can be traced
+            // to the keyword scorer or to the model.
+            classifiedBy,
             confidence: scanType === "receipt"
                 ? parsed.confidence
                 : classification.confidence,

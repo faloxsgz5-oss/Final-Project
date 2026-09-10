@@ -2,6 +2,13 @@ export type ScanClassification = {
   confidence: number;
   scores: {receipt: number; schedule: number};
   /**
+   * True only when the text contained an unmistakable anchor phrase such as
+   * "ใบเสร็จรับเงิน" or "ตารางเรียน". Keyword scoring is reliable for those
+   * and guesswork for everything else, so the caller uses this to decide
+   * whether the verdict is worth a second opinion from a model.
+   */
+  certain: boolean;
+  /**
    * `document` means "readable text, but not a financial or timetable
    * record". It exists because the previous two-way union had no way to say
    * no: `schedule > receipt` is false when both scores are zero, so a page
@@ -101,6 +108,7 @@ export function classifyScanText(rawText: string): ScanClassification {
     const strongest = Math.max(receipt, schedule);
     const confidence = 0.55 + 0.44 * (1 - Math.min(1, strongest / MIN_STRUCTURED_EVIDENCE));
     return {
+      certain: false,
       confidence: Number(confidence.toFixed(2)),
       scores: {receipt, schedule},
       type: "document",
@@ -123,6 +131,7 @@ export function classifyScanText(rawText: string): ScanClassification {
   const strength = Math.min(1, winner / (MIN_STRUCTURED_EVIDENCE * 2));
   const confidence = Math.min(0.99, Math.max(0.55, 0.55 + margin * strength * 0.44));
   return {
+    certain: type === "receipt" ? hardReceipt > 0 : hardSchedule > 0,
     confidence: Number(confidence.toFixed(2)),
     scores: {receipt, schedule},
     type,

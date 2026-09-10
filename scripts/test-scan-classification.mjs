@@ -63,6 +63,24 @@ for (const [name, text] of Object.entries(documents)) {
     `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
 }
 
+// --- bank transfer slips: keyword scoring alone cannot reach these ---------
+// A real Kasikorn slip scored 6 against a bar of 10 and fell to `document`.
+// The deterministic layer is not expected to classify these correctly; what it
+// must do is admit it is unsure, so the Gemini layer is consulted.
+const transferSlips = {
+  'Kasikorn K PLUS transfer slip': join(
+    'K PLUS', 'โอนเงินสำเร็จ', '10 ก.ย. 2569  14:32 น.',
+    'จาก นาย ณรงค์ชัย ท่าทอง', 'xxx-x-x1234-x',
+    'ไปยัง ธ.กรุงเทพ', 'นางสาว สมหญิง ใจดี', 'xxx-x-x5678-x',
+    'จำนวน 1,500.00 บาท',
+  ),
+};
+for (const [name, text] of Object.entries(transferSlips)) {
+  const result = classifyScanText(text);
+  check(`${name} is NOT claimed with certainty by keywords`, result.certain === false,
+    `certain=${result.certain} type=${result.type}`);
+}
+
 // --- must still be `receipt` -----------------------------------------------
 const receipts = {
   'shop receipt with tax invoice header': join(
@@ -120,6 +138,17 @@ for (const [name, text] of Object.entries(schedules)) {
   check(`${name} -> schedule`, result.type === 'schedule',
     `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
 }
+
+// --- the certainty flag gates the second opinion ---------------------------
+// Anchored documents skip the model call entirely; everything else is offered
+// to it. Getting this wrong either costs a Gemini call on every scan or lets
+// the keyword guess stand unchallenged.
+check('an anchored receipt is certain (skips the model call)',
+  classifyScanText(receipts['shop receipt with tax invoice header']).certain === true);
+check('an anchored timetable is certain (skips the model call)',
+  classifyScanText(schedules['university timetable']).certain === true);
+check('a general document is never certain (always offered to the model)',
+  classifyScanText(documents['meeting minutes']).certain === false);
 
 // --- confidence must track evidence, not just the margin --------------------
 const weak = classifyScanText(join('NOTICE', 'Monday to Friday', 'library closed'));
