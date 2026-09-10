@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {showToast} from '@/components/app-toast';
 import ConfirmDialog from '@/components/confirm-dialog';
 import {
@@ -16,10 +16,10 @@ import {
 } from "react-native";
 import NativeDateTimePicker from "@/components/date-time-picker";
 import { Image } from "expo-image";
+import HtmlDocumentView from "@/components/html-document-view";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { WebView } from "react-native-webview";
 
 import LoadingAndSuccessModal, {
   type FeedbackPhase,
@@ -324,11 +324,7 @@ function ReceiptHtmlModal({
             <MaterialIcon color={C.pine} name="close" size={22} />
           </Pressable>
         </View>
-        <WebView
-          originWhitelist={["*"]}
-          source={{ html }}
-          style={localStyles.htmlWebView}
-        />
+        <HtmlDocumentView html={html} />
       </View>
     </Modal>
   );
@@ -1054,7 +1050,16 @@ export default function ScanScreen({
   const [schoolTerm, setSchoolTerm] = useState<SchoolTerm>(() =>
     suggestedSchoolTerm(),
   );
-  const [result, setResult] = useState<OcrResult | null>(null);
+  const [rawResult, setResult] = useState<OcrResult | null>(null);
+  // The classifier is good but never perfect, so the user can overrule it. The
+  // override is layered over the response rather than written into it, so the
+  // original verdict stays visible for comparison and a fresh scan starts clean.
+  const [typeOverride, setTypeOverride] = useState<OcrResult["scanType"] | null>(null);
+  const [ocrTextOpen, setOcrTextOpen] = useState(false);
+  const result = useMemo(
+    () => (rawResult && typeOverride ? {...rawResult, scanType: typeOverride} : rawResult),
+    [rawResult, typeOverride],
+  );
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [imageUri, setImageUri] = useState("");
   const [imageAspectRatio, setImageAspectRatio] = useState(1);
@@ -1189,6 +1194,7 @@ export default function ScanScreen({
       });
       if (generation !== scanGeneration.current) return;
       setResult(response);
+      setTypeOverride(null);
       setRawOcrText(response.rawText ?? "");
       setDraft(
         response.scanType === "document"
@@ -1694,6 +1700,32 @@ export default function ScanScreen({
               {result.scanType === "document" ? (
                 <DocumentTextBox text={rawOcrText} />
               ) : null}
+              <DocumentTypePicker
+                current={result.scanType}
+                onChange={(next) => {
+                  if (next === result.scanType) return;
+                  setTypeOverride(next);
+                  // The draft is shaped for whichever type is in force, so it
+                  // has to be rebuilt -- otherwise switching to "receipt"
+                  // would show a schedule's fields, or none at all.
+                  setDraft(
+                    next === "document"
+                      ? {}
+                      : next === "schedule"
+                        ? scheduleDraft(rawResult?.parsed ?? {}, institutionType, schoolTerm)
+                        : {
+                            ...(rawResult?.parsed ?? {}),
+                            items: normalizeReceiptItems(rawResult?.parsed?.items),
+                            total: firstPresentValue(
+                              rawResult?.parsed?.total,
+                              rawResult?.parsed?.amount,
+                              rawResult?.parsed?.totalAmount,
+                            ) ?? "",
+                          },
+                  );
+                  showToast("เปลี่ยนประเภทเอกสารแล้ว", "ตรวจข้อมูลอีกครั้งก่อนบันทึก", "success");
+                }}
+              />
               {receipt?.needsReview ? (
                 <View style={localStyles.reviewWarning}>
                   <MaterialIcon color="#a36b28" name="warning" size={18} />
@@ -2026,9 +2058,7 @@ export default function ScanScreen({
               ) : null}
               <Pressable
                 accessibilityLabel="ดูข้อความ OCR ทั้งหมด"
-                onPress={() =>
-                  showToast("ข้อความที่ OCR อ่านได้", rawOcrText.slice(0, 3000) || "ไม่มีข้อความ OCR")
-                }
+                onPress={() => setOcrTextOpen(true)}
                 style={localStyles.rawButton}
               >
                 <MaterialIcon color={C.pine} name="text_snippet" size={18} />
@@ -2176,6 +2206,12 @@ export default function ScanScreen({
               </Text>
             </Card>
           ) : null}
+
+          <OcrTextModal
+            onClose={() => setOcrTextOpen(false)}
+            text={rawOcrText}
+            visible={ocrTextOpen}
+          />
 
           <Modal
             animationType="fade"
@@ -2541,7 +2577,113 @@ function DocumentTextBox({ text }: { text: string }) {
 /** How much of a long scan to show before asking the user to expand. */
 const PREVIEW_CHARS = 320;
 
+/**
+ * The full OCR text, in a readable panel.
+ *
+ * This used to be a `showToast` call, which meant the raw text appeared in the
+ * error-toned toast -- pink, clamped to three lines and gone after four
+ * seconds. It is reference material, not a warning, so it gets a normal modal
+ * that scrolls and stays open until dismissed.
+ */
+function OcrTextModal({
+  onClose,
+  text,
+  visible,
+}: {
+  onClose: () => void;
+  text: string;
+  visible: boolean;
+}) {
+  const trimmed = text.trim();
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+      <Pressable accessibilityLabel="ปิดข้อความ OCR" onPress={onClose} style={localStyles.ocrOverlay}>
+        <View onStartShouldSetResponder={() => true} style={localStyles.ocrCard}>
+          <View style={localStyles.ocrHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={localStyles.ocrTitle}>ข้อความที่ OCR อ่านได้</Text>
+              <Text style={localStyles.ocrSubtitle}>
+                {trimmed ? `${trimmed.length.toLocaleString("th-TH")} ตัวอักษร` : "ไม่พบข้อความในภาพนี้"}
+              </Text>
+            </View>
+            <Pressable accessibilityLabel="ปิด" onPress={onClose} style={localStyles.ocrClose}>
+              <MaterialIcon color={C.pine} name="close" size={22} />
+            </Pressable>
+          </View>
+          <ScrollView style={localStyles.ocrScroll}>
+            <Text selectable style={localStyles.ocrBody}>
+              {trimmed || "ไม่พบข้อความในภาพนี้"}
+            </Text>
+          </ScrollView>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const DOCUMENT_TYPES = [
+  { icon: "receipt_long", label: "สลิป / ใบเสร็จ", value: "receipt" },
+  { icon: "calendar_month", label: "ตารางเรียน", value: "schedule" },
+  { icon: "description", label: "เอกสารทั่วไป", value: "document" },
+] as const;
+
+/**
+ * Lets the user overrule the detected document type.
+ *
+ * However good the classifier gets it will sometimes be wrong, and without
+ * this the user is stuck with whatever it decided -- a receipt read as a
+ * general document could not be filed as an expense at all.
+ */
+function DocumentTypePicker({
+  current,
+  onChange,
+}: {
+  current: OcrResult["scanType"];
+  onChange: (next: OcrResult["scanType"]) => void;
+}) {
+  return (
+    <View style={localStyles.typePicker}>
+      <Text style={localStyles.typePickerLabel}>เปลี่ยนประเภทเอกสาร</Text>
+      <View style={localStyles.typeRow}>
+        {DOCUMENT_TYPES.map((option) => {
+          const active = option.value === current;
+          return (
+            <Pressable
+              accessibilityLabel={`ตั้งเป็น ${option.label}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              key={option.value}
+              onPress={() => onChange(option.value)}
+              style={[localStyles.typeChip, active && localStyles.typeChipActive]}
+            >
+              <MaterialIcon color={active ? "#fff" : "#6d786c"} name={option.icon} size={15} />
+              <Text style={[localStyles.typeChipText, active && localStyles.typeChipTextActive]}>
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 const localStyles = StyleSheet.create({
+  ocrBody: { color: "#41513f", fontFamily: "Prompt_400Regular", fontSize: 12, lineHeight: 20 },
+  ocrCard: { backgroundColor: "#fbfcf7", borderRadius: 24, maxHeight: "82%", maxWidth: 520, padding: 18, width: "94%" },
+  ocrClose: { alignItems: "center", backgroundColor: "#eef2ea", borderRadius: 18, height: 36, justifyContent: "center", width: 36 },
+  ocrHeader: { alignItems: "center", flexDirection: "row", gap: 10, marginBottom: 10 },
+  ocrOverlay: { alignItems: "center", backgroundColor: "rgba(32, 40, 31, .58)", flex: 1, justifyContent: "center", padding: 16 },
+  ocrScroll: { backgroundColor: "#f5f7f2", borderColor: "#e1e7dd", borderRadius: 14, borderWidth: 1, maxHeight: 420, padding: 12 },
+  ocrSubtitle: { color: "#8b948a", fontFamily: "Prompt_400Regular", fontSize: 10, marginTop: 2 },
+  ocrTitle: { color: "#2f3d2c", fontFamily: "Prompt_800ExtraBold", fontSize: 16 },
+  typeChip: { alignItems: "center", backgroundColor: "#eef1eb", borderRadius: 99, flexDirection: "row", gap: 5, paddingHorizontal: 11, paddingVertical: 8 },
+  typeChipActive: { backgroundColor: "#5f875f" },
+  typeChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  typeChipTextActive: { color: "#fff" },
+  typePicker: { borderTopColor: "#e6ebe2", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
+  typePickerLabel: { color: "#7c857b", fontFamily: "Prompt_700Bold", fontSize: 10, marginBottom: 8 },
+  typeRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
   documentText: {
     color: "#41513f",
     fontFamily: "Prompt_400Regular",
