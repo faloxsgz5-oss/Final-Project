@@ -13,8 +13,9 @@
  * have not earned.
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
-import {classifyScanText} from '../functions/src/receipt-parsers/deterministic-receipt.ts';
+import {classifyScanText, detectAccountStatement, scheduleStructure} from '../functions/src/receipt-parsers/deterministic-receipt.ts';
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -138,6 +139,156 @@ for (const [name, text] of Object.entries(schedules)) {
   check(`${name} -> schedule`, result.type === 'schedule',
     `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
 }
+
+// --- passbooks and statements: many transactions, so a document ------------
+// These carry amounts, dates and bank vocabulary, so every receipt signal
+// argues for "receipt" -- and so did the model. Run through the single-receipt
+// extractor a passbook came back as merchant "ธนาคารกสิกรไทย", no total, its
+// rows as line items, and then could not be saved. They must be a certain
+// document, so the model is never asked.
+const statements = {
+  'Kasikorn passbook page (the reported bug)': join(
+    'ธนาคารกสิกรไทย', 'สมุดบัญชีเงินฝากออมทรัพย์', 'ชื่อบัญชี นาย ณรงค์ชัย ท่าทอง', 'เลขที่บัญชี 123-4-56789-0',
+    'วันที่ รายการ ถอน ฝาก คงเหลือ',
+    '01/08/69 ยอดยกมา 12,450.00',
+    '03/08/69 ATM 1,000.00 11,450.00',
+    '05/08/69 โอนเงิน 500.00 10,950.00',
+    '10/08/69 เงินเดือน 15,000.00 25,950.00',
+    '12/08/69 ชำระบิล 2,340.00 23,610.00',
+  ),
+  'English account statement': join(
+    'BANGKOK BANK', 'STATEMENT OF ACCOUNT', 'Account No. 123-4-56789-0',
+    'DATE DESCRIPTION WITHDRAWAL DEPOSIT BALANCE',
+    '01/08/2026 BALANCE B/F 12,450.00',
+    '03/08/2026 ATM WITHDRAWAL 1,000.00 11,450.00',
+    '05/08/2026 TRANSFER 500.00 10,950.00',
+    '10/08/2026 SALARY 15,000.00 25,950.00',
+  ),
+  'passbook with Thai month dates and no header': join(
+    '1 ส.ค. 69 ยกมา 3,200.00',
+    '4 ส.ค. 69 ถอน 200.00 3,000.00',
+    '9 ส.ค. 69 ฝาก 1,500.00 4,500.00',
+    '15 ส.ค. 69 ถอน 750.00 3,750.00',
+  ),
+};
+for (const [name, text] of Object.entries(statements)) {
+  const result = classifyScanText(text);
+  check(`${name} -> document`, result.type === 'document',
+    `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
+  check(`${name} is certain, so the model is not asked`, result.certain === true, `certain=${result.certain}`);
+  check(`${name} is detected as a statement`, detectAccountStatement(text) === true);
+}
+
+// ...and a single transaction must not be mistaken for one.
+const singleTransactions = {
+  'shop receipt': receipts['shop receipt with tax invoice header'],
+  'wallet slip': receipts['wallet payment slip'],
+  'Kasikorn transfer slip': transferSlips['Kasikorn K PLUS transfer slip'],
+  'receipt with a dated header and several items': join(
+    'ใบเสร็จรับเงิน', '12/08/2026 14:30', 'ข้าวผัด 60.00', 'ชาเย็น 35.00', 'น้ำเปล่า 10.00', 'ยอดรวม 105.00',
+  ),
+};
+for (const [name, text] of Object.entries(singleTransactions)) {
+  check(`${name} is NOT a statement`, detectAccountStatement(text) === false);
+}
+check('the receipt with dated header and items is still a receipt',
+  classifyScanText(singleTransactions['receipt with a dated header and several items']).type === 'receipt');
+
+// --- real timetables have structure, and often no heading at all -----------
+// A grid rarely prints "ตารางเรียน" and abbreviates its days, so counting
+// phrases called these plain documents. And the text the server actually
+// classifies is iApp's and Vision's transcripts concatenated.
+const gridSchedules = {
+  'grid with Thai day abbreviations and no heading': join(
+    'เวลา 8.00 9.00 10.00 11.00 12.00 13.00 14.00 15.00 16.00',
+    'จ. ACC315-68 Sec 01 ห้อง 410 RSU243-67 Sec 02 ห้อง 305',
+    'อ. DMR209-64 Sec 01 ห้อง 412',
+    'พ. DMR404-64 Sec 01 ห้อง 410',
+    'พฤ. DMR303-64 Sec 01 ENL128-67 Sec 05',
+    'ศ. DMR202-64 Sec 01',
+  ),
+  'grid with English day abbreviations and no Day/Time heading': join(
+    'Semester 1/2025',
+    'MON ACC315-68 Sec: 01 410 08:00-11:00 RSU243-67 Sec: 02 305 13:00-16:00',
+    'TUE DMR209-64 Sec: 01 412 09:00-12:00',
+    'WED DMR404-64 Sec: 01 410 13:00-16:00',
+    'THU DMR303-64 Sec: 01 410 08:00-11:00',
+    'FRI DMR202-64 Sec: 01 411 09:00-12:00',
+  ),
+  'fused iApp + Vision text, as the server classifies it': join(
+    '--- iApp OCR ---', 'MON ACC315-68 RSU243-67', 'TUE DMR209-64', 'WED DMR404-64', 'THU DMR303-64 ENL128-67', 'FRI DMR202-64',
+    '--- Google Vision OCR ---', 'MON', 'ACC315-68', 'Sec: 01', '410', '08:00-11:00', 'TUE', 'DMR209-64', 'Sec: 01',
+  ),
+};
+for (const [name, text] of Object.entries(gridSchedules)) {
+  const result = classifyScanText(text);
+  check(`${name} -> schedule`, result.type === 'schedule',
+    `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
+  check(`${name} is certain, so it never depends on the model`, result.certain === true, `certain=${result.certain}`);
+}
+
+// --- ...and documents that talk about school are not timetables --------------
+// These used to come out `schedule` with certainty -- "ปีการศึกษา" was one of
+// the unmistakable anchors -- so the model was never asked to overrule them.
+const schoolDocuments = {
+  'tuition fee notice mentioning ปีการศึกษา': join(
+    'ประกาศมหาวิทยาลัย', 'เรื่อง การชำระค่าธรรมเนียมการศึกษา', 'ภาคการศึกษาที่ 1 ปีการศึกษา 2569',
+    'นักศึกษาชำระได้ตั้งแต่วันจันทร์ถึงวันศุกร์', 'เวลา 08:30-16:30 น.',
+  ),
+  'academic calendar': join(
+    'ปฏิทินการศึกษา ปีการศึกษา 2569', 'ภาคการศึกษาที่ 1',
+    'วันเปิดภาคเรียน 10 ส.ค. 2569', 'สอบกลางภาค 28 ก.ย. - 4 ต.ค. 2569', 'สอบปลายภาค 23 พ.ย. - 4 ธ.ค. 2569',
+  ),
+  'shop opening hours': join(
+    'ร้านกาแฟ บ้านสวน', 'เปิดวันจันทร์ อังคาร พุธ พฤหัสบดี ศุกร์', 'เวลา 07:00-18:00', 'หยุดวันเสาร์ อาทิตย์',
+  ),
+  'a letter dated in พ.ศ. (abbreviations must not read as days)': join(
+    'เรียน ผู้ปกครอง', 'ลงวันที่ 5 ส.ค. พ.ศ. 2569', 'อ.เมือง จ.เชียงใหม่', 'จึงเรียนมาเพื่อทราบ',
+  ),
+};
+for (const [name, text] of Object.entries(schoolDocuments)) {
+  const result = classifyScanText(text);
+  check(`${name} -> document`, result.type === 'document',
+    `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
+  check(`${name} is not a certain schedule`, !(result.type === 'schedule' && result.certain));
+}
+check('"พ.ศ.", "ส.ค.", "อ.เมือง" and "จ.เชียงใหม่" contribute no weekdays',
+  scheduleStructure(schoolDocuments['a letter dated in พ.ศ. (abbreviations must not read as days)']).dayCount === 0,
+  `dayCount=${scheduleStructure(schoolDocuments['a letter dated in พ.ศ. (abbreviations must not read as days)']).dayCount}`);
+
+// Two lines of opening hours pair days with times, but that is not proof.
+const hours = classifyScanText(join('คลินิกทันตกรรม', 'จันทร์-ศุกร์ 08:00-17:00', 'เสาร์-อาทิตย์ 09:00-12:00'));
+check('two lines of opening hours are not a certain schedule', !(hours.type === 'schedule' && hours.certain),
+  `type=${hours.type} certain=${hours.certain}`);
+
+// --- the same, on OCR text real scans produced -----------------------------
+// Hand-typed fixtures keep one row per line, and the first statement detector
+// passed all of them while failing on every real passbook: table OCR puts
+// each cell on its own line. These are what analyzeScan actually stored for
+// rendered documents run through iApp, Google Vision and the fusion step.
+const REAL = JSON.parse(fs.readFileSync(new URL('./fixtures/scan-ocr-real.json', import.meta.url), 'utf8'));
+const realExpect = {
+  passbookCellPerLine: {statement: true, type: 'document', certain: true},
+  passbookForcedReceiptPath: {statement: true},
+  receiptThreeTranscripts: {statement: false, type: 'receipt'},
+  transferSlip: {statement: false},
+  academicCalendar: {statement: false, type: 'document'},
+  feeNotice: {statement: false, type: 'document'},
+  timetableFused: {statement: false, type: 'schedule', certain: true},
+  gridThaiAbbrevNoHeading: {statement: false, type: 'schedule'},
+};
+for (const [key, want] of Object.entries(realExpect)) {
+  const text = REAL[key];
+  check(`real OCR fixture "${key}" exists`, typeof text === 'string' && text.length > 50);
+  if (typeof text !== 'string') continue;
+  check(`real ${key}: statement=${want.statement}`, detectAccountStatement(text) === want.statement);
+  const result = classifyScanText(text);
+  if (want.type) check(`real ${key} -> ${want.type}`, result.type === want.type,
+    `got ${result.type} (receipt:${result.scores.receipt} schedule:${result.scores.schedule})`);
+  if (want.certain !== undefined) check(`real ${key}: certain=${want.certain}`, result.certain === want.certain, `certain=${result.certain}`);
+}
+check('the calendar is never a certain schedule, even when the model is down',
+  !(classifyScanText(REAL.academicCalendar).type === 'schedule' && classifyScanText(REAL.academicCalendar).certain));
 
 // --- the certainty flag gates the second opinion ---------------------------
 // Anchored documents skip the model call entirely; everything else is offered

@@ -13,6 +13,7 @@ import {
 } from "./document-ocr/iapp-document";
 import {
   classifyScanText,
+  detectAccountStatement,
   extractReceiptTimestampEvidence,
   parseReceiptDeterministic,
 } from "./receipt-parsers/deterministic-receipt";
@@ -1183,7 +1184,16 @@ export const analyzeScan = onCall(
         }
       }
 
-      const scanType: ScanType = requestedType === "auto" ?
+      // A passbook or account statement is many transactions, and the
+      // single-receipt extractor has nowhere to put that: it came back with
+      // the bank's name as the merchant and no total, which then could not be
+      // saved. It stays a document even when the finance screen asked for a
+      // receipt, so its text survives as a readable note.
+      const accountStatement = detectAccountStatement(rawText);
+      if (accountStatement && classification.type !== "document") {
+        classification = {...classification, certain: true, type: "document"};
+      }
+      const scanType: ScanType = accountStatement ? "document" : requestedType === "auto" ?
         classification.type :
         requestedType;
       let rawParsed: Record<string, unknown>;

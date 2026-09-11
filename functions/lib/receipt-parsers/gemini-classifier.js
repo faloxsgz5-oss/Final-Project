@@ -17,18 +17,29 @@ exports.classifyScanWithGemini = classifyScanWithGemini;
 const CLASSIFY_SYSTEM_PROMPT = `You classify a scanned document for a Thai student app.
 
 Choose exactly ONE type:
-- "receipt": ANY record of a financial transaction. This includes shop
-  receipts and tax invoices, but equally bank transfer slips and confirmations
-  (Kasikorn/K PLUS, SCB, Krungthai, Bangkok Bank, TrueMoney, PromptPay),
-  wallet payment confirmations, and "transfer successful" screens. Evidence
-  includes an amount of money together with a payer, payee, account number,
-  reference number or transaction timestamp.
-- "schedule": a class timetable or exam timetable -- courses, sections, rooms
-  and recurring day/time slots.
+- "receipt": the record of ONE financial transaction -- one payment or
+  transfer, one amount. This includes shop receipts and tax invoices, but
+  equally bank transfer slips and confirmations (Kasikorn/K PLUS, SCB,
+  Krungthai, Bangkok Bank, TrueMoney, PromptPay), wallet payment
+  confirmations, and "transfer successful" screens. Evidence includes an
+  amount of money together with a payer, payee, account number, reference
+  number or transaction timestamp.
+- "schedule": a WEEKLY class or exam timetable -- courses or subjects placed
+  in recurring weekday and time slots, typically a grid with day rows and
+  time columns or a list pairing each course with a day and a time. Day
+  names are often abbreviated (MON, TUE / จ. อ. พ. พฤ. ศ.) and course codes
+  look like ACC315-68 or 2110101.
 - "document": readable text that is neither of the above. Announcements,
-  notices, letters, forms, lecture notes, articles. A document may mention
-  dates, times or amounts of money without being a transaction record: an exam
-  announcement listing exam sessions is a document, not a schedule.
+  notices, letters, forms, lecture notes, articles. Also, specifically:
+  * bank passbooks (สมุดบัญชี), account statements and any list of SEVERAL
+    dated transactions with a running balance -- many transactions, so not
+    a receipt;
+  * academic calendars (ปฏิทินการศึกษา) listing term dates, fee or
+    registration notices, and opening hours -- they mention days, dates,
+    times or "ปีการศึกษา" but place no courses in weekly slots, so they are
+    not schedules;
+  * an exam announcement listing exam sessions is a document, not a
+    schedule.
 
 Reply with STRICT JSON only, no prose:
 {"type":"receipt"|"schedule"|"document","confidence":0.0-1.0,"reason":"under 12 words"}`;
@@ -85,9 +96,14 @@ async function classifyScanWithGemini(rawText, apiKey, timeoutMs = 12000) {
                 signal: controller.signal,
             });
             const payload = await response.json();
-            // A 404 means this key cannot reach that model; try the next one.
             if (!response.ok) {
-                if (response.status === 404 && index < CLASSIFIER_MODELS.length - 1)
+                // 404: this key cannot reach the model. 429 and 5xx: it is
+                // overloaded -- a real scan got "gemini-3.8-flash is currently
+                // experiencing high demand" and the keyword guess then stood alone,
+                // which is exactly the inconsistency being fixed. Either way the next,
+                // older model is a better answer than none.
+                const retryable = response.status === 404 || response.status === 429 || response.status >= 500;
+                if (retryable && index < CLASSIFIER_MODELS.length - 1)
                     continue;
                 console.warn("[Scan classify] Gemini refused the request.", {
                     message: payload.error?.message,

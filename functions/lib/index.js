@@ -1017,7 +1017,16 @@ exports.analyzeScan = (0, https_1.onCall)({
                 });
             }
         }
-        const scanType = requestedType === "auto" ?
+        // A passbook or account statement is many transactions, and the
+        // single-receipt extractor has nowhere to put that: it came back with
+        // the bank's name as the merchant and no total, which then could not be
+        // saved. It stays a document even when the finance screen asked for a
+        // receipt, so its text survives as a readable note.
+        const accountStatement = (0, deterministic_receipt_1.detectAccountStatement)(rawText);
+        if (accountStatement && classification.type !== "document") {
+            classification = { ...classification, certain: true, type: "document" };
+        }
+        const scanType = accountStatement ? "document" : requestedType === "auto" ?
             classification.type :
             requestedType;
         let rawParsed;
