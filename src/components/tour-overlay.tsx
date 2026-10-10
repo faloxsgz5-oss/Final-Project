@@ -85,6 +85,23 @@ export default function TourOverlay() {
       <View style={[styles.band, {bottom: 0, left: 0, right: 0, top: rect.top + rect.height}]} />
       <View style={[styles.band, {height: rect.height, left: 0, top: rect.top, width: Math.max(rect.left, 0)}]} />
       <View style={[styles.band, {height: rect.height, left: rect.left + rect.width, right: 0, top: rect.top}]} />
+      {/* The bands leave a square hole, so the corners between it and the
+          rounded ring were left undimmed -- a white square around a round
+          button. A scrim-coloured border, offset outward and clipped to the
+          hole, paints exactly those corners: its inner edge is the ring's
+          curve. Its thickness only has to reach the hole's corner (about
+          0.42 of the radius), so the radius itself is plenty. Taps are
+          unchanged -- it takes none, like the hole it sits in. */}
+      <View pointerEvents="none" style={[styles.cornerClip, {height: rect.height, left: rect.left, top: rect.top, width: rect.width}]}>
+        <View style={[styles.cornerFill, {
+          borderRadius: radius * 2,
+          borderWidth: radius,
+          height: rect.height + radius * 2,
+          left: -radius,
+          top: -radius,
+          width: rect.width + radius * 2,
+        }]} />
+      </View>
 
       <Animated.View
         pointerEvents="none"
@@ -123,6 +140,8 @@ export default function TourOverlay() {
 
 const styles = StyleSheet.create({
   band: {backgroundColor: SCRIM, position: 'absolute'},
+  cornerClip: {overflow: 'hidden', position: 'absolute'},
+  cornerFill: {borderColor: SCRIM, position: 'absolute'},
   card: {
     backgroundColor: '#ffffff',
     borderRadius: 22,
