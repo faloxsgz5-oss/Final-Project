@@ -5,6 +5,7 @@ import {Touchable} from '@/components/touchable';
 import {ADD_ITEM_OPTIONS} from '@/components/add-item-sheet';
 import {Card, MaterialIcon, PLANNER_TABS, USER_LEFT_TABS, USER_RIGHT_TABS, UserShell, type UserNavigate} from './user-ui';
 import {budgetCardTitle, financeHeaderAction, QUICK_ADD_LABELS} from './finance-screen';
+import {shadow as elevation} from '@/theme/elevation';
 
 const C = {pine: '#2c341b', sage: '#6f8f6d', dark: '#5f835f', muted: '#81887d', night: '#5a3d82'};
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
@@ -373,7 +374,7 @@ export default function HelpScreen({onNavigate}: {onNavigate: UserNavigate}) {
   </UserShell>;
 }
 
-const shadow = {shadowColor: C.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 20};
+const shadow = elevation('md');
 const styles = StyleSheet.create({
   back: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, height: 42, justifyContent: 'center', width: 42},
   card: {marginBottom: 12, padding: 15},

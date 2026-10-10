@@ -11,6 +11,7 @@ import {thailandDaysInMonth} from '@/lib/thailand-time';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {currentMonthKey, loadMonthlyBudget, parseBudgetAmount, saveMonthlyBudget, type MonthlyBudget} from '@/services/monthly-budget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+import {shadow as elevation} from '@/theme/elevation';
 
 type Item = Record<string, unknown>;
 type BudgetMode = 'ai' | 'manual';
@@ -323,7 +324,7 @@ function HeroStat({label, value}: {label: string; value: string}) { return <View
 function ModeButton({active, icon, label, onPress}: {active: boolean; icon: string; label: string; onPress: () => void}) { return <Touchable accessibilityRole="button" onPress={onPress} style={[styles.modeButton, active && styles.modeButtonActive]}><MaterialIcon color={active ? '#fff' : C.muted} name={icon} size={17} /><Text style={[styles.modeText, active && styles.modeTextActive]}>{label}</Text></Touchable>; }
 function BudgetSplit({amount, color, label, percent}: {amount: number; color: string; label: string; percent: number}) { return <View style={styles.split}><View style={styles.splitTop}><Text style={styles.splitLabel}>{label}</Text><Text style={styles.splitAmount}>{money(amount)}</Text></View><View style={styles.splitTrack}><View style={[styles.splitFill, {backgroundColor: color, width: `${percent}%`}]} /></View></View>; }
 
-const shadow = {shadowColor: '#29351f', shadowOffset: {height: 8, width: 0}, shadowOpacity: .07, shadowRadius: 18};
+const shadow = elevation('md');
 const styles = StyleSheet.create({
   amountInput: {color: C.ink, flex: 1, fontFamily: F.x, fontSize: 25, minHeight: 52, padding: 0},
   applyButton: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 15, flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 15, minHeight: 48}, applyButtonDone: {backgroundColor: C.sageSoft}, applyText: {color: '#fff', fontFamily: F.b, fontSize: 12}, applyTextDone: {color: C.sage},

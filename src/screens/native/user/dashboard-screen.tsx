@@ -1,7 +1,8 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {forwardRef, useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
+import {AnimatedBotIcon, type AnimatedBotIconHandle} from '@/components/animated-bot-icon';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {AnimatedNumber, Reveal} from '@/components/motion';
 import {AuroraGradient, Sheen} from '@/components/color-motion';
@@ -26,6 +27,7 @@ import {useCurrentClock} from '@/hooks/use-current-clock';
 import {useTourScreen, useTourTarget} from '@/hooks/use-tour-target';
 import {bangkokGreeting} from '@/lib/ux-time';
 import {showToast} from '@/components/app-toast';
+import {glowSurface, shadow as elevation} from '@/theme/elevation';
 
 /**
  * Page data arrives already serialised to ISO strings, so the slot times the
@@ -49,9 +51,9 @@ function dayKey(date: Date) { return new Intl.DateTimeFormat('en-CA', {day: '2-d
 function shortDateLabel(date: Date) { return new Intl.DateTimeFormat('th-TH', {timeZone: 'Asia/Bangkok', weekday: 'short'}).format(date); }
 function dayNumber(date: Date) { return new Intl.DateTimeFormat('th-TH', {day: 'numeric', timeZone: 'Asia/Bangkok'}).format(date); }
 
-const SoftPress = forwardRef<View, {children: React.ReactNode; onLayout?: () => void; onPress: () => void; style?: object}>(
-  function SoftPress({children, onLayout, onPress, style}, ref) {
-    return <Touchable onLayout={onLayout} onPress={onPress} ref={ref} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Touchable>;
+const SoftPress = forwardRef<View, {children: React.ReactNode; onHoverIn?: () => void; onLayout?: () => void; onPress: () => void; onPressIn?: () => void; style?: object}>(
+  function SoftPress({children, onHoverIn, onLayout, onPress, onPressIn, style}, ref) {
+    return <Touchable onHoverIn={onHoverIn} onLayout={onLayout} onPress={onPress} onPressIn={onPressIn} ref={ref} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Touchable>;
   },
 );
 
@@ -85,6 +87,11 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const clockNow = useCurrentClock();
   const {ref: bellRef, onLayout: bellOnLayout} = useTourTarget('dashboard', 'bell');
   const {ref: aiCardRef, onLayout: aiCardOnLayout} = useTourTarget('dashboard', 'ai-card');
+  // The AI card's robot waves: once when the dashboard comes into focus, on
+  // mouse hover over the card (web), on press-in (touch has no hover), and --
+  // on a phone only -- now and then while the dashboard is on screen.
+  const botRef = useRef<AnimatedBotIconHandle>(null);
+  const waveBot = useCallback(() => botRef.current?.wave(), []);
   const {ref: weeklySpendingRef, onLayout: weeklySpendingOnLayout} = useTourTarget('dashboard', 'weekly-spending');
   useTourScreen('dashboard');
   const [data, setData] = useState<Item | null>(null);
@@ -263,8 +270,8 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <Reveal index={0} slide={false}>
-        <SoftPress onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} ref={aiCardRef} style={styles.aiCard}><AuroraGradient colors={['#769674', '#8fa69a', '#9297bb', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Sheen radius={18} />
-          <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
+        <SoftPress onHoverIn={waveBot} onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} onPressIn={waveBot} ref={aiCardRef} style={styles.aiCard}><AuroraGradient colors={['#769674', '#8fa69a', '#9297bb', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Sheen radius={18} />
+          <View style={styles.aiTop}><View style={styles.aiHeading}><AnimatedBotIcon glow idle={Platform.OS !== 'web'} ref={botRef} size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
             {/* Its own tap target: opens the assistant and starts listening right
               away, instead of landing on a blank chat the user then has to tap
               the mic in again to actually use. */}
@@ -275,7 +282,9 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           <Touchable onPress={() => onNavigate(`smartlife_ai_assistant?autoAsk=${encodeURIComponent('วันนี้ฉันมีเรียนกี่โมง?')}`)} style={({pressed}) => [styles.prompt, pressed && styles.pressed]}>
             <Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} />
           </Touchable>
-          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></View>
+          {/* Has a chevron like the row above, so it reacts to hover like it
+              too; tapping it does what tapping the card always did. */}
+          <Touchable onPress={() => onNavigate('smartlife_ai_assistant')} style={({pressed}) => [styles.quickAnswer, pressed && styles.pressed]}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></Touchable>
         </SoftPress>
         </Reveal>
         <Reveal index={1}>
@@ -335,7 +344,9 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   </View></ResponsiveSafeArea>;
 }
 
-const shadow = {shadowColor: colors.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 22};
+const shadow = elevation('md');
+// Small round controls sit close to the page; a card-sized blur under them reads as a smudge.
+const iconShadow = elevation('sm');
 const font = {regular: 'Prompt_400Regular', medium: 'Prompt_500Medium', semibold: 'Prompt_600SemiBold', bold: 'Prompt_700Bold', extra: 'Prompt_800ExtraBold'};
 const styles = StyleSheet.create({
   devTag: {backgroundColor: '#f4b23e', borderRadius: 6, marginLeft: 6, paddingHorizontal: 6, paddingVertical: 1},
@@ -353,7 +364,7 @@ const styles = StyleSheet.create({
   aiHeading: {alignItems: 'center', flexDirection: 'row', gap: 10},
   aiTitle: {color: '#fff', fontFamily: font.bold, fontSize: 17},
   aiTop: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
-  avatar: {...shadow, alignItems: 'center', backgroundColor: '#834b51', borderColor: '#fff', borderRadius: 25, borderWidth: 2, flexShrink: 0, height: 50, justifyContent: 'center', overflow: 'hidden', width: 50},
+  avatar: {...iconShadow, alignItems: 'center', backgroundColor: '#834b51', borderColor: '#fff', borderRadius: 25, borderWidth: 2, flexShrink: 0, height: 50, justifyContent: 'center', overflow: 'hidden', width: 50},
   // The photo was already arriving in `data.profile` -- `user/index` loads the
   // whole users document -- but this header only ever drew initials, so a user
   // who had set a picture still saw letters here while the profile page showed
@@ -364,9 +375,9 @@ const styles = StyleSheet.create({
   // The bell keeps its own square and is never allowed to shrink or be
   // pushed out of the row: a long display name may only eat the space left
   // over, not the one control in the header.
-  bell: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
+  bell: {...iconShadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
   sleepBackdrop: {backgroundColor: 'rgba(20,31,20,.42)', flex: 1, justifyContent: 'flex-end'},
-  sleepButton: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 21, flexGrow: 0, flexShrink: 0, height: 42, justifyContent: 'center', width: 42},
+  sleepButton: {...iconShadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 21, flexGrow: 0, flexShrink: 0, height: 42, justifyContent: 'center', width: 42},
   sleepHandle: {alignSelf: 'center', backgroundColor: '#d8e0d6', borderRadius: 4, height: 4, marginBottom: 4, width: 42},
   sleepSheet: {backgroundColor: '#f4f7f4', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 16, paddingBottom: 30, width: '100%'},
   budgetLine: {alignItems: 'baseline', flexDirection: 'row', marginTop: 11},
@@ -391,7 +402,7 @@ const styles = StyleSheet.create({
   focusGrid: {flexDirection: 'row', gap: 11, marginBottom: 15, marginTop: 11},
   hello: {color: '#8a9282', fontFamily: font.regular, fontSize: 12},
   loading: {alignItems: 'center', gap: 12, paddingVertical: 100},
-  mic: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.95)', borderColor: 'rgba(255,255,255,.55)', borderRadius: 22, borderWidth: 5, height: 44, justifyContent: 'center', width: 44},
+  mic: {...iconShadow, alignItems: 'center', backgroundColor: 'rgba(255,255,255,.95)', borderColor: 'rgba(255,255,255,.55)', borderRadius: 22, borderWidth: 5, height: 44, justifyContent: 'center', width: 44},
   muted: {color: colors.muted, fontFamily: font.regular, fontSize: 12},
   name: {color: colors.pine, fontFamily: font.extra, fontSize: 19, marginTop: -1},
   noteEyebrow: {color: colors.note, fontFamily: font.semibold, fontSize: 12},
@@ -421,7 +432,7 @@ const styles = StyleSheet.create({
   prompt: {alignItems: 'center', backgroundColor: 'rgba(72,105,72,.24)', borderColor: 'rgba(44,52,27,.08)', borderRadius: 14, borderWidth: 1, flexDirection: 'row', height: 41, justifyContent: 'space-between', marginTop: 10, paddingHorizontal: 13},
   promptText: {color: '#fff', flex: 1, fontFamily: font.regular, fontSize: 12},
   quickAction: {alignItems: 'center', borderRadius: 14, flex: 1, gap: 6, paddingVertical: 10},
-  quickActionIcon: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 22, height: 46, justifyContent: 'center', width: 46},
+  quickActionIcon: {...iconShadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 22, height: 46, justifyContent: 'center', width: 46},
   quickActionLabel: {color: colors.pine, fontFamily: font.semibold, fontSize: 11},
   quickActionsPanel: {...shadow, backgroundColor: '#fff', borderRadius: 18, flexDirection: 'row', gap: 4, marginBottom: 15, padding: 10},
   quickAnswer: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.45)', borderRadius: 11, flexDirection: 'row', justifyContent: 'space-between', marginTop: 7, paddingHorizontal: 11, paddingVertical: 7},
@@ -452,7 +463,9 @@ const styles = StyleSheet.create({
   timePill: {alignItems: 'center', backgroundColor: '#edf3ea', borderRadius: 10, minWidth: 48, paddingHorizontal: 7, paddingVertical: 6},
   topRow: {alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginBottom: 15},
   topRowActions: {alignItems: 'center', flexDirection: 'row', gap: 9},
-  unread: {alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
+  // A red halo while there is something unread; the badge (and so the glow) is
+  // only rendered when the count is above zero.
+  unread: {...glowSurface('alert', 0.9, 8), alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
   unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 12},
   urgency: {backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4},
   urgencyText: {color: colors.note, fontFamily: font.semibold, fontSize: 12},

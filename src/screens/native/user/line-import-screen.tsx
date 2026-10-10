@@ -5,6 +5,7 @@ import NativeDateTimePicker from '@/components/date-time-picker';
 import {showToast} from '@/components/app-toast';
 import {Touchable} from '@/components/touchable';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {shadow as elevation} from '@/theme/elevation';
 import {
   ActivityIndicator,
   Platform,
@@ -734,12 +735,7 @@ export default function LineImportScreen({onNavigate, page, uid}: Props) {
   return <ManualImport onNavigate={onNavigate} uid={uid} />;
 }
 
-const shadow = {
-  shadowColor: C.ink,
-  shadowOffset: {height: 8, width: 0},
-  shadowOpacity: 0.07,
-  shadowRadius: 16,
-};
+const shadow = elevation('md');
 const styles = StyleSheet.create({
   actionRow: {flexDirection: 'row', gap: 8, marginTop: 14},
   amountPreview: {fontFamily: F.x, fontSize: 15},
