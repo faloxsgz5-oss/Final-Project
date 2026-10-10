@@ -1,4 +1,4 @@
-import {usePathname, useRouter, type Href} from 'expo-router';
+import {useGlobalSearchParams, usePathname, useRouter, type Href} from 'expo-router';
 import {useCallback, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {StyleSheet, View} from 'react-native';
 
@@ -6,6 +6,7 @@ import {AddItemSheet} from '@/components/add-item-sheet';
 import {useDesktopWebLayout} from '@/hooks/use-is-desktop-web';
 import {useNotificationBadge} from '@/hooks/use-notification-badge';
 import {navKeyForPage} from '@/lib/desktop-web';
+import {shellPage} from '@/lib/planner-tabs';
 import {useAuth} from '@/providers/auth-provider';
 import type {FeedItem} from '@/services/notification-feed';
 import {loadNotificationFeed} from '@/services/notification-feed-loader';
@@ -51,6 +52,7 @@ export function DesktopShell({children}: {children: ReactNode}) {
 
 function ShellFrame({children, compact, page, uid}: {children: ReactNode; compact: boolean; page: string; uid: string}) {
   const router = useRouter();
+  const {tab} = useGlobalSearchParams<{tab?: string}>();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [addOpen, setAddOpen] = useState(false);
   const [jumpOpen, setJumpOpen] = useState(false);
@@ -84,7 +86,10 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
     return () => window.removeEventListener('keydown', onKey);
   }, [compact, toggleCollapsed]);
 
-  const activeKey = useMemo(() => navKeyForPage(page), [page]);
+  // On the planner the open tab decides both the highlight and the title:
+  // ตาราง and Adaptive are แพลนเนอร์, โน้ต is โน้ต (see `@/lib/planner-tabs`).
+  const shown = shellPage(page, tab) ?? 'index';
+  const activeKey = useMemo(() => navKeyForPage(shown), [shown]);
 
   return (
     <View style={styles.frame}>
@@ -102,7 +107,7 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
         onToggleCollapsed={toggleCollapsed}
       />
       <View style={styles.main}>
-        <DesktopTopBar page={page} />
+        <DesktopTopBar page={shown} />
         <View style={styles.content}>{children}</View>
       </View>
       <AddItemSheet onClose={() => setAddOpen(false)} onNavigate={navigate} visible={addOpen} />
