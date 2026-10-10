@@ -97,7 +97,6 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
         // collapse preference applies from 1100px up.
         canToggle={!compact}
         collapsed={compact || collapsed}
-        name={name}
         onAdd={() => setAddOpen(true)}
         onNavigate={navigate}
         onSearch={() => setJumpOpen(true)}
