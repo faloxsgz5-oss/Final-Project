@@ -1,81 +1,82 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- A single row so it fits one cell high: the status on the left (two lines
+     at most), the two buttons on the right. About 44dp tall; the old stacked
+     layout needed about 106dp. View ids are unchanged: the provider binds
+     the status text and both buttons by id. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
   android:id="@+id/smartlife_sleep_widget_root"
   android:layout_width="match_parent"
   android:layout_height="match_parent"
   android:background="@drawable/smartlife_widget_background"
-  android:orientation="vertical"
-  android:padding="16dp">
+  android:gravity="center_vertical"
+  android:orientation="horizontal"
+  android:paddingHorizontal="10dp"
+  android:paddingVertical="6dp">
 
   <TextView
     android:id="@+id/smartlife_sleep_widget_status"
-    android:layout_width="match_parent"
+    android:layout_width="0dp"
     android:layout_height="wrap_content"
+    android:layout_marginEnd="8dp"
+    android:layout_weight="1"
     android:ellipsize="end"
-    android:maxLines="1"
+    android:maxLines="2"
     android:text="พร้อมบันทึกการนอนคืนนี้"
     android:textColor="#5F6B57"
-    android:textSize="13sp" />
+    android:textSize="11.5sp" />
 
   <LinearLayout
-    android:layout_width="match_parent"
+    android:id="@+id/smartlife_sleep_widget_bed_button"
+    android:layout_width="wrap_content"
     android:layout_height="wrap_content"
-    android:layout_marginTop="10dp"
-    android:orientation="horizontal">
+    android:layout_marginEnd="6dp"
+    android:background="@drawable/smartlife_sleep_widget_button_bed"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:paddingHorizontal="10dp"
+    android:paddingVertical="7dp">
 
-    <LinearLayout
-      android:id="@+id/smartlife_sleep_widget_bed_button"
-      android:layout_width="0dp"
+    <ImageView
+      android:layout_width="16dp"
+      android:layout_height="16dp"
+      android:layout_marginEnd="5dp"
+      android:contentDescription="เข้านอน"
+      android:src="@drawable/smartlife_ic_bedtime" />
+
+    <TextView
+      android:layout_width="wrap_content"
       android:layout_height="wrap_content"
-      android:layout_marginEnd="8dp"
-      android:layout_weight="1"
-      android:background="@drawable/smartlife_sleep_widget_button_bed"
-      android:gravity="center"
-      android:orientation="horizontal"
-      android:paddingHorizontal="10dp"
-      android:paddingVertical="13dp">
+      android:maxLines="1"
+      android:text="เข้านอน"
+      android:textColor="#5A3D82"
+      android:textSize="13sp"
+      android:textStyle="bold" />
+  </LinearLayout>
 
-      <ImageView
-        android:layout_width="18dp"
-        android:layout_height="18dp"
-        android:layout_marginEnd="7dp"
-        android:contentDescription="เข้านอน"
-        android:src="@drawable/smartlife_ic_bedtime" />
+  <LinearLayout
+    android:id="@+id/smartlife_sleep_widget_wake_button"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/smartlife_sleep_widget_button_wake"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:paddingHorizontal="10dp"
+    android:paddingVertical="7dp">
 
-      <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="เข้านอน"
-        android:textColor="#5A3D82"
-        android:textSize="14sp"
-        android:textStyle="bold" />
-    </LinearLayout>
+    <ImageView
+      android:layout_width="16dp"
+      android:layout_height="16dp"
+      android:layout_marginEnd="5dp"
+      android:contentDescription="ตื่นนอน"
+      android:src="@drawable/smartlife_ic_wake" />
 
-    <LinearLayout
-      android:id="@+id/smartlife_sleep_widget_wake_button"
-      android:layout_width="0dp"
+    <TextView
+      android:layout_width="wrap_content"
       android:layout_height="wrap_content"
-      android:layout_weight="1"
-      android:background="@drawable/smartlife_sleep_widget_button_wake"
-      android:gravity="center"
-      android:orientation="horizontal"
-      android:paddingHorizontal="10dp"
-      android:paddingVertical="13dp">
-
-      <ImageView
-        android:layout_width="18dp"
-        android:layout_height="18dp"
-        android:layout_marginEnd="7dp"
-        android:contentDescription="ตื่นนอน"
-        android:src="@drawable/smartlife_ic_wake" />
-
-      <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="ตื่นนอน"
-        android:textColor="#5F835F"
-        android:textSize="14sp"
-        android:textStyle="bold" />
-    </LinearLayout>
+      android:maxLines="1"
+      android:text="ตื่นนอน"
+      android:textColor="#5F835F"
+      android:textSize="13sp"
+      android:textStyle="bold" />
   </LinearLayout>
 </LinearLayout>
