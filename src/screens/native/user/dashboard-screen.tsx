@@ -1,7 +1,8 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import {forwardRef, useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {forwardRef, useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
+import {AnimatedBotIcon, type AnimatedBotIconHandle} from '@/components/animated-bot-icon';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {AnimatedNumber, Reveal} from '@/components/motion';
 import {AuroraGradient, Sheen} from '@/components/color-motion';
@@ -47,9 +48,9 @@ function dayKey(date: Date) { return new Intl.DateTimeFormat('en-CA', {day: '2-d
 function shortDateLabel(date: Date) { return new Intl.DateTimeFormat('th-TH', {timeZone: 'Asia/Bangkok', weekday: 'short'}).format(date); }
 function dayNumber(date: Date) { return new Intl.DateTimeFormat('th-TH', {day: 'numeric', timeZone: 'Asia/Bangkok'}).format(date); }
 
-const SoftPress = forwardRef<View, {children: React.ReactNode; onLayout?: () => void; onPress: () => void; style?: object}>(
-  function SoftPress({children, onLayout, onPress, style}, ref) {
-    return <Touchable onLayout={onLayout} onPress={onPress} ref={ref} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Touchable>;
+const SoftPress = forwardRef<View, {children: React.ReactNode; onHoverIn?: () => void; onLayout?: () => void; onPress: () => void; onPressIn?: () => void; style?: object}>(
+  function SoftPress({children, onHoverIn, onLayout, onPress, onPressIn, style}, ref) {
+    return <Touchable onHoverIn={onHoverIn} onLayout={onLayout} onPress={onPress} onPressIn={onPressIn} ref={ref} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Touchable>;
   },
 );
 
@@ -83,6 +84,11 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const clockNow = useCurrentClock();
   const {ref: bellRef, onLayout: bellOnLayout} = useTourTarget('dashboard', 'bell');
   const {ref: aiCardRef, onLayout: aiCardOnLayout} = useTourTarget('dashboard', 'ai-card');
+  // The AI card's robot waves: once when the dashboard comes into focus, on
+  // mouse hover over the card (web), on press-in (touch has no hover), and --
+  // on a phone only -- now and then while the dashboard is on screen.
+  const botRef = useRef<AnimatedBotIconHandle>(null);
+  const waveBot = useCallback(() => botRef.current?.wave(), []);
   const {ref: weeklySpendingRef, onLayout: weeklySpendingOnLayout} = useTourTarget('dashboard', 'weekly-spending');
   useTourScreen('dashboard');
   const [data, setData] = useState<Item | null>(null);
@@ -248,8 +254,8 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <Reveal index={0} slide={false}>
-        <SoftPress onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} ref={aiCardRef} style={styles.aiCard}><AuroraGradient colors={['#769674', '#8fa69a', '#9297bb', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Sheen radius={18} />
-          <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
+        <SoftPress onHoverIn={waveBot} onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} onPressIn={waveBot} ref={aiCardRef} style={styles.aiCard}><AuroraGradient colors={['#769674', '#8fa69a', '#9297bb', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Sheen radius={18} />
+          <View style={styles.aiTop}><View style={styles.aiHeading}><AnimatedBotIcon idle={Platform.OS !== 'web'} ref={botRef} size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
             {/* Its own tap target: opens the assistant and starts listening right
               away, instead of landing on a blank chat the user then has to tap
               the mic in again to actually use. */}
