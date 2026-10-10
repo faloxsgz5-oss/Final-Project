@@ -146,7 +146,7 @@ const styles = StyleSheet.create({
   dot: {backgroundColor: DESKTOP_C.badge, borderColor: DESKTOP_C.sidebar, borderRadius: 6, borderWidth: 2, height: 12, position: 'absolute', right: -3, top: -2, width: 12},
   header: {alignItems: 'center', flexDirection: 'row', gap: 4, marginBottom: 10},
   headerCollapsed: {flexDirection: 'column', gap: 6, justifyContent: 'center'},
-  iconButton: {alignItems: 'center', borderRadius: 8, height: 36, justifyContent: 'center', width: 36},
+  iconButton: {alignItems: 'center', borderRadius: 8, height: 40, justifyContent: 'center', width: 40},
   kbd: {borderColor: DESKTOP_C.border, borderRadius: 4, borderWidth: 1, color: DESKTOP_C.muted, fontFamily: DESKTOP_F.m, fontSize: 10, paddingHorizontal: 5, paddingVertical: 1},
   mark: {alignItems: 'center', borderColor: 'rgba(221, 223, 194, 0.55)', borderRadius: 9, borderWidth: 1, height: 34, justifyContent: 'center', width: 34},
   row: {alignItems: 'center', borderRadius: 8, flexDirection: 'row', gap: 12, minHeight: 42, paddingHorizontal: 10},
