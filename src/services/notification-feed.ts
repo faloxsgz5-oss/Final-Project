@@ -29,6 +29,12 @@ export type FeedItem = {
   title: string;
   /** Only stored notifications carry a real read flag; derived items are live. */
   unread: boolean;
+  /**
+   * Derived alerts only: the state the alert is describing, so "seen" can be
+   * remembered per alert and still come back when that state changes (a new
+   * threshold, a moved due date, a new day). Stored notices use `unread`.
+   */
+  signature?: string;
 };
 
 type Item = Record<string, unknown>;
@@ -125,6 +131,11 @@ export function isNoteImportant(item: Item) {
   return isOpen(item) && /urgent|important|ด่วน|สำคัญ/i.test(string(item, 'priority', ''));
 }
 
+/** Today's date in Bangkok, as YYYY-MM-DD; the budget windows are anchored there too. */
+function bangkokDay(now: Date) {
+  return new Intl.DateTimeFormat('en-CA', {day: '2-digit', month: '2-digit', timeZone: 'Asia/Bangkok', year: 'numeric'}).format(now);
+}
+
 function money(value: number) {
   return `฿${Math.round(Math.abs(value)).toLocaleString('th-TH')}`;
 }
@@ -142,6 +153,9 @@ function calendarAlerts(activities: Item[], now: Date): FeedItem[] {
       source: 'calendar' as const,
       title: string(item, 'title', 'รายการในตาราง'),
       unread: true,
+      // The due time and whether it is already overdue: moving the item or
+      // letting it fall overdue makes it news again.
+      signature: `${Number.isFinite(millis(item)) ? millis(item) : 'none'}|${hoursUntil(item, now) <= 0 ? 'overdue' : 'upcoming'}`,
     }));
 }
 
@@ -155,6 +169,7 @@ function noteAlerts(notes: Item[]): FeedItem[] {
     source: 'note' as const,
     title: string(item, 'title', 'โน้ตสำคัญ'),
     unread: true,
+    signature: `priority:${string(item, 'priority', 'important').toLowerCase()}`,
   }));
 }
 
@@ -164,7 +179,7 @@ function noteAlerts(notes: Item[]): FeedItem[] {
  * from `calculateBudgetTension`, and the daily allowance from
  * `calculateDailyAllowance` -- the same number the dashboard tile shows.
  */
-function financeAlerts(insight: FinanceBudgetInsight | null, allowance: DailyAllowance | null, tension: BudgetTension | null): FeedItem[] {
+function financeAlerts(insight: FinanceBudgetInsight | null, allowance: DailyAllowance | null, tension: BudgetTension | null, now: Date): FeedItem[] {
   const alerts: FeedItem[] = [];
   if (!insight) return alerts;
 
@@ -178,6 +193,7 @@ function financeAlerts(insight: FinanceBudgetInsight | null, allowance: DailyAll
       source: 'finance',
       title: 'เกินงบเดือนนี้แล้ว',
       unread: true,
+      signature: `month:${insight.monthKey}`,
     });
   }
 
@@ -194,6 +210,8 @@ function financeAlerts(insight: FinanceBudgetInsight | null, allowance: DailyAll
       source: 'finance',
       title: exceeded ? 'เกินงบสัปดาห์นี้' : 'ใกล้เต็มงบสัปดาห์นี้',
       unread: true,
+      // Crossing from "near" to "exceeded" is a new threshold; a new week starts over.
+      signature: `week:${insight.weekStart}|${insight.weeklyStatus}`,
     });
   }
 
@@ -212,6 +230,7 @@ function financeAlerts(insight: FinanceBudgetInsight | null, allowance: DailyAll
       source: 'finance',
       title: over ? 'เกินงบวันนี้' : 'งบวันนี้เริ่มตึง',
       unread: true,
+      signature: `day:${bangkokDay(now)}|${over ? 'over' : 'tight'}`,
     });
   }
 
@@ -233,7 +252,7 @@ function financeAlerts(insight: FinanceBudgetInsight | null, allowance: DailyAll
  * Amounts are stored positive with the direction carried by `type`, so the
  * totals below compare like with like.
  */
-function fundsAlerts(transactions: Pick<Transaction, 'amount' | 'occurredAt' | 'type'>[]): FeedItem[] {
+function fundsAlerts(transactions: Pick<Transaction, 'amount' | 'occurredAt' | 'type'>[], now: Date): FeedItem[] {
   const value = (item: {amount?: number}) => Math.abs(Number(item.amount ?? 0));
   const total = (kind: Transaction['type']) => transactions
     .filter((item) => item.type === kind)
@@ -265,6 +284,8 @@ function fundsAlerts(transactions: Pick<Transaction, 'amount' | 'occurredAt' | '
     source: 'finance',
     title: 'รายจ่ายเกินเงินที่มี',
     unread: true,
+    // Per month, and again if one single row comes to exceed the month's income.
+    signature: `funds:${bangkokDay(now).slice(0, 7)}|${value(largest) > income ? 'single' : 'total'}`,
   }];
 }
 
@@ -313,8 +334,8 @@ export function buildNotificationFeed({activities, dailyBudget, monthlyBudget, m
   });
 
   return [
-    ...financeAlerts(insight, allowance, tension),
-    ...fundsAlerts(transactions),
+    ...financeAlerts(insight, allowance, tension, now),
+    ...fundsAlerts(transactions, now),
     ...calendarAlerts(itemsOf(activities), now),
     ...noteAlerts(itemsOf(notes)),
     ...storedAlerts(stored),
