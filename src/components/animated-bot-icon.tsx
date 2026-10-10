@@ -1,6 +1,7 @@
 import {useIsFocused} from 'expo-router';
 import {useCallback, useEffect, useImperativeHandle, useRef, type Ref} from 'react';
-import {AppState, Platform, StyleSheet, Text, View, type StyleProp, type TextStyle, type ViewStyle} from 'react-native';
+import {AppState, Platform, StyleSheet, Text, View, type StyleProp, type ViewStyle} from 'react-native';
+import {glowSurface, glowText} from '@/theme/elevation';
 import Animated, {
   Easing,
   ReduceMotion,
@@ -20,8 +21,8 @@ export type AnimatedBotIconHandle = {
 type Props = {
   accessibilityLabel?: string;
   color?: string;
-  /** Halo behind the glyph (see `glowText` in `@/theme/elevation`). */
-  glyphStyle?: StyleProp<TextStyle>;
+  /** A soft white halo around the robot and its arm, for the coloured AI card. */
+  glow?: boolean;
   /**
    * Wave every ~11 s while the screen is focused and the app is in the
    * foreground. Touch has no hover, so on a phone this is what keeps the
@@ -63,7 +64,7 @@ const REST_ANGLE = -32;
  * Everything runs on the UI thread through Reanimated; a wave is a single
  * `withSequence`, and no React state changes while it plays.
  */
-export function AnimatedBotIcon({accessibilityLabel = 'ผู้ช่วย AI', color = '#fff', glyphStyle, idle = false, ref, size = 21, style, waveOnFocus = true}: Props) {
+export function AnimatedBotIcon({accessibilityLabel = 'ผู้ช่วย AI', color = '#fff', glow = false, idle = false, ref, size = 21, style, waveOnFocus = true}: Props) {
   const reduced = useReducedMotion();
   const focused = useIsFocused();
   const angle = useSharedValue(0);
@@ -126,7 +127,7 @@ export function AnimatedBotIcon({accessibilityLabel = 'ผู้ช่วย AI'
       accessible
       style={[{height: size, width: size}, style]}
     >
-      <Text style={[{color, fontFamily: 'MaterialSymbols_400Regular', fontSize: size, lineHeight: size}, glyphStyle]}>smart_toy</Text>
+      <Text style={[{color, fontFamily: 'MaterialSymbols_400Regular', fontSize: size, lineHeight: size}, glow && glowText('ai', 0.75, 8)]}>smart_toy</Text>
       <Animated.View
         pointerEvents="none"
         style={[
@@ -143,12 +144,15 @@ export function AnimatedBotIcon({accessibilityLabel = 'ผู้ช่วย AI'
           armStyle,
         ]}
       >
-        <View style={{backgroundColor: color, borderRadius: hand, height: hand, width: hand}} />
-        <View style={{backgroundColor: color, borderRadius: forearm, flex: 1, marginTop: -hand * 0.25, width: forearm}} />
+        <View style={[{backgroundColor: color, borderRadius: hand, height: hand, width: hand}, glow && armGlow]} />
+        <View style={[{backgroundColor: color, borderRadius: forearm, flex: 1, marginTop: -hand * 0.25, width: forearm}, glow && armGlow]} />
       </Animated.View>
     </View>
   );
 }
+
+// The arm is two views, not glyph text, so its halo is a box shadow sized to match the glyph's.
+const armGlow = glowSurface('ai', 1.4, 5);
 
 const styles = StyleSheet.create({
   arm: {

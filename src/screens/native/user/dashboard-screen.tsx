@@ -25,7 +25,7 @@ import {useCurrentClock} from '@/hooks/use-current-clock';
 import {useTourScreen, useTourTarget} from '@/hooks/use-tour-target';
 import {bangkokGreeting} from '@/lib/ux-time';
 import {showToast} from '@/components/app-toast';
-import {shadow as elevation} from '@/theme/elevation';
+import {glowSurface, shadow as elevation} from '@/theme/elevation';
 
 /**
  * Page data arrives already serialised to ISO strings, so the slot times the
@@ -256,7 +256,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <Reveal index={0} slide={false}>
         <SoftPress onHoverIn={waveBot} onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} onPressIn={waveBot} ref={aiCardRef} style={styles.aiCard}><AuroraGradient colors={['#769674', '#8fa69a', '#9297bb', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Sheen radius={18} />
-          <View style={styles.aiTop}><View style={styles.aiHeading}><AnimatedBotIcon idle={Platform.OS !== 'web'} ref={botRef} size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
+          <View style={styles.aiTop}><View style={styles.aiHeading}><AnimatedBotIcon glow idle={Platform.OS !== 'web'} ref={botRef} size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
             {/* Its own tap target: opens the assistant and starts listening right
               away, instead of landing on a blank chat the user then has to tap
               the mic in again to actually use. */}
@@ -449,7 +449,9 @@ const styles = StyleSheet.create({
   timePill: {alignItems: 'center', backgroundColor: '#edf3ea', borderRadius: 10, minWidth: 48, paddingHorizontal: 7, paddingVertical: 6},
   topRow: {alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginBottom: 15},
   topRowActions: {alignItems: 'center', flexDirection: 'row', gap: 9},
-  unread: {alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
+  // A red halo while there is something unread; the badge (and so the glow) is
+  // only rendered when the count is above zero.
+  unread: {...glowSurface('alert', 0.9, 8), alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
   unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 12},
   urgency: {backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4},
   urgencyText: {color: colors.note, fontFamily: font.semibold, fontSize: 12},

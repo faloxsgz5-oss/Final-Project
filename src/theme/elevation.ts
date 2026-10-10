@@ -50,7 +50,7 @@ export const GLOW = {
   ai: '255, 255, 255', // white on the sage-to-lavender AI gradient
   sage: '95, 131, 95',
   finance: '146, 151, 187',
-  alert: '210, 92, 92', // the unread-badge red
+  alert: '243, 86, 89', // the unread-badge red
   night: '90, 61, 130',
 } as const;
 
