@@ -43,7 +43,11 @@ export function DesktopSidebar({activeKey, badge, collapsed, name, onAdd, onNavi
     const count = entry.key === 'notifications' ? badge : 0;
     return (
       <Pressable
-        {...web({'aria-current': isActive ? 'page' : undefined, role: 'link'})}
+        // Button role, not link: react-native-web leaves Enter on a link role to the
+        // browser, which only acts on a real <a href>, so these rows ignored the
+        // keyboard. aria-current still tells assistive tech which page is open.
+        {...web({'aria-current': isActive ? 'page' : undefined})}
+        accessibilityRole="button"
         accessibilityLabel={count ? `${entry.label} (${count} รายการใหม่)` : entry.label}
         key={entry.key}
         onPress={() => onNavigate(entry.page)}
