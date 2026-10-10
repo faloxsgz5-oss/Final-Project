@@ -47,6 +47,17 @@ export function budgetCardTitle(period: Period) {
   if (period === 'month') return 'กำหนดขอบเขตการใช้';
   return 'กำหนดงบและกรอบรายสัปดาห์';
 }
+// The button at the page's top right, which follows the list filter, and the
+// labels of the two quick-add pills under the balance. Exported so the usage
+// guide pictures the same buttons with the same words.
+export function financeHeaderAction(filter: Filter) {
+  return filter === 'income'
+    ? {icon: 'add', label: 'เพิ่มรายรับ', page: 'smartlife_add_income'}
+    : filter === 'expense'
+      ? {icon: 'add', label: 'เพิ่มรายจ่าย', page: 'smartlife_add_expense'}
+      : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
+}
+export const QUICK_ADD_LABELS = {expense: 'รายจ่าย', income: 'รายรับ'} as const;
 function budgetCardSubtitle(period: Period, budget: {amount: number; rolledOver: boolean} | null) {
   if (!budget) {
     if (period === 'day') return 'ตั้งวงเงิน แล้ว AI แบ่งเป็นงบรายวันให้';
@@ -216,11 +227,7 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
     setMonthData(apply);
     transactions.update(uid, id, {category}).catch((error) => { console.error('[Finance] Category update failed', error); load().catch(() => undefined); setCategoryError(true); });
   };
-  const headerAction = filter === 'income'
-    ? {icon: 'add', label: 'เพิ่มรายรับ', page: 'smartlife_add_income'}
-    : filter === 'expense'
-      ? {icon: 'add', label: 'เพิ่มรายจ่าย', page: 'smartlife_add_expense'}
-      : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
+  const headerAction = financeHeaderAction(filter);
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView ref={scrollViewRef} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
@@ -261,11 +268,11 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
         <View style={styles.quickAddRow}>
           <Touchable accessibilityLabel="เพิ่มรายรับอย่างเร็ว" accessibilityRole="button" onPress={() => setQuickAddKind('income')} style={[styles.quickAddPill, styles.quickAddPillIncome]}>
             <MaterialIcon color={C.sage} name="add" size={17} />
-            <Text style={[styles.quickAddPillText, {color: C.sage}]}>รายรับ</Text>
+            <Text style={[styles.quickAddPillText, {color: C.sage}]}>{QUICK_ADD_LABELS.income}</Text>
           </Touchable>
           <Touchable accessibilityLabel="เพิ่มรายจ่ายอย่างเร็ว" accessibilityRole="button" onPress={() => setQuickAddKind('expense')} style={[styles.quickAddPill, styles.quickAddPillExpense]}>
             <MaterialIcon color={C.red} name="add" size={17} />
-            <Text style={[styles.quickAddPillText, {color: C.red}]}>รายจ่าย</Text>
+            <Text style={[styles.quickAddPillText, {color: C.red}]}>{QUICK_ADD_LABELS.expense}</Text>
           </Touchable>
         </View>
 </Reveal>

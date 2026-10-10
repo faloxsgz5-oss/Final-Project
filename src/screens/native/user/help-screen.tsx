@@ -4,7 +4,7 @@ import {Touchable} from '@/components/touchable';
 
 import {ADD_ITEM_OPTIONS} from '@/components/add-item-sheet';
 import {Card, MaterialIcon, PLANNER_TABS, USER_LEFT_TABS, USER_RIGHT_TABS, UserShell, type UserNavigate} from './user-ui';
-import {budgetCardTitle} from './finance-screen';
+import {budgetCardTitle, financeHeaderAction, QUICK_ADD_LABELS} from './finance-screen';
 
 const C = {pine: '#2c341b', sage: '#6f8f6d', dark: '#5f835f', muted: '#81887d', night: '#5a3d82'};
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
@@ -171,6 +171,20 @@ function MiniBudgetCard() {
   </View>;
 }
 
+// The two quick-add pills under the balance on the finance page, labelled from
+// the page's own list.
+function MiniQuickAddPills() {
+  return <View style={[visualStyles.headerRow, {marginTop: 10}]}>
+    {(['income', 'expense'] as const).map((kind) => <View key={kind} style={visualStyles.tabItem}>
+      <TapHere />
+      <View style={[visualStyles.addRow, visualStyles.addRowActive, visualStyles.pill]}>
+        <MaterialIcon color={C.dark} name="add" size={15} />
+        <Text style={[visualStyles.addRowTextActive, {fontSize: 12}]}>{QUICK_ADD_LABELS[kind]}</Text>
+      </View>
+    </View>)}
+  </View>;
+}
+
 // The two rows a reader is sent to on the profile page.
 function MiniProfileRows() {
   return <View style={visualStyles.addMenu}>
@@ -269,6 +283,7 @@ const SECTIONS: Section[] = [
     id: 'finance',
     points: [
       {label: 'เพิ่มรายรับ-รายจ่าย', text: 'กดปุ่ม + ตรงกลางแถบด้านล่าง แล้วเลือก "เพิ่มรายรับ" หรือ "เพิ่มรายจ่ายเอง" กรอกจำนวนเงินกับหมวด แล้วกดบันทึก'},
+      {label: 'ปุ่มในหน้าการเงิน', text: `ในหน้าการเงิน ใต้ยอดสุทธิมีปุ่ม "+ ${QUICK_ADD_LABELS.income}" กับ "+ ${QUICK_ADD_LABELS.expense}" กดแล้วกรอกแค่จำนวนเงินกับหมวด บันทึกได้ทันทีโดยไม่ต้องออกจากหน้า ส่วนปุ่มมุมขวาบนคือ "${financeHeaderAction('all').label}" ถ้าเลือกดูเฉพาะรายรับหรือรายจ่ายอยู่ ปุ่มนี้จะเปลี่ยนเป็น "${financeHeaderAction('income').label}" หรือ "${financeHeaderAction('expense').label}" แทน`},
       {label: 'สแกนใบเสร็จ', text: 'กดปุ่ม + ตรงกลางแล้วเลือก "Smart Scan" เพื่อถ่ายรูปใบเสร็จหรือสลิปโอนเงินให้ระบบอ่านให้ เป็นปุ่มเดียวกับที่ใช้สแกนตารางเรียน ระบบจะดูเองว่าเป็นเอกสารแบบไหน ถ้าระบบอ่านยอดเงินไม่เจอ ช่อง "ยอดรวม" จะเว้นว่างไว้ให้พิมพ์เอง แค่แตะที่ช่องแล้วพิมพ์ตัวเลขตามในสลิป เป็นเรื่องปกติที่บางรูปอ่านไม่ได้ ไม่ต้องกังวล เพราะแก้ไขทีหลังได้เสมอ'},
       {label: 'ตั้งงบ', text: `ในหน้าการเงิน กดการ์ด "${budgetCardTitle('day')}" (ในแท็บสัปดาห์การ์ดนี้ชื่อ "${budgetCardTitle('week')}" และในแท็บเดือนชื่อ "${budgetCardTitle('month')}") จะเข้าหน้าตั้งงบ ให้ AI แนะนำจากรายรับ หรือกำหนดเองก็ได้ ทั้งรายเดือน รายสัปดาห์ และรายวัน`},
     ],
@@ -277,8 +292,11 @@ const SECTIONS: Section[] = [
       <Caption>เพิ่มรายรับ-รายจ่าย หรือสแกนใบเสร็จ</Caption>
       <MiniTabBar highlight="plus" />
       <MiniAddMenu highlightPages={['smartlife_scan_schedule', 'smartlife_add_income', 'smartlife_add_expense']} />
-      <Caption>ตั้งงบ ในหน้าการเงิน</Caption>
+      <Caption>หรือในหน้าการเงิน: ปุ่มมุมขวาบน และปุ่มบันทึกเร็วใต้ยอดสุทธิ</Caption>
       <MiniTabBar highlight="smartlife_finance_day" />
+      <MiniPageHeader actions={[{icon: financeHeaderAction('all').icon, label: financeHeaderAction('all').label}]} eyebrow="สรุปวันนี้" title="การเงิน" />
+      <MiniQuickAddPills />
+      <Caption>ตั้งงบ ในหน้าการเงิน</Caption>
       <MiniBudgetCard />
     </>,
   },
@@ -397,6 +415,7 @@ const visualStyles = StyleSheet.create({
   mockButtonText: {color: '#fff', fontFamily: F.b, fontSize: 11},
   mockEyebrow: {color: C.sage, fontFamily: F.b, fontSize: 10},
   mockTitle: {color: C.pine, fontFamily: F.x, fontSize: 15},
+  pill: {alignSelf: 'stretch', justifyContent: 'center'},
   plannerRow: {backgroundColor: '#f7f9f4', borderRadius: 14, flexDirection: 'row', gap: 4, marginTop: 10, padding: 6},
   plannerTab: {alignItems: 'center', alignSelf: 'stretch', borderRadius: 10, paddingVertical: 6},
   plannerTabActive: {backgroundColor: '#fff', borderColor: C.sage, borderWidth: 1.5},
