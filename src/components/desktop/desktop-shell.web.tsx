@@ -3,7 +3,7 @@ import {useCallback, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {StyleSheet, View} from 'react-native';
 
 import {AddItemSheet} from '@/components/add-item-sheet';
-import {useIsDesktopWeb} from '@/hooks/use-is-desktop-web';
+import {useDesktopWebLayout} from '@/hooks/use-is-desktop-web';
 import {useNotificationBadge} from '@/hooks/use-notification-badge';
 import {navKeyForPage} from '@/lib/desktop-web';
 import {useAuth} from '@/providers/auth-provider';
@@ -40,15 +40,16 @@ const FEED_REFRESH_MS = 30_000;
  * content column, and the phone tab bar hides itself when this is showing.
  */
 export function DesktopShell({children}: {children: ReactNode}) {
-  const desktop = useIsDesktopWeb();
+  const layout = useDesktopWebLayout();
+  const desktop = layout !== 'none';
   const pathname = usePathname();
   const {role, user} = useAuth();
   const [section, page] = pathname.split('/').filter(Boolean);
   const active = desktop && section === 'user' && Boolean(user) && role !== 'admin';
-  return active ? <ShellFrame page={page ?? 'index'} uid={user!.uid}>{children}</ShellFrame> : children;
+  return active ? <ShellFrame compact={layout === 'compact'} page={page ?? 'index'} uid={user!.uid}>{children}</ShellFrame> : children;
 }
 
-function ShellFrame({children, page, uid}: {children: ReactNode; page: string; uid: string}) {
+function ShellFrame({children, compact, page, uid}: {children: ReactNode; compact: boolean; page: string; uid: string}) {
   const router = useRouter();
   const {user} = useAuth();
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -78,11 +79,11 @@ function ShellFrame({children, page, uid}: {children: ReactNode; page: string; u
     const onKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return;
       if (event.key.toLowerCase() === 'k') { event.preventDefault(); setJumpOpen(true); }
-      else if (event.key === '\\') { event.preventDefault(); toggleCollapsed(); }
+      else if (event.key === '\\' && !compact) { event.preventDefault(); toggleCollapsed(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleCollapsed]);
+  }, [compact, toggleCollapsed]);
 
   const activeKey = useMemo(() => navKeyForPage(page), [page]);
   const name = user?.displayName || user?.email?.split('@')[0] || 'SmartLife';
@@ -92,7 +93,10 @@ function ShellFrame({children, page, uid}: {children: ReactNode; page: string; u
       <DesktopSidebar
         activeKey={activeKey}
         badge={badge}
-        collapsed={collapsed}
+        // A compact window (900-1099px) always gets the icon rail; the saved
+        // collapse preference applies from 1100px up.
+        canToggle={!compact}
+        collapsed={compact || collapsed}
         name={name}
         onAdd={() => setAddOpen(true)}
         onNavigate={navigate}

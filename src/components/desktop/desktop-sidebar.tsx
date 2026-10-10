@@ -18,9 +18,11 @@ const web = (props: Record<string, unknown>) => props as object;
  * card hover the phone layout's buttons use: a sidebar row is navigation, not
  * a card. Every row is keyboard reachable and gets the app's focus ring.
  */
-export function DesktopSidebar({activeKey, badge, collapsed, name, onAdd, onNavigate, onSearch, onToggleCollapsed}: {
+export function DesktopSidebar({activeKey, badge, canToggle = true, collapsed, name, onAdd, onNavigate, onSearch, onToggleCollapsed}: {
   activeKey: DesktopNavKey | null;
   badge: number;
+  /** False on a compact window, where the rail cannot be expanded. */
+  canToggle?: boolean;
   collapsed: boolean;
   name: string;
   onAdd: () => void;
@@ -74,13 +76,21 @@ export function DesktopSidebar({activeKey, badge, collapsed, name, onAdd, onNavi
             <MaterialIcon color={DESKTOP_C.muted} name="unfold_more" size={16} />
           </Pressable>
         )}
-        <Pressable
-          accessibilityLabel={collapsed ? 'ขยายแถบด้านข้าง (Ctrl+\\)' : 'ย่อแถบด้านข้าง (Ctrl+\\)'}
-          onPress={onToggleCollapsed}
-          style={(state: WebState) => [styles.iconButton, (state.hovered || state.pressed) && styles.rowHover, hoverTransition]}
-        >
-          <MaterialIcon color={DESKTOP_C.muted} name={collapsed ? 'keyboard_double_arrow_right' : 'keyboard_double_arrow_left'} size={20} />
-        </Pressable>
+        {canToggle ? (
+          <Pressable
+            accessibilityLabel={collapsed ? 'ขยายแถบด้านข้าง (Ctrl+\\)' : 'ย่อแถบด้านข้าง (Ctrl+\\)'}
+            onPress={onToggleCollapsed}
+            style={(state: WebState) => [styles.iconButton, (state.hovered || state.pressed) && styles.rowHover, hoverTransition]}
+          >
+            <MaterialIcon color={DESKTOP_C.muted} name={collapsed ? 'keyboard_double_arrow_right' : 'keyboard_double_arrow_left'} size={20} />
+          </Pressable>
+        ) : (
+          // A compact window has no room to expand the rail, so its top slot is
+          // the account instead of a toggle that could not do anything.
+          <Pressable accessibilityLabel={`บัญชี ${name} เปิดโปรไฟล์`} onPress={() => onNavigate('smartlife_profile')} style={(state: WebState) => [styles.iconButton, (state.hovered || state.pressed) && styles.rowHover, hoverTransition]}>
+            <View style={styles.avatar}><Text style={styles.avatarText}>{name.slice(0, 1).toUpperCase()}</Text></View>
+          </Pressable>
+        )}
       </View>
 
       <Pressable accessibilityLabel="ค้นหาและไปที่หน้า (Ctrl+K)" onPress={onSearch} style={(state: WebState) => (collapsed ? row(state) : [styles.search, (state.hovered || state.pressed) && styles.searchHover])}>

@@ -4,27 +4,44 @@
  * rule and the mapping are unit-tested; the hook in
  * `@/hooks/use-is-desktop-web` applies them to the live window.
  *
- * The rule, from measuring each device class in browser emulation (see the
- * JOB 2 report): every phone and tablet profile -- iPad Pro 12.9 landscape at
- * 1366x1024 included, in Chromium and WebKit -- reported `hover: none` and
- * `pointer: coarse`, and every laptop/desktop `hover: hover` and
- * `pointer: fine`. So the input type is what keeps tablets on the phone
- * layout, and the width only decides when a narrow desktop window does too.
- * 1024px is the narrowest common desktop viewport we want to treat as desktop
- * (a 1280-wide laptop at 125% scaling); below it the sidebar would squeeze the
- * content under the phone layout's own width.
+ * Measured in Chromium and WebKit emulation (the device table in the report):
+ * every phone and tablet profile -- iPhones, Galaxy and Pixel phones and
+ * foldables, Android's "desktop site" mode, every iPad including the 12.9 at
+ * 1366x1024 and posing as a Mac, Android tablets up to 2560 wide, a Surface in
+ * tablet mode, a Chromebook tablet -- reports `hover: none` and
+ * `pointer: coarse`, and every laptop and desktop window `hover: hover` and
+ * `pointer: fine`. So the input type is what keeps phones and tablets on the
+ * phone layout at any width; the width only decides when a narrowed desktop
+ * window falls back to it.
+ *
+ * 900px: a browser snapped to half of a 1920 screen is about 960 CSS px (less
+ * its borders), and should stay a desktop layout; below 900 a mouse window
+ * gets the phone layout, which still works. Between 900 and 1100 the layout
+ * is "compact": the sidebar is an icon rail and the dashboard one column, so
+ * nothing is cramped. From 1100 up it is the full layout -- full sidebar, two
+ * columns, 1180px content.
  *
  * iPadOS Safari in "desktop website" mode reports itself as a Mac; with a
  * trackpad attached it may also report a fine pointer. A real Mac reports no
  * touch points, so a "Mac" with several is treated as an iPad.
  */
-export const DESKTOP_MIN_WIDTH = 1024;
+export const DESKTOP_MIN_WIDTH = 900;
+export const DESKTOP_FULL_MIN_WIDTH = 1100;
 export const DESKTOP_QUERY = `(min-width: ${DESKTOP_MIN_WIDTH}px) and (hover: hover) and (pointer: fine)`;
+export const DESKTOP_FULL_QUERY = `(min-width: ${DESKTOP_FULL_MIN_WIDTH}px)`;
+
+export type DesktopLayout = 'none' | 'compact' | 'full';
 
 export function isDesktopEnvironment({matches, maxTouchPoints = 0, userAgent = ''}: {matches: boolean; maxTouchPoints?: number; userAgent?: string}) {
   if (!matches) return false;
   const iPadAsMac = /Macintosh/.test(userAgent) && maxTouchPoints > 1;
   return !iPadAsMac;
+}
+
+/** 'none' (phone layout), 'compact' (rail + one column) or 'full' (the approved desktop look). */
+export function desktopLayout({full, ...environment}: {full: boolean; matches: boolean; maxTouchPoints?: number; userAgent?: string}): DesktopLayout {
+  if (!isDesktopEnvironment(environment)) return 'none';
+  return full ? 'full' : 'compact';
 }
 
 export type DesktopNavKey = 'index' | 'planner' | 'notes' | 'finance' | 'assistant' | 'notifications' | 'help' | 'profile';

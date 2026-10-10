@@ -24,7 +24,7 @@ import {aggregateSpending, type SpendingTransactionInput} from '@/services/spend
 import {updateAndroidHomeWidget} from '@/services/android-home-widget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 import {useCurrentClock} from '@/hooks/use-current-clock';
-import {useIsDesktopWeb} from '@/hooks/use-is-desktop-web';
+import {useDesktopWebLayout} from '@/hooks/use-is-desktop-web';
 import {useNotificationBadge} from '@/hooks/use-notification-badge';
 import {useTourScreen, useTourTarget} from '@/hooks/use-tour-target';
 import {bangkokGreeting} from '@/lib/ux-time';
@@ -98,7 +98,11 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   useTourScreen('dashboard');
   const [data, setData] = useState<Item | null>(null);
   const [sleepSheetOpen, setSleepSheetOpen] = useState(false);
-  const desktop = useIsDesktopWeb();
+  const desktopLayoutKind = useDesktopWebLayout();
+  const desktop = desktopLayoutKind !== 'none';
+  // Two columns only on the full desktop layout; a compact window (900-1099px)
+  // keeps the one-column order so nothing is cramped.
+  const twoColumns = desktopLayoutKind === 'full';
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [completingId, setCompletingId] = useState('');
@@ -350,7 +354,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
       </View>
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
-        {sections && desktop ? <View style={styles.desktopGrid}>
+        {sections && twoColumns ? <View style={styles.desktopGrid}>
           <View style={styles.desktopMain}>{sections.ai}{sections.priority}{sections.schedule}{sections.recommendation}</View>
           <View style={styles.desktopSide}>{sections.stats}{sections.quickActions}{sections.devSeed}{sections.focus}{sections.weekly}{sections.note}</View>
         </View> : sections ? <>{sections.ai}{sections.recommendation}{sections.priority}{sections.quickActions}{sections.devSeed}{sections.stats}{sections.schedule}{sections.focus}{sections.note}{sections.weekly}</> : null}
