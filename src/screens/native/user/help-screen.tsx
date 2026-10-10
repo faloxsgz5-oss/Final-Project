@@ -6,6 +6,7 @@ import {ADD_ITEM_OPTIONS} from '@/components/add-item-sheet';
 import {Card, MaterialIcon, PLANNER_TABS, USER_LEFT_TABS, USER_RIGHT_TABS, UserShell, type UserNavigate} from './user-ui';
 import {budgetCardTitle, financeHeaderAction, QUICK_ADD_LABELS} from './finance-screen';
 import {shadow as elevation} from '@/theme/elevation';
+import {useIsDesktopWeb} from '@/hooks/use-is-desktop-web';
 
 const C = {pine: '#2c341b', sage: '#6f8f6d', dark: '#5f835f', muted: '#81887d', night: '#5a3d82'};
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
@@ -337,6 +338,9 @@ export default function HelpScreen({onNavigate}: {onNavigate: UserNavigate}) {
   // Nothing is pre-opened: the reader picks what they came for rather than
   // being handed the dashboard section whether or not it is what they wanted.
   const [openId, setOpenId] = useState<string | null>(null);
+  // The guide pictures the phone layout's bottom bar. On the desktop web
+  // layout the same screens live in the sidebar, so say so once up front.
+  const desktop = useIsDesktopWeb();
 
   return <UserShell onNavigate={onNavigate}>
     <View style={styles.pageHead}>
@@ -345,6 +349,7 @@ export default function HelpScreen({onNavigate}: {onNavigate: UserNavigate}) {
       </Touchable>
       <View style={{flex: 1}}>
         <Text style={styles.title}>คู่มือการใช้งาน</Text>
+        {desktop ? <Text style={styles.desktopNote}>บนคอมพิวเตอร์ เมนูที่รูปด้านล่างแสดงเป็นแถบด้านล่างจะอยู่ในแถบด้านซ้ายแทน และปุ่ม + อยู่ที่ “เพิ่ม” มุมขวาบน รูปตัวอย่างเป็นหน้าจอโทรศัพท์</Text> : null}
         <Text style={styles.subtitle}>แตะหัวข้อเพื่อดูวิธีใช้แบบละเอียด พร้อมรูปตัวอย่างว่าต้องกดตรงไหน</Text>
       </View>
     </View>
@@ -388,6 +393,7 @@ const styles = StyleSheet.create({
   sectionHead: {alignItems: 'center', flexDirection: 'row', gap: 11},
   sectionTitle: {color: C.pine, flex: 1, fontFamily: F.b, fontSize: 14},
   subtitle: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1},
+  desktopNote: {color: C.dark, fontFamily: F.m, fontSize: 12, marginTop: 4},
   title: {color: C.pine, fontFamily: F.x, fontSize: 21},
   visualBlock: {marginTop: 13},
 });
