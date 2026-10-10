@@ -7,6 +7,7 @@ import {LinearGradient} from 'expo-linear-gradient';
 import Animated, {ReduceMotion, useAnimatedStyle, useSharedValue, withSpring} from 'react-native-reanimated';
 import {Reveal} from '@/components/motion';
 import {BackdropGlow, pulseRingStyle, Sheen} from '@/components/color-motion';
+import {useIsDesktopWeb} from '@/hooks/use-is-desktop-web';
 
 export type UserNavigate = (page: string) => void;
 
@@ -103,9 +104,14 @@ function TabIndicator({active}: {active: boolean}) {
 
 export function UserTabBar({active, onNavigate}: {active?: string; onNavigate: UserNavigate}) {
   const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
+  // The desktop web layout navigates from its sidebar; a second, phone-style
+  // bar under it would be double navigation. Phones, tablets and the apps
+  // always get this bar.
+  const desktop = useIsDesktopWeb();
   const leftTabs = USER_LEFT_TABS;
   const rightTabs = USER_RIGHT_TABS;
   const openForm = (page: string) => { setIsBottomSheetOpen(false); onNavigate(page); };
+  if (desktop) return null;
   const renderTab = ([icon, label, page]: string[]) => <Touchable key={page} onPress={() => onNavigate(page)} style={({pressed}) => [styles.tab, pressed && styles.tabPressed]}><TabIcon active={active === page} icon={icon} /><Text numberOfLines={1} style={[styles.tabLabel, active === page && styles.active]}>{label}</Text><TabIndicator active={active === page} /></Touchable>;
   return <>
     <LinearGradient colors={['rgba(255,255,255,.99)', '#f7f9f4']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={styles.tabs}>
