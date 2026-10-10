@@ -1,8 +1,9 @@
-import {AppRegistry, Platform} from 'react-native';
+import {AppRegistry, Platform, ToastAndroid} from 'react-native';
 
 import {auth} from '@/lib/firebase';
 import {updateAndroidSleepWidget} from '@/services/android-home-widget';
-import {findOpenSleepLog, finishSleepLog, formatClockMinutes, startSleepLog} from '@/services/sleep-log';
+import {NO_OPEN_NIGHT_TOAST_TEXT, NO_OPEN_NIGHT_WIDGET_TEXT, shortNightToastText, shortNightWidgetText} from '@/lib/sleep-widget-text';
+import {findOpenSleepLog, finishSleepLog, formatClockMinutes, startSleepLog, type FinishSleepResult} from '@/services/sleep-log';
 
 /**
  * The name a native Headless JS task is started by. The Android sleep widget's
@@ -39,11 +40,28 @@ async function sleepWidgetTask(data: SleepWidgetTaskData = {}) {
     return;
   }
 
+  let wake: FinishSleepResult | null = null;
   try {
     if (data.action === 'go_to_bed') await startSleepLog(uid);
-    else if (data.action === 'wake_up') await finishSleepLog(uid);
+    else if (data.action === 'wake_up') wake = await finishSleepLog(uid);
     else return;
   } catch {
+    return;
+  }
+
+  // A wake that records nothing -- the night is under the minimum, or there
+  // is no open night -- used to redraw the same status line, so the button
+  // looked dead. Say why on the widget and in a toast instead. Nothing is
+  // written here: finishSleepLog already declined to.
+  if (wake?.status === 'skipped') {
+    const now = new Date();
+    const open = wake.reason === 'too-short' ? await findOpenSleepLog(uid, now).catch(() => null) : null;
+    const startedAt = open?.startAt?.toDate?.() ?? null;
+    const [widgetText, toastText] = startedAt
+      ? [shortNightWidgetText(startedAt, now), shortNightToastText(startedAt, now)]
+      : [NO_OPEN_NIGHT_WIDGET_TEXT, NO_OPEN_NIGHT_TOAST_TEXT];
+    ToastAndroid.show(toastText, ToastAndroid.LONG);
+    await updateAndroidSleepWidget(widgetText).catch(() => undefined);
     return;
   }
 
