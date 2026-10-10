@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <string name="smartlife_widget_description">สรุปตาราง งาน และงบวันนี้จาก SmartLife</string>
-  <string name="smartlife_sleep_widget_description">ปุ่มบันทึกเข้านอน/ตื่นนอนจากหน้าจอหลัก</string>
+  <!-- Picker names. Without a label of their own both widgets were listed
+       under the app name, "SmartLife", twice. -->
+  <string name="smartlife_widget_label">SmartLife สรุปวันนี้</string>
+  <string name="smartlife_sleep_widget_label">SmartLife บันทึกการนอน</string>
+  <string name="smartlife_widget_description">ตาราง งาน และงบที่ใช้ได้วันนี้ ขนาด 4×2</string>
+  <string name="smartlife_sleep_widget_description">ปุ่มเข้านอน/ตื่นนอนแถวเดียว ขนาด 4×1</string>
 </resources>

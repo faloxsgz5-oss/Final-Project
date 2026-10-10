@@ -29,7 +29,8 @@
 
     <receiver
       android:name=".SmartLifeWidgetProvider"
-      android:exported="true">
+      android:exported="true"
+      android:label="@string/smartlife_widget_label">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
       </intent-filter>
@@ -40,7 +41,8 @@
 
     <receiver
       android:name=".SmartLifeSleepWidgetProvider"
-      android:exported="true">
+      android:exported="true"
+      android:label="@string/smartlife_sleep_widget_label">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
       </intent-filter>
