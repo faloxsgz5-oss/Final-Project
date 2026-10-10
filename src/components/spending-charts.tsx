@@ -4,6 +4,7 @@ import {type GestureResponderEvent, ScrollView, StyleSheet, Text, View} from 're
 import {aggregateSpending, type SpendingCategoryPoint, type SpendingPeriod, type SpendingTransactionInput} from '@/services/spending-analytics';
 import {Touchable} from '@/components/touchable';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
+import {shadow as elevation} from '@/theme/elevation';
 
 const colors = ['#628762', '#707cae', '#c77b70', '#d3a957', '#77999c', '#9b78a3', '#8d9274', '#bd8760'];
 const ink = '#29351f';
@@ -130,7 +131,7 @@ export function SpendingDonut({byCategory, compact = false, total}: {byCategory:
   </View>;
 }
 
-const shadow = {shadowColor: ink, shadowOffset: {height: 8, width: 0}, shadowOpacity: .06, shadowRadius: 18};
+const shadow = elevation('md');
 const styles = StyleSheet.create({
   axisDateLabel: {color: muted, fontFamily: font.regular, fontSize: 12, marginTop: -1},
   axisLabel: {color: muted, fontFamily: font.semibold, fontSize: 12, marginTop: 3},

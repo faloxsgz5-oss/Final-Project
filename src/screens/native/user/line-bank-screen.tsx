@@ -5,6 +5,7 @@ import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 import {parseLineBankNotification} from '@/services/line-bank-parser';
 import {showToast} from '@/components/app-toast';
+import {shadow as elevation} from '@/theme/elevation';
 import {
   submitBankText,
   listPendingNotifications,
@@ -132,7 +133,7 @@ export default function LineBankScreen({onNavigate, uid}: Props) {
   );
 }
 
-const shadow = {shadowColor: C.ink, shadowOffset: {height: 8, width: 0}, shadowOpacity: 0.05, shadowRadius: 18};
+const shadow = elevation('md');
 const styles = StyleSheet.create({
   container: { flex: 1 },
   headerBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 10, gap: 15 },

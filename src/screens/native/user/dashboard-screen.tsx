@@ -25,6 +25,7 @@ import {useCurrentClock} from '@/hooks/use-current-clock';
 import {useTourScreen, useTourTarget} from '@/hooks/use-tour-target';
 import {bangkokGreeting} from '@/lib/ux-time';
 import {showToast} from '@/components/app-toast';
+import {shadow as elevation} from '@/theme/elevation';
 
 /**
  * Page data arrives already serialised to ISO strings, so the slot times the
@@ -328,7 +329,9 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   </View></ResponsiveSafeArea>;
 }
 
-const shadow = {shadowColor: colors.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 22};
+const shadow = elevation('md');
+// Small round controls sit close to the page; a card-sized blur under them reads as a smudge.
+const iconShadow = elevation('sm');
 const font = {regular: 'Prompt_400Regular', medium: 'Prompt_500Medium', semibold: 'Prompt_600SemiBold', bold: 'Prompt_700Bold', extra: 'Prompt_800ExtraBold'};
 const styles = StyleSheet.create({
   devTag: {backgroundColor: '#f4b23e', borderRadius: 6, marginLeft: 6, paddingHorizontal: 6, paddingVertical: 1},
@@ -346,7 +349,7 @@ const styles = StyleSheet.create({
   aiHeading: {alignItems: 'center', flexDirection: 'row', gap: 10},
   aiTitle: {color: '#fff', fontFamily: font.bold, fontSize: 17},
   aiTop: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
-  avatar: {...shadow, alignItems: 'center', backgroundColor: '#834b51', borderColor: '#fff', borderRadius: 25, borderWidth: 2, flexShrink: 0, height: 50, justifyContent: 'center', overflow: 'hidden', width: 50},
+  avatar: {...iconShadow, alignItems: 'center', backgroundColor: '#834b51', borderColor: '#fff', borderRadius: 25, borderWidth: 2, flexShrink: 0, height: 50, justifyContent: 'center', overflow: 'hidden', width: 50},
   // The photo was already arriving in `data.profile` -- `user/index` loads the
   // whole users document -- but this header only ever drew initials, so a user
   // who had set a picture still saw letters here while the profile page showed
@@ -357,9 +360,9 @@ const styles = StyleSheet.create({
   // The bell keeps its own square and is never allowed to shrink or be
   // pushed out of the row: a long display name may only eat the space left
   // over, not the one control in the header.
-  bell: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
+  bell: {...iconShadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
   sleepBackdrop: {backgroundColor: 'rgba(20,31,20,.42)', flex: 1, justifyContent: 'flex-end'},
-  sleepButton: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 21, flexGrow: 0, flexShrink: 0, height: 42, justifyContent: 'center', width: 42},
+  sleepButton: {...iconShadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 21, flexGrow: 0, flexShrink: 0, height: 42, justifyContent: 'center', width: 42},
   sleepHandle: {alignSelf: 'center', backgroundColor: '#d8e0d6', borderRadius: 4, height: 4, marginBottom: 4, width: 42},
   sleepSheet: {backgroundColor: '#f4f7f4', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 16, paddingBottom: 30, width: '100%'},
   budgetLine: {alignItems: 'baseline', flexDirection: 'row', marginTop: 11},
@@ -384,7 +387,7 @@ const styles = StyleSheet.create({
   focusGrid: {flexDirection: 'row', gap: 11, marginBottom: 15, marginTop: 11},
   hello: {color: '#8a9282', fontFamily: font.regular, fontSize: 12},
   loading: {alignItems: 'center', gap: 12, paddingVertical: 100},
-  mic: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.95)', borderColor: 'rgba(255,255,255,.55)', borderRadius: 22, borderWidth: 5, height: 44, justifyContent: 'center', width: 44},
+  mic: {...iconShadow, alignItems: 'center', backgroundColor: 'rgba(255,255,255,.95)', borderColor: 'rgba(255,255,255,.55)', borderRadius: 22, borderWidth: 5, height: 44, justifyContent: 'center', width: 44},
   muted: {color: colors.muted, fontFamily: font.regular, fontSize: 12},
   name: {color: colors.pine, fontFamily: font.extra, fontSize: 19, marginTop: -1},
   noteEyebrow: {color: colors.note, fontFamily: font.semibold, fontSize: 12},
@@ -414,7 +417,7 @@ const styles = StyleSheet.create({
   prompt: {alignItems: 'center', backgroundColor: 'rgba(72,105,72,.24)', borderColor: 'rgba(44,52,27,.08)', borderRadius: 14, borderWidth: 1, flexDirection: 'row', height: 41, justifyContent: 'space-between', marginTop: 10, paddingHorizontal: 13},
   promptText: {color: '#fff', flex: 1, fontFamily: font.regular, fontSize: 12},
   quickAction: {alignItems: 'center', borderRadius: 14, flex: 1, gap: 6, paddingVertical: 10},
-  quickActionIcon: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 22, height: 46, justifyContent: 'center', width: 46},
+  quickActionIcon: {...iconShadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 22, height: 46, justifyContent: 'center', width: 46},
   quickActionLabel: {color: colors.pine, fontFamily: font.semibold, fontSize: 11},
   quickActionsPanel: {...shadow, backgroundColor: '#fff', borderRadius: 18, flexDirection: 'row', gap: 4, marginBottom: 15, padding: 10},
   quickAnswer: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.45)', borderRadius: 11, flexDirection: 'row', justifyContent: 'space-between', marginTop: 7, paddingHorizontal: 11, paddingVertical: 7},

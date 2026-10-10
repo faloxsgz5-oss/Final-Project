@@ -16,6 +16,7 @@ import {
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {showToast} from '@/components/app-toast';
 import ConfirmDialog from '@/components/confirm-dialog';
+import {shadow as elevation} from '@/theme/elevation';
 
 type Feedback = {phase: FeedbackPhase; subtitle: string; title: string} | null;
 
@@ -139,7 +140,7 @@ export default function GoogleCalendarSyncCard({onSynced, uid}: {onSynced: () =>
   </>;
 }
 
-const shadow = {shadowColor: '#25331f', shadowOffset: {height: 12, width: 0}, shadowOpacity: .17, shadowRadius: 24};
+const shadow = elevation('lg');
 const styles = StyleSheet.create({
   account: {color: 'rgba(255,255,255,.79)', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 1},
   button: {borderRadius: 14, marginTop: 13, overflow: 'hidden'},
@@ -157,7 +158,7 @@ const styles = StyleSheet.create({
   errorBox: {alignItems: 'flex-start', backgroundColor: 'rgba(255,241,239,.94)', borderColor: 'rgba(155,79,82,.2)', borderRadius: 11, borderWidth: 1, flexDirection: 'row', gap: 7, marginTop: 10, padding: 9},
   errorText: {color: '#87484b', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18},
   googleLetter: {color: '#5d805c', fontFamily: 'Prompt_800ExtraBold', fontSize: 19},
-  googleMark: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 46, justifyContent: 'center', shadowColor: '#2c341b', shadowOffset: {height: 5, width: 0}, shadowOpacity: .16, shadowRadius: 9, width: 46},
+  googleMark: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 46, justifyContent: 'center', width: 46, ...elevation('sm')},
   head: {alignItems: 'center', flexDirection: 'row', gap: 10},
   light: {backgroundColor: 'rgba(255,255,255,.13)', borderRadius: 90, height: 150, position: 'absolute', right: -50, top: -76, width: 150},
   pressed: {opacity: .82, transform: [{scale: .985}]},

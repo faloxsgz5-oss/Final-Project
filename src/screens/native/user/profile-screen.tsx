@@ -14,6 +14,7 @@ import {uploadUserImage} from '@/services/storage';
 import {Card, LoadingBlock, MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 import {showToast} from '@/components/app-toast';
 import ConfirmDialog from '@/components/confirm-dialog';
+import {shadow as elevation} from '@/theme/elevation';
 
 // `avatarUrl` is not new data: `userProfile()` returns the whole users/{uid}
 // document, so it was already arriving here and only lacked a declaration.
@@ -189,7 +190,7 @@ export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string;
   </UserShell>;
 }
 
-const shadow = {shadowColor: C.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 20};
+const shadow = elevation('md');
 const styles = StyleSheet.create({
   lineSettings: {...shadow, alignItems: 'center', backgroundColor: '#f4f8f1', borderColor: '#dce8d8', borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 10, marginBottom: 12, padding: 13},
   lineSettingsIcon: {alignItems: 'center', backgroundColor: C.sage, borderRadius: 14, height: 42, justifyContent: 'center', width: 42},
