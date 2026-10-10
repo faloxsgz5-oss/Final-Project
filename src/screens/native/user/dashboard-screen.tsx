@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import {forwardRef, useCallback, useEffect, useMemo, useState} from 'react';
+import {forwardRef, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
@@ -9,6 +9,7 @@ import AiActivityRecommendationCard from '@/components/ai-activity-recommendatio
 import SleepLogCard from '@/components/sleep-log-card';
 import {SpendingDonut} from '@/components/spending-charts';
 import {LinearGradient} from 'expo-linear-gradient';
+import {useFocusEffect} from 'expo-router';
 import {Timestamp} from 'firebase/firestore';
 
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
@@ -129,6 +130,15 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     setData(pageData);
   }, [uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
+  // Every screen is pushed on top of this one, so it stays mounted underneath
+  // and coming back showed what it loaded the first time -- a bell still
+  // counting the notices the user had just opened the list to read. Reload on
+  // each return; the first focus is the mount, which the effect above covers.
+  const focusedBefore = useRef(false);
+  useFocusEffect(useCallback(() => {
+    if (!focusedBefore.current) { focusedBefore.current = true; return; }
+    load().catch((error) => console.error('[Dashboard] Reload on return failed', error));
+  }, [load]));
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
   const seedAiDynamicData = useCallback(async () => {
     setSeeding(true);
