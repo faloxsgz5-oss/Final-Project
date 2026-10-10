@@ -266,7 +266,9 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           <Touchable onPress={() => onNavigate(`smartlife_ai_assistant?autoAsk=${encodeURIComponent('วันนี้ฉันมีเรียนกี่โมง?')}`)} style={({pressed}) => [styles.prompt, pressed && styles.pressed]}>
             <Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} />
           </Touchable>
-          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></View>
+          {/* Has a chevron like the row above, so it reacts to hover like it
+              too; tapping it does what tapping the card always did. */}
+          <Touchable onPress={() => onNavigate('smartlife_ai_assistant')} style={({pressed}) => [styles.quickAnswer, pressed && styles.pressed]}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></Touchable>
         </SoftPress>
         </Reveal>
         <Reveal index={1}>

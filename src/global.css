@@ -18,3 +18,17 @@ body {
   background: #e9ebe2;
   margin: 0;
 }
+
+/*
+ * Keyboard focus: one clear ring on every pressable and text field. Only for
+ * :focus-visible, so a mouse click never leaves a ring behind, and drawn with
+ * an outline, which takes no layout space and follows each element's own
+ * border-radius. Pine ink reads on the light pages and on the AI card's
+ * sage-to-lavender gradient alike. Web only -- native ignores this file.
+ */
+[tabindex]:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #2c341b;
+  outline-offset: 2px;
+}
