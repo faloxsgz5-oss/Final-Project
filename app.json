@@ -34,7 +34,13 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "name": "SmartLife & Budget Balance",
+      "shortName": "SmartLife",
+      "description": "จัดการชีวิตและการเงินในที่เดียว: ตารางเรียน งาน โน้ต และงบประมาณ พร้อมผู้ช่วย AI",
+      "lang": "th",
+      "themeColor": "#688a65",
+      "backgroundColor": "#e9ebe2",
+      "favicon": "./assets/images/favicon-smartlife.png"
     },
     "plugins": [
       "expo-router",
