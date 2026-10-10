@@ -334,6 +334,14 @@ export const notifications = {
     ...(kind ? [where('kind', '==', kind)] : []), orderBy('createdAt', 'desc'), limit(100),
   ]),
   markRead: (uid: string, id: string, read = true) => isDemoMode ? Promise.resolve() : updateOwned(uid, 'notifications', id, { read }),
+  /**
+   * Live count of the user's unread stored notices, for the bell: a notice that
+   * arrives while a screen is open shows without a reload, and one marked read
+   * elsewhere drops at once. A single-field equality query, so no index.
+   */
+  watchUnreadCount: (uid: string, onChange: (count: number) => void, onError?: (error: Error) => void) => isDemoMode
+    ? (onChange((demoNotifications() as WithId<Notification>[]).filter((item) => item.read !== true).length), () => undefined)
+    : onSnapshot(query(userCollection(uid, 'notifications'), where('read', '==', false)), (snapshot) => onChange(snapshot.size), onError),
 };
 
 export const aiRecommendations = {

@@ -17,13 +17,14 @@ import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
 import {calculateDailyAllowance, type DailyAllowance} from '@/services/dynamic-insights';
 import {loadMonthlyBudget} from '@/services/monthly-budget';
 import {fundsOverage, monthFundsFrom} from '@/services/transaction-funds';
-import {buildNotificationFeed, isRankable, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
+import {buildNotificationFeed, isRankable, itemsOf as items, millis, priorityReasons, priorityScore, string, type FeedItem} from '@/services/notification-feed';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
 import {recordTaskCompleted} from '@/services/behavior-tracking';
 import {aggregateSpending, type SpendingTransactionInput} from '@/services/spending-analytics';
 import {updateAndroidHomeWidget} from '@/services/android-home-widget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 import {useCurrentClock} from '@/hooks/use-current-clock';
+import {useNotificationBadge} from '@/hooks/use-notification-badge';
 import {useTourScreen, useTourTarget} from '@/hooks/use-tour-target';
 import {bangkokGreeting} from '@/lib/ux-time';
 import {showToast} from '@/components/app-toast';
@@ -207,7 +208,9 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   const monthBudgetLeftPercent = allowance && allowance.monthlyBudget > 0
     ? Math.min(100, Math.max(0, allowance.remainingBudget / allowance.monthlyBudget * 100))
     : 0;
-  const unread = unreadCount(feed);
+  // Shared with every other place that shows the bell: unread stored notices
+  // (live) plus alerts not yet seen in their current state. 0 renders no badge.
+  const unread = useNotificationBadge(uid, data ? feed : null) ?? 0;
   const urgent = useMemo(() => [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2), [pending]);
   useEffect(() => {
     if (!data) return;

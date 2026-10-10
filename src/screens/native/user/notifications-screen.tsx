@@ -8,6 +8,8 @@ import {aiRecommendations, notifications} from '@/services/firestore';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {loadMonthlyBudget} from '@/services/monthly-budget';
 import {buildNotificationFeed, itemsOf, type FeedItem} from '@/services/notification-feed';
+import {markSeen, withSeenFlags} from '@/lib/notification-seen';
+import {seenStore} from '@/services/notification-seen-store';
 import type {AiRecommendation, Notification, WithId} from '@/types/smartlife';
 import {MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 
@@ -275,7 +277,11 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
         .filter((item) => item.type === 'expense')
         .map((item) => ({amount: Number(item.amount ?? 0)})),
     });
-    setModel({ai, feed});
+    // Rows say "ใหม่" for what was new when the reader arrived -- unread stored
+    // notices, and derived alerts not seen in their current state -- and keep
+    // saying it for the rest of this visit.
+    const seen = await seenStore.load(uid);
+    setModel({ai, feed: withSeenFlags(feed, seen)});
 
     // Opening the list is reading it. Stored notices only ever turned read when
     // one was tapped, and tapping one navigates away, so a user who opened the
@@ -284,18 +290,21 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
     // Scoped to this page's own feed rather than the eight rows it draws: the
     // cap is a display limit, and a stored notice sorted past it would
     // otherwise stay unread with no way to reach it, keeping the badge up for
-    // good. Derived alerts are left alone -- they count while their condition
-    // holds, which is the point of them.
+    // good. Derived alerts are handled below, through the seen record.
     //
     // The rows on screen keep their "ใหม่" chip for this visit. Flipping them
     // now would erase the only cue to which ones are new at the moment the
-    // reader arrives; the badge does not live on this screen, and the
-    // dashboard reads the flags fresh when it is next shown.
+    // reader arrives. The badges elsewhere update through the live unread
+    // count and the seen store.
     const unseen = feedForPage(page, feed).filter((item) => item.source === 'stored' && item.unread);
     if (unseen.length) {
       Promise.all(unseen.map((item) => notifications.markRead(uid, item.id.replace('stored:', ''))))
         .catch((error) => console.error('[Notifications] Marking the list read failed', error));
     }
+    // Derived alerts have no read flag, so they are recorded as seen in their
+    // current state instead: the bell stops counting them until that changes.
+    // Saving notifies every badge on screen, so the count drops everywhere.
+    void seenStore.save(uid, markSeen(seen, feedForPage(page, feed), feed));
   }, [page, uid]);
 
   useEffect(() => {
