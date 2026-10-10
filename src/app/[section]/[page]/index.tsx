@@ -2,6 +2,7 @@ import { FirebaseError } from 'firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { Href, Redirect, useLocalSearchParams, useRouter } from 'expo-router';
+import Head from 'expo-router/head';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native';
 import Animated, { FadeIn, ReduceMotion } from 'react-native-reanimated';
@@ -9,6 +10,7 @@ import Animated, { FadeIn, ReduceMotion } from 'react-native-reanimated';
 import LegacyPageDom, { LegacyAuthRequest, LegacyAuthResult, LegacyOcrResult, LegacyScanRequest, LegacyScanResult } from '@/components/legacy/legacy-page-dom';
 import { legacyPageParams, legacyPages } from '@/generated/legacy-pages';
 import { resolveLegacyRoute } from '@/lib/legacy-route';
+import { pageTitle } from '@/lib/page-titles';
 import { useAuth } from '@/providers/auth-provider';
 import { getUserRole, registerWithEmail, sendResetEmail, signInWithEmail, signInWithFacebook, signInWithGoogle } from '@/services/auth';
 import {loadLegacyPageData, runLegacyDataAction, type LegacyDataAction} from '@/services/legacy-data';
@@ -49,6 +51,10 @@ export function generateStaticParams() {
     {section: 'user', page: 'smartlife_adaptive_scheduling'},
     {section: 'user', page: 'smartlife_line_bank'},
     {section: 'user', page: 'smartlife_help'},
+    // So a reload on the planner gets its own HTML, tab title included,
+    // instead of the root page's until the app takes over.
+    {section: 'user', page: 'smartlife_planner'},
+    {section: 'user', page: 'smartlife_planner_notes'},
   ];
 }
 
@@ -255,8 +261,20 @@ const styles = StyleSheet.create({
   loading: { alignItems: 'center', backgroundColor: '#e9ebe2', flex: 1, justifyContent: 'center' },
 });
 
+// The browser tab names the screen it shows. Every screen comes through this
+// one route, so this is the one place that sets it; static export also bakes it
+// into each page's HTML, so a hard reload on a deep link has it before any JS
+// runs. Web only: Head draws nothing on Android, and on iOS it would register
+// a Handoff activity this app does not use.
+function PageTitle() {
+  const params = useLocalSearchParams<{ page: string; section: string }>();
+  // Static export collapses a trailing `index` segment (/user/index is written
+  // as /user), so the page comes through empty there; it is still the index.
+  return <Head><title>{pageTitle(String(params.section ?? '').toLowerCase(), String(params.page ?? '') || 'index')}</title><link href="/favicon.ico" rel="icon" /></Head>;
+}
+
 // The web build has no native stack transition, so a screen would otherwise cut in
 // abruptly. Native keeps its own slide, so this only fades on web.
 export default function LegacyPageRoute() {
-  return <Animated.View entering={Platform.OS === 'web' ? FadeIn.duration(320).reduceMotion(ReduceMotion.System) : undefined} style={{flex: 1}}><LegacyPageRouteContent /></Animated.View>;
+  return <Animated.View entering={Platform.OS === 'web' ? FadeIn.duration(320).reduceMotion(ReduceMotion.System) : undefined} style={{flex: 1}}>{Platform.OS === 'web' ? <PageTitle /> : null}<LegacyPageRouteContent /></Animated.View>;
 }
