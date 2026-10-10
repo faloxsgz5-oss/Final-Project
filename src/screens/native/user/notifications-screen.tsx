@@ -5,9 +5,8 @@ import {LinearGradient} from 'expo-linear-gradient';
 
 import {Touchable} from '@/components/touchable';
 import {aiRecommendations, notifications} from '@/services/firestore';
-import {loadLegacyPageData} from '@/services/legacy-data';
-import {loadMonthlyBudget} from '@/services/monthly-budget';
-import {buildNotificationFeed, itemsOf, type FeedItem} from '@/services/notification-feed';
+import type {FeedItem} from '@/services/notification-feed';
+import {loadNotificationFeed} from '@/services/notification-feed-loader';
 import {markSeen, withSeenFlags} from '@/lib/notification-seen';
 import {seenStore} from '@/services/notification-seen-store';
 import type {AiRecommendation, Notification, WithId} from '@/types/smartlife';
@@ -252,31 +251,12 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
   // The same three sources the dashboard bell counts, gathered here so the list
   // and the badge are computed from one feed rather than two.
   const load = useCallback(async () => {
-    const [pageData, monthData, savedBudget, stored, ai] = await Promise.all([
-      (loadLegacyPageData(uid, 'user/index') as Promise<Record<string, unknown>>)
-        .catch((error) => { console.error('[Notifications] Day data load failed', error); return {} as Record<string, unknown>; }),
-      (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<{transactions?: unknown}>)
-        .catch((error) => { console.error('[Notifications] Month transactions load failed', error); return null; }),
-      loadMonthlyBudget(uid).catch((error) => { console.error('[Notifications] Saved budget load failed', error); return null; }),
-      notifications.list(uid).catch(() => []),
+    // The feed comes from the same loader the desktop bells use, so the list
+    // and every badge count from identical inputs.
+    const [feed, ai] = await Promise.all([
+      loadNotificationFeed(uid),
       page === 'smartlife_notifications_ai' || page === 'smartlife_notifications' ? aiRecommendations.list(uid).catch(() => []) : Promise.resolve([]),
     ]);
-    const feed = buildNotificationFeed({
-      activities: pageData.activities,
-      dailyBudget: savedBudget?.dailyAmount,
-      monthlyBudget: savedBudget?.amount ?? 0,
-      weeklyBudget: savedBudget?.weeklyAmount,
-      monthTransactions: itemsOf(monthData?.transactions).map((item) => ({
-        amount: Number(item.amount ?? 0),
-        occurredAt: item.occurredAt as never,
-        type: item.type === 'income' ? 'income' : 'expense',
-      })),
-      notes: pageData.notes,
-      stored,
-      todayExpenses: itemsOf(pageData.transactions)
-        .filter((item) => item.type === 'expense')
-        .map((item) => ({amount: Number(item.amount ?? 0)})),
-    });
     // Rows say "ใหม่" for what was new when the reader arrived -- unread stored
     // notices, and derived alerts not seen in their current state -- and keep
     // saying it for the rest of this visit.
