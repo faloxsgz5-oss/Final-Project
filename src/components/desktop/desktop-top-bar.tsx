@@ -1,6 +1,5 @@
 import {Pressable, StyleSheet, Text, View, type PressableStateCallbackType} from 'react-native';
 
-import {useShellTourTarget} from '@/hooks/use-tour-target';
 import {APP_NAME, screenName} from '@/lib/page-titles';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
@@ -23,9 +22,6 @@ export function DesktopTopBar({badge, name, onAdd, onNavigate, page}: {
 }) {
   const title = screenName('user', page) ?? APP_NAME;
   const hover = (state: WebState) => (state.hovered || state.pressed) && styles.hover;
-  // On the dashboard this bell replaces the header one, so it carries the
-  // dashboard tour's bell step.
-  const {ref: bellRef, onLayout: bellOnLayout} = useShellTourTarget('dashboard', 'bell', page === 'index');
   return (
     <View style={styles.bar}>
       <Text numberOfLines={1} style={styles.title}>{title}</Text>
@@ -36,9 +32,7 @@ export function DesktopTopBar({badge, name, onAdd, onNavigate, page}: {
         </Pressable>
         <Pressable
           accessibilityLabel={badge ? `การแจ้งเตือน ${badge} รายการใหม่` : 'การแจ้งเตือน'}
-          onLayout={bellOnLayout}
           onPress={() => onNavigate('smartlife_notifications')}
-          ref={bellRef}
           style={(state: WebState) => [styles.icon, hover(state)]}
         >
           <MaterialIcon color={DESKTOP_C.pine} name="notifications" size={21} />

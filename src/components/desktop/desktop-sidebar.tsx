@@ -2,6 +2,7 @@ import {LinearGradient} from 'expo-linear-gradient';
 import {Pressable, StyleSheet, Text, View, type PressableStateCallbackType} from 'react-native';
 import {useReducedMotion} from 'react-native-reanimated';
 
+import {useShellTourTarget} from '@/hooks/use-tour-target';
 import type {DesktopNavKey} from '@/lib/desktop-web';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
@@ -35,18 +36,23 @@ function AppMark() {
  * card hover the phone layout's buttons use: a sidebar row is navigation, not
  * a card. Every row is keyboard reachable and gets the app's focus ring.
  */
-export function DesktopSidebar({activeKey, badge, canToggle = true, collapsed, onAdd, onNavigate, onSearch, onToggleCollapsed}: {
+export function DesktopSidebar({activeKey, badge, canToggle = true, collapsed, onAdd, onDashboard, onNavigate, onSearch, onToggleCollapsed}: {
   activeKey: DesktopNavKey | null;
   badge: number;
   /** False on a compact window, where the rail cannot be expanded. */
   canToggle?: boolean;
   collapsed: boolean;
   onAdd: () => void;
+  /** True while the dashboard is the page on show: its tour points at the bell here. */
+  onDashboard: boolean;
   onNavigate: (page: string) => void;
   onSearch: () => void;
   onToggleCollapsed: () => void;
 }) {
   const reduced = useReducedMotion();
+  // On desktop the sidebar's bell is the only bell, so it carries the
+  // dashboard tour's bell step (in the rail, the bell icon).
+  const {ref: bellRef, onLayout: bellOnLayout} = useShellTourTarget('dashboard', 'bell', onDashboard);
   const transition = reduced ? null : web({transitionDuration: '160ms', transitionProperty: 'width', transitionTimingFunction: 'ease'});
   const hoverTransition = reduced ? null : web({transitionDuration: '120ms', transitionProperty: 'background-color'});
   const row = (state: WebState, isActive = false) => [
@@ -58,7 +64,8 @@ export function DesktopSidebar({activeKey, badge, canToggle = true, collapsed, o
   ];
   const item = (entry: DesktopNavItem) => {
     const isActive = entry.key === activeKey;
-    const count = entry.key === 'notifications' ? badge : 0;
+    const isBell = entry.key === 'notifications';
+    const count = isBell ? badge : 0;
     return (
       <Pressable
         // Button role, not link: react-native-web leaves Enter on a link role to the
@@ -68,7 +75,9 @@ export function DesktopSidebar({activeKey, badge, canToggle = true, collapsed, o
         accessibilityRole="button"
         accessibilityLabel={count ? `${entry.label} (${count} รายการใหม่)` : entry.label}
         key={entry.key}
+        onLayout={isBell ? bellOnLayout : undefined}
         onPress={() => onNavigate(entry.page)}
+        ref={isBell ? bellRef : undefined}
         style={(state) => row(state, isActive)}
       >
         <View>

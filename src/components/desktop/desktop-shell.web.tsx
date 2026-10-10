@@ -98,6 +98,7 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
         canToggle={!compact}
         collapsed={compact || collapsed}
         onAdd={() => setAddOpen(true)}
+        onDashboard={page === 'index'}
         onNavigate={navigate}
         onSearch={() => setJumpOpen(true)}
         onToggleCollapsed={toggleCollapsed}
