@@ -62,8 +62,20 @@ export function useTourScreen(tabKey: TourTabKey) {
  * underneath cannot report where its (covered) button is.
  */
 export function useTourTarget(tabKey: TourTabKey, stepId: string) {
+  return useTourTargetWhen(tabKey, stepId, useIsFocused());
+}
+
+/**
+ * The same, for a target outside any screen -- the desktop web top bar, whose
+ * bell stands in for the dashboard header bell there. It has no screen focus
+ * to read, so `visible` says when it is the one on show.
+ */
+export function useShellTourTarget(tabKey: TourTabKey, stepId: string, visible: boolean) {
+  return useTourTargetWhen(tabKey, stepId, visible);
+}
+
+function useTourTargetWhen(tabKey: TourTabKey, stepId: string, focused: boolean) {
   const {activeTab, activeStepId, registerTarget} = useTour();
-  const focused = useIsFocused();
   const ref = useRef<View>(null);
   const active = focused && activeTab === tabKey && activeStepId === stepId;
 
