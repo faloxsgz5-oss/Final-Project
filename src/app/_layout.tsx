@@ -12,6 +12,7 @@ import '@/global.css';
 import '@/tasks/sleep-widget-task';
 
 import ToastHost from '@/components/app-toast';
+import {DesktopShell} from '@/components/desktop/desktop-shell';
 import TourOverlay from '@/components/tour-overlay';
 import { AuthProvider } from '@/providers/auth-provider';
 import { InstitutionProvider } from '@/providers/institution-provider';
@@ -35,7 +36,11 @@ export default function RootLayout() {
         <InstitutionProvider>
           <TourProvider>
             <ThemeProvider value={DefaultTheme}>
-              <Stack screenOptions={{ animation: 'slide_from_right', headerShown: false }} />
+              {/* Desktop web only: a sidebar and top bar around the same screens.
+                  Everywhere else it renders the navigator untouched. */}
+              <DesktopShell>
+                <Stack screenOptions={{ animation: 'slide_from_right', headerShown: false }} />
+              </DesktopShell>
               {/* Above the navigator so a toast is visible on whatever screen
                   raised it, and inside SafeAreaProvider so it clears the notch. */}
               <ToastHost />

@@ -1,6 +1,8 @@
 import type {PropsWithChildren} from 'react';
 import type {StyleProp, ViewStyle} from 'react-native';
 import {Platform, StyleSheet} from 'react-native';
+
+import {useIsDesktopWeb} from '@/hooks/use-is-desktop-web';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 type ResponsiveSafeAreaProps = PropsWithChildren<{
@@ -12,8 +14,11 @@ type ResponsiveSafeAreaProps = PropsWithChildren<{
  * Android navigation areas without changing the visual design inside a screen.
  */
 export function ResponsiveSafeArea({children, style}: ResponsiveSafeAreaProps) {
+  // Inside the desktop shell the sidebar and top bar frame the page, so the
+  // floating canvas shadow goes and the content gets a calmer reading width.
+  const desktop = useIsDesktopWeb();
   return (
-    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.base, style]}>
+    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.base, desktop && styles.desktop, style]}>
       {children}
     </SafeAreaView>
   );
@@ -34,4 +39,5 @@ const styles = StyleSheet.create({
       maxWidth: 1280,
     } : null),
   },
+  desktop: {boxShadow: 'none', maxWidth: 1180, paddingTop: 10},
 });
