@@ -21,4 +21,4 @@ export const DESKTOP_F = {b: 'Prompt_700Bold', m: 'Prompt_500Medium', r: 'Prompt
 
 export const SIDEBAR_WIDTH = 248;
 export const SIDEBAR_COLLAPSED_WIDTH = 64;
-export const TOP_BAR_HEIGHT = 52;
+export const TOP_BAR_HEIGHT = 64;

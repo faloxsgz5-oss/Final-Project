@@ -30,7 +30,7 @@ function writeCollapsed(value: boolean) {
 const FEED_REFRESH_MS = 30_000;
 
 /**
- * The desktop web layout: a persistent sidebar and a slim top bar around the
+ * The desktop web layout: a persistent sidebar and a title bar around the
  * same screens the phone layout shows. It takes over only on a desktop-sized
  * web window (see `useIsDesktopWeb`), only for the signed-in user section --
  * sign-in pages and the admin portal keep their own layouts -- and otherwise
@@ -51,7 +51,6 @@ export function DesktopShell({children}: {children: ReactNode}) {
 
 function ShellFrame({children, compact, page, uid}: {children: ReactNode; compact: boolean; page: string; uid: string}) {
   const router = useRouter();
-  const {user} = useAuth();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [addOpen, setAddOpen] = useState(false);
   const [jumpOpen, setJumpOpen] = useState(false);
@@ -86,7 +85,6 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
   }, [compact, toggleCollapsed]);
 
   const activeKey = useMemo(() => navKeyForPage(page), [page]);
-  const name = user?.displayName || user?.email?.split('@')[0] || 'SmartLife';
 
   return (
     <View style={styles.frame}>
@@ -104,7 +102,7 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
         onToggleCollapsed={toggleCollapsed}
       />
       <View style={styles.main}>
-        <DesktopTopBar badge={badge} name={name} onAdd={() => setAddOpen(true)} onNavigate={navigate} page={page} />
+        <DesktopTopBar page={page} />
         <View style={styles.content}>{children}</View>
       </View>
       <AddItemSheet onClose={() => setAddOpen(false)} onNavigate={navigate} visible={addOpen} />
