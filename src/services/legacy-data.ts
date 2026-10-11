@@ -189,6 +189,64 @@ export async function loadLegacyPageData(uid: string, pageKey: string, reference
   return plain({profile: await userProfile(uid)});
 }
 
+/** Notes per page on the notes screen: the same first view as before (USER-003). */
+export const NOTES_PAGE_SIZE = 100;
+/** Notes read per request while searching. */
+const NOTES_SEARCH_PAGE_SIZE = 250;
+/**
+ * The most notes one search reads. Firestore has no full-text search (and the
+ * rules exclude `content` from indexing), so search reads the notes and
+ * filters them here; this bound keeps one search to at most 8 reads of 250.
+ * Past it the screen says so instead of implying the search was complete.
+ */
+export const NOTES_SEARCH_LIMIT = 2000;
+
+function noteCategoryOf(pageKey: string): NoteCategory | undefined {
+  return pageKey.includes('_study') ? 'study' : pageKey.includes('_work') ? 'work' : pageKey.includes('_ideas') ? 'idea' : undefined;
+}
+
+/** An opaque position in the notes list; pass back what the last page returned. */
+export type NotesCursor = Awaited<ReturnType<typeof notes.page>>['cursor'];
+
+/** One page of the notes screen's list, newest first. */
+export async function loadNotesPage(uid: string, pageKey: string, cursor?: NotesCursor) {
+  if (isDemoMode) return {cursor: null, hasMore: false, notes: (plain(demoPageData(pageKey)) as {notes?: Record<string, unknown>[]}).notes ?? []};
+  const page = await notes.page(uid, {after: cursor ?? null, category: noteCategoryOf(pageKey), pageSize: NOTES_PAGE_SIZE});
+  return {cursor: page.cursor, hasMore: page.hasMore, notes: plain(page.items) as Record<string, unknown>[]};
+}
+
+/** The notes screen's own match: title, content and tags, case-insensitive. */
+export function noteMatches(note: Record<string, unknown>, needle: string) {
+  const text = (value: unknown) => typeof value === 'string' ? value : '';
+  const tags = Array.isArray(note.tags) ? note.tags.join(' ') : '';
+  return `${text(note.title)} ${text(note.content)} ${tags}`.toLowerCase().includes(needle.trim().toLowerCase());
+}
+
+/**
+ * Searches all of the user's notes in this tab, not just the loaded page
+ * (USER-003), up to `NOTES_SEARCH_LIMIT`. `searched` is how many notes were
+ * actually read and `truncated` says whether the limit stopped it early.
+ */
+export async function searchNotes(uid: string, pageKey: string, needle: string) {
+  const matches: Record<string, unknown>[] = [];
+  if (isDemoMode) {
+    const all = (plain(demoPageData(pageKey)) as {notes?: Record<string, unknown>[]}).notes ?? [];
+    return {notes: all.filter((note) => noteMatches(note, needle)), searched: all.length, truncated: false};
+  }
+  let cursor: NotesCursor = null;
+  let searched = 0;
+  let hasMore = true;
+  while (hasMore && searched < NOTES_SEARCH_LIMIT) {
+    const page = await notes.page(uid, {after: cursor, category: noteCategoryOf(pageKey), pageSize: Math.min(NOTES_SEARCH_PAGE_SIZE, NOTES_SEARCH_LIMIT - searched)});
+    const items = plain(page.items) as Record<string, unknown>[];
+    searched += items.length;
+    matches.push(...items.filter((note) => noteMatches(note, needle)));
+    cursor = page.cursor;
+    hasMore = page.hasMore;
+  }
+  return {notes: matches, searched, truncated: hasMore};
+}
+
 export async function runLegacyDataAction(uid: string, pageKey: string, request: LegacyDataAction) {
   if (isDemoMode) return demoAction();
   const data = request.payload ?? {};

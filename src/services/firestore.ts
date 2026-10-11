@@ -15,6 +15,7 @@ import {
   type QueryDocumentSnapshot,
   serverTimestamp,
   setDoc,
+  startAfter,
   startAt,
   Timestamp,
   updateDoc,
@@ -236,6 +237,28 @@ export const notes = {
   list: (uid: string, category?: Note['category']) => isDemoMode ? Promise.resolve(demoNotes(category) as WithId<Note>[]) : listOwned<Note>(uid, 'notes', [
     ...(category ? [where('category', '==', category)] : []), orderBy('updatedAt', 'desc'), limit(100),
   ]),
+  /**
+   * One page of notes, newest first, continuing after `after` (USER-003). The
+   * cursor is the last document itself, not its timestamp, so notes written in
+   * the same instant are never skipped or repeated across pages. One extra
+   * document is read to know whether another page exists.
+   */
+  page: async (uid: string, {after, category, pageSize}: {after?: QueryDocumentSnapshot<DocumentData> | null; category?: Note['category']; pageSize: number}) => {
+    if (isDemoMode) return {cursor: null, hasMore: false, items: demoNotes(category) as WithId<Note>[]};
+    const snapshot = await getDocs(query(
+      userCollection(uid, 'notes'),
+      ...(category ? [where('category', '==', category)] : []),
+      orderBy('updatedAt', 'desc'),
+      ...(after ? [startAfter(after)] : []),
+      limit(pageSize + 1),
+    ));
+    const docs = snapshot.docs.slice(0, pageSize);
+    return {
+      cursor: docs.length ? docs[docs.length - 1] : null,
+      hasMore: snapshot.docs.length > pageSize,
+      items: docs.map((item) => mapDocument<Note>(item)),
+    };
+  },
 };
 
 export const noteFolders = {

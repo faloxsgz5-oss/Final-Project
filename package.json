@@ -126,6 +126,7 @@
     "test:timetable-save": "npx -y firebase-tools@latest emulators:exec --only firestore,auth --project smartlife-budget \"node --experimental-strip-types --import ./scripts/register-scan-save-test.mjs ./scripts/test-timetable-save.mjs\"",
     "test:signup-profile": "npx -y firebase-tools@latest emulators:exec --only firestore,auth --project smartlife-budget \"node --experimental-strip-types --import ./scripts/register-signup-profile-test.mjs ./scripts/test-signup-profile.mjs\"",
     "test:line-dedupe": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:line-dedupe:local\"",
+    "test:notes-pagination": "npx -y firebase-tools@latest emulators:exec --only firestore,auth --project smartlife-budget \"node --experimental-strip-types --import ./scripts/register-signup-profile-test.mjs ./scripts/test-notes-pagination.mjs\"",
     "emulator:clear": "node ./scripts/clear-firestore-emulator.cjs",
     "test:risk-meter-render": "node --import ./scripts/register-render-test.mjs ./scripts/render-risk-meter.mjs",
     "screenshots:verify": "node ./scripts/screenshots/capture.mjs",

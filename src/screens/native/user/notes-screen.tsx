@@ -6,7 +6,7 @@ import {Timestamp} from 'firebase/firestore';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 
-import {loadLegacyPageData} from '@/services/legacy-data';
+import {loadNotesPage, noteMatches, NOTES_SEARCH_LIMIT, type NotesCursor, searchNotes} from '@/services/legacy-data';
 import {noteFolders as folderStore, notes as notesStore} from '@/services/firestore';
 import type {NoteFolder, WithId} from '@/types/smartlife';
 import {MaterialIcon, PLANNER_TABS, UserGradientBackdrop, UserTabBar} from './user-ui';
@@ -42,31 +42,81 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
   const [folders, setFolders] = useState<WithId<NoteFolder>[]>([]);
   const effectivePage = planner ? tabs.find((tab) => tab.value === plannerFilter)?.page ?? 'smartlife_notes' : page;
   const active = tabs.find((tab) => tab.page === effectivePage) ?? tabs[0];
-  const load = useCallback(async () => setData(await loadLegacyPageData(uid, `user/${effectivePage}`) as {notes?: Item[]}), [effectivePage, uid]);
+  // The list is paged (USER-003): the first 100 notes as before, then "โหลดเพิ่ม"
+  // continues from a cursor. Each request carries a sequence number, so a page
+  // that arrives after the tab changed is dropped instead of mixed in.
+  const cursor = useRef<NotesCursor>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const request = useRef(0);
+  const load = useCallback(async () => {
+    const ticket = ++request.current;
+    const page = await loadNotesPage(uid, `user/${effectivePage}`);
+    if (ticket !== request.current) return;
+    cursor.current = page.cursor;
+    setHasMore(page.hasMore);
+    setData({notes: page.notes});
+  }, [effectivePage, uid]);
   useEffect(() => { load().catch(() => setData({})); }, [load]);
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    const ticket = request.current;
+    setLoadingMore(true);
+    try {
+      const page = await loadNotesPage(uid, `user/${effectivePage}`, cursor.current);
+      if (ticket !== request.current) return;
+      cursor.current = page.cursor;
+      setHasMore(page.hasMore);
+      setData((current) => {
+        const known = new Set(list(current?.notes).map((note) => str(note, 'id', '')));
+        return {notes: [...list(current?.notes), ...page.notes.filter((note) => !known.has(str(note, 'id', '')))]};
+      });
+    } catch (error) {
+      showToast('โหลดโน้ตเพิ่มไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [effectivePage, hasMore, loadingMore, uid]);
   useEffect(() => {
     let active = true;
     folderStore.list(uid).then((items) => { if (active) setFolders(items); }).catch(() => undefined);
     return () => { active = false; };
   }, [uid]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
-  const allNotes = useMemo(() => list(data?.notes), [data]);
   /**
-   * Search and folder filtering run over the page of notes already loaded,
-   * client-side. Firestore has no full-text search and this project's rules
-   * explicitly exclude `content` from indexing, so a server-side query could
-   * not do this anyway. At the 100-note page size a student actually has, the
-   * filter is instant; past that it would need a search service.
+   * Search covers every note in the tab, not just the loaded pages (USER-003).
+   * Firestore has no full-text search and the rules exclude `content` from
+   * indexing, so `searchNotes` reads the notes in pages (up to
+   * NOTES_SEARCH_LIMIT) and matches them here; the screen says how many notes
+   * it searched. It waits for a pause in typing before reading anything.
    */
+  const needle = search.trim();
+  const [searchState, setSearchState] = useState<{failed?: boolean; needle: string; notes: Item[]; page: string; searched: number; truncated: boolean} | null>(null);
+  useEffect(() => {
+    if (!needle) return undefined;
+    let active = true;
+    const timer = setTimeout(() => {
+      searchNotes(uid, `user/${effectivePage}`, needle)
+        .then((result) => { if (active) setSearchState({...result, needle, page: effectivePage}); })
+        .catch((error) => {
+          if (!active) return;
+          setSearchState({failed: true, needle, notes: [], page: effectivePage, searched: 0, truncated: false});
+          showToast('ค้นหาโน้ตไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+        });
+    }, 300);
+    return () => { active = false; clearTimeout(timer); };
+  }, [effectivePage, needle, uid]);
+  // An answer only counts for the text and tab it was asked for.
+  const answered = searchState && searchState.needle === needle && searchState.page === effectivePage ? searchState : null;
+  const searchResult = answered && !answered.failed ? answered : null;
+  const searching = Boolean(needle) && !answered;
+  const allNotes = useMemo(() => list(data?.notes), [data]);
   const [pendingNotes, completedNotes] = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const matches = allNotes
-      .filter((note) => !folderId || str(note, 'folderId', '') === folderId)
-      .filter((note) => {
-        if (!needle) return true;
-        const tags = Array.isArray(note.tags) ? note.tags.join(' ') : '';
-        return `${str(note, 'title', '')} ${str(note, 'content', '')} ${tags}`.toLowerCase().includes(needle);
-      });
+    // While a search is typed but not answered yet, the loaded notes are
+    // filtered locally so the list reacts at once; the full answer replaces it.
+    const source = searchResult ? searchResult.notes : needle ? allNotes.filter((note) => noteMatches(note, needle)) : allNotes;
+    const matches = source
+      .filter((note) => !folderId || str(note, 'folderId', '') === folderId);
     const isDone = (note: Item) => str(note, 'status', 'pending') === 'completed';
     // Pinned notes first, otherwise the existing newest-first order stands.
     const pending = matches.filter((note) => !isDone(note))
@@ -76,7 +126,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     const finishedAt = (note: Item) => { const time = new Date(String(note.completedAt ?? '')).getTime(); return Number.isNaN(time) ? 0 : time; };
     const completed = matches.filter(isDone).sort((first, second) => finishedAt(second) - finishedAt(first));
     return [pending, completed];
-  }, [allNotes, folderId, search]);
+  }, [allNotes, folderId, needle, searchResult]);
   // Completed notes used to leave the screen for good -- the list filtered them
   // out and nothing showed them again -- so one ticked by mistake was stuck.
   // The history is the same list, swapped, behind the "เสร็จแล้ว" count. Search
@@ -88,6 +138,12 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
   const completeCount = allNotes.filter((note) => str(note, 'status', 'pending') === 'completed').length;
   const importantCount = pendingNotes.filter((note) => note.pinned === true).length;
   /** Opens a saved note in the editor. Without an id there is nothing to open. */
+  /** Applies an optimistic change to a note in the list and in search results alike. */
+  const patchNote = useCallback((id: string, patch: Item) => {
+    const apply = (items: Item[]) => items.map((item) => str(item, 'id', '') === id ? {...item, ...patch} : item);
+    setData((current) => current ? {...current, notes: apply(list(current.notes))} : current);
+    setSearchState((current) => current ? {...current, notes: apply(current.notes)} : current);
+  }, []);
   const openNote = useCallback((note: Item) => {
     const id = str(note, 'id', '');
     if (id) onNavigate(`smartlife_add_note?id=${encodeURIComponent(id)}`);
@@ -97,7 +153,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     const id = str(note, 'id', '');
     if (!id || completingId) return;
     setCompletingId(id);
-    setData((current) => current ? {...current, notes: list(current.notes).map((item) => str(item, 'id', '') === id ? {...item, completedAt: new Date().toISOString(), status: 'completed'} : item)} : current);
+    patchNote(id, {completedAt: new Date().toISOString(), status: 'completed'});
     try {
       await notesStore.update(uid, id, {completedAt: Timestamp.fromDate(new Date()), status: 'completed'});
     } catch (error) {
@@ -106,7 +162,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     } finally {
       setCompletingId('');
     }
-  }, [completingId, load, uid]);
+  }, [completingId, load, patchNote, uid]);
 
   // The reverse of `markComplete`: back to pending with the finish time cleared,
   // which the note rules accept as an ordinary update.
@@ -114,7 +170,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     const id = str(note, 'id', '');
     if (!id || completingId) return;
     setCompletingId(id);
-    setData((current) => current ? {...current, notes: list(current.notes).map((item) => str(item, 'id', '') === id ? {...item, completedAt: null, status: 'pending'} : item)} : current);
+    patchNote(id, {completedAt: null, status: 'pending'});
     try {
       await notesStore.update(uid, id, {completedAt: null, status: 'pending'});
       showToast('ย้ายกลับไปโน้ตที่ค้างแล้ว', undefined, 'success');
@@ -124,7 +180,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     } finally {
       setCompletingId('');
     }
-  }, [completingId, load, uid]);
+  }, [completingId, load, patchNote, uid]);
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
@@ -161,7 +217,9 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
       {showCompleted
         ? <View style={styles.sectionHead}><Text style={styles.sectionTitle}>ประวัติที่ทำเสร็จแล้ว</Text><Touchable accessibilityRole="button" onPress={() => setShowCompleted(false)}><Text style={styles.allLink}>กลับไปโน้ตที่ค้าง</Text></Touchable></View>
         : <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{active.value === 'all' ? 'โน้ตล่าสุด' : `โน้ต${active.label}`}</Text><Touchable onPress={() => { if (planner) setPlannerFilter('all'); else onNavigate('smartlife_notes'); }}><Text style={styles.allLink}>ดูทั้งหมด</Text></Touchable></View>}
+      {needle ? <Text accessibilityLiveRegion="polite" style={styles.listStatus}>{searchResult ? `ค้นหาจากโน้ตทั้งหมด ${searchResult.searched.toLocaleString('th-TH')} รายการ${searchResult.truncated ? ` · ค้นได้สูงสุด ${NOTES_SEARCH_LIMIT.toLocaleString('th-TH')} รายการล่าสุด` : ''}` : searching ? 'กำลังค้นหาจากโน้ตทั้งหมด…' : ''}</Text> : null}
       {!data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดโน้ตจาก Firebase</Text></View> : <Animated.View layout={LinearTransition.duration(200)} style={styles.noteList}>{notes.length ? notes.map((note, index) => <NoteRow busy={completingId === str(note, 'id', '')} category={categoryOf(note, active.value)} completed={showCompleted} index={index} item={note} key={str(note, 'id', String(index))} onComplete={() => void (showCompleted ? markIncomplete(note) : markComplete(note))} onOpen={() => openNote(note)} />) : <View style={styles.empty}><MaterialIcon color="#9aa59a" name={search || folderId ? 'search_off' : 'task_alt'} size={34} /><Text style={styles.emptyText}>{search || folderId ? 'ไม่พบโน้ตที่ตรงกับที่ค้นหา' : showCompleted ? 'ยังไม่มีโน้ตที่ทำเสร็จ' : 'ไม่มีโน้ตที่ค้างอยู่ในหมวดนี้'}</Text></View>}</Animated.View>}
+      {!needle && data && hasMore ? <Touchable accessibilityLabel="โหลดโน้ตเพิ่ม" accessibilityRole="button" disabled={loadingMore} onPress={() => void loadMore()} style={({pressed}) => [styles.loadMore, pressed && styles.pressed]}>{loadingMore ? <ActivityIndicator color={C.sage} /> : <><MaterialIcon color={C.sage} name="expand_more" size={18} /><Text style={styles.loadMoreText}>โหลดโน้ตเพิ่ม · แสดงแล้ว {allNotes.length.toLocaleString('th-TH')} รายการ</Text></>}</Touchable> : null}
     </ScrollView><UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_notes'} onNavigate={onNavigate} />
   </View></ResponsiveSafeArea>;
 }
@@ -227,6 +285,9 @@ const styles = StyleSheet.create({
   folderChipTextActive: {color: '#fff'},
   folderRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 10},
   noteTitleRow: {alignItems: 'center', flexDirection: 'row', gap: 5},
+  listStatus: {color: '#6d786c', fontFamily: 'Prompt_500Medium', fontSize: 12, marginBottom: 8},
+  loadMore: {alignItems: 'center', alignSelf: 'center', backgroundColor: '#fff', borderColor: '#e3e8e0', borderRadius: 99, borderWidth: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', marginTop: 12, minHeight: 44, paddingHorizontal: 18},
+  loadMoreText: {color: '#4e704a', fontFamily: 'Prompt_700Bold', fontSize: 12},
   searchInput: {color: '#29351f', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, minHeight: 44},
   searchRow: {alignItems: 'center', backgroundColor: '#fff', borderColor: '#e3e8e0', borderRadius: 15, borderWidth: 1, flexDirection: 'row', gap: 8, marginTop: 14, paddingHorizontal: 13},
 
