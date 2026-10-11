@@ -229,47 +229,191 @@ function semanticDuplicateKeys(draft: ParsedDraft) {
     .map((item) => `${base}|t${item}`);
 }
 
-async function findDuplicateTransaction(
-  transaction: FirebaseFirestore.Transaction,
-  transactions: FirebaseFirestore.CollectionReference,
-  fingerprintValue: string,
-  dedupeKeys: string[],
-) {
-  const fingerprintQuery = transactions
-    .where("fingerprint", "==", fingerprintValue)
-    .limit(1);
-  const fingerprintSnapshot = await transaction.get(fingerprintQuery);
-  if (!fingerprintSnapshot.empty) return fingerprintSnapshot.docs[0];
+/*
+ * Duplicate detection (FN-001).
+ *
+ * There is no LINE webhook in this system: an Android notification listener
+ * reads LINE and bank-app notifications and the app forwards them here. The
+ * duplicates that really happen are:
+ *   1. the same notification posted again by Android, or a queued item re-sent
+ *      after a sync that did not finish -- identical text, and from current
+ *      clients the same `captureId` (the device queue's id for that capture);
+ *   2. one transfer reported twice, by LINE and by the bank's own app --
+ *      different text from two sources, same amount, minutes apart.
+ * The old check keyed only on bank|account|type|amount|balance in a 5-minute
+ * bucket, so with no balance or account in the text it treated two different
+ * purchases of the same amount as one and silently dropped the second.
+ *
+ * Now:
+ *   - same capture id                                   -> the same notice: ignore
+ *   - identical normalised text within SAME_TEXT_WINDOW -> a re-post: ignore
+ *   - identical text further apart                      -> possible duplicate
+ *   - different text, same amount and type within SEMANTIC_WINDOW:
+ *       both carry a balance: equal -> same transfer (ignore), else different;
+ *       different accounts or banks                     -> different;
+ *       same source (both LINE, both one bank app)      -> different notices;
+ *       otherwise (two sources, nothing to tell them apart) -> possible duplicate
+ * A possible duplicate is never dropped: it waits in pendingReview with a Thai
+ * warning, and confirming it saves it.
+ */
+export const SAME_TEXT_WINDOW_MS = 10 * 60 * 1_000;
+export const SEMANTIC_WINDOW_MS = 10 * 60 * 1_000;
 
-  for (const dedupeKey of dedupeKeys) {
-    const semanticSnapshot = await transaction.get(
-      transactions
-        .where("dedupeKeys", "array-contains", dedupeKey)
-        .limit(1),
-    );
-    if (!semanticSnapshot.empty) return semanticSnapshot.docs[0];
+type DuplicateCandidate = {
+  accountLast4: string | null;
+  amount: number;
+  balanceAfterReported: number | null;
+  bank: string;
+  captureId: string;
+  fingerprint: string;
+  occurredAtMs: number;
+  source: string;
+  type: TransactionType;
+};
+
+type DuplicateVerdict = {
+  kind: "possible" | "same";
+  snapshot: FirebaseFirestore.DocumentSnapshot;
+};
+
+function captureKey(captureId: string) {
+  return `capture:${captureId}`;
+}
+
+/** The device queue's id for one captured notification, when a client sends it. */
+function optionalCaptureId(value: unknown) {
+  const text = optionalString(value, "captureId", 128);
+  if (text && !/^[A-Za-z0-9_-]{1,128}$/.test(text)) {
+    throw new HttpsError("invalid-argument", "captureId is invalid.");
+  }
+  return text;
+}
+
+function timestampMillis(value: unknown) {
+  if (value instanceof Timestamp) return value.toMillis();
+  if (typeof value === "string") {
+    const millis = Date.parse(value);
+    return Number.isNaN(millis) ? null : millis;
   }
   return null;
 }
 
-async function findDuplicatePendingReview(
-  transaction: FirebaseFirestore.Transaction,
-  pendingReviews: FirebaseFirestore.CollectionReference,
-  fingerprintValue: string,
-  dedupeKeys: string[],
-) {
-  const exact = await transaction.get(pendingReviews.doc(fingerprintValue));
-  if (exact.exists) return exact;
+/** What a stored transaction or pending draft says about itself. */
+function comparableOf(snapshot: FirebaseFirestore.DocumentSnapshot): Omit<DuplicateCandidate, "captureId"> | null {
+  const data = snapshot.data();
+  if (!data) return null;
+  const draft = (data.parsedDraft ?? data) as Record<string, unknown>;
+  const occurredAtMs = timestampMillis(draft.occurredAt);
+  const amount = Number(draft.amount);
+  if (occurredAtMs === null || !Number.isFinite(amount)) return null;
+  const balance = draft.balanceAfterReported;
+  return {
+    accountLast4: typeof draft.accountLast4 === "string" && draft.accountLast4 ? draft.accountLast4 : null,
+    amount,
+    balanceAfterReported: typeof balance === "number" && Number.isFinite(balance) ? balance : null,
+    bank: typeof draft.bank === "string" ? draft.bank : "unknown",
+    fingerprint: typeof data.fingerprint === "string" ? data.fingerprint : "",
+    occurredAtMs,
+    source: typeof data.source === "string" ? data.source : "manual_entry",
+    type: draft.type === "income" ? "income" : "expense",
+  };
+}
 
-  for (const dedupeKey of dedupeKeys) {
-    const semanticSnapshot = await transaction.get(
-      pendingReviews
-        .where("dedupeKeys", "array-contains", dedupeKey)
-        .limit(1),
-    );
-    if (!semanticSnapshot.empty) return semanticSnapshot.docs[0];
+/** How `existing` relates to the incoming notice. */
+export function duplicateRelation(
+  candidate: Omit<DuplicateCandidate, "captureId">,
+  existing: Omit<DuplicateCandidate, "captureId">,
+): "different" | "possible" | "same" {
+  const apart = Math.abs(candidate.occurredAtMs - existing.occurredAtMs);
+  if (candidate.fingerprint && candidate.fingerprint === existing.fingerprint) {
+    return apart <= SAME_TEXT_WINDOW_MS ? "same" : "possible";
   }
-  return null;
+  if (candidate.type !== existing.type) return "different";
+  if (amountSatang(candidate.amount) !== amountSatang(existing.amount)) return "different";
+  if (apart > SEMANTIC_WINDOW_MS) return "different";
+  if (candidate.balanceAfterReported !== null && existing.balanceAfterReported !== null) {
+    return amountSatang(candidate.balanceAfterReported) === amountSatang(existing.balanceAfterReported) ?
+      "same" :
+      "different";
+  }
+  if (candidate.accountLast4 && existing.accountLast4 && candidate.accountLast4 !== existing.accountLast4) {
+    return "different";
+  }
+  const knownBank = (bank: string) => bank && bank !== "unknown";
+  if (knownBank(candidate.bank) && knownBank(existing.bank) && candidate.bank !== existing.bank) return "different";
+  if (candidate.source === existing.source) return "different";
+  return "possible";
+}
+
+/**
+ * Looks for an earlier record of the same notice among the user's
+ * transactions and pending drafts. All reads happen inside `transaction`, so
+ * two deliveries of one notice cannot both pass the check.
+ */
+async function findLineDuplicate(
+  transaction: FirebaseFirestore.Transaction,
+  uid: string,
+  candidate: DuplicateCandidate,
+  ignorePendingId = "",
+): Promise<DuplicateVerdict | null> {
+  const user = db.collection("users").doc(uid);
+  const transactions = user.collection("transactions");
+  const pending = user.collection("pendingReview");
+  const window = SEMANTIC_WINDOW_MS + SAME_TEXT_WINDOW_MS;
+  const from = Timestamp.fromMillis(candidate.occurredAtMs - window);
+  const to = Timestamp.fromMillis(candidate.occurredAtMs + window);
+
+  const reads: Promise<FirebaseFirestore.QuerySnapshot>[] = [
+    transaction.get(transactions.where("fingerprint", "==", candidate.fingerprint).limit(20)),
+    transaction.get(transactions.where("occurredAt", ">=", from).where("occurredAt", "<=", to).limit(100)),
+    transaction.get(pending.where("fingerprint", "==", candidate.fingerprint).limit(20)),
+    // Pending drafts keep `occurredAt` as text inside `parsedDraft`; the
+    // capture time sits close enough to it to narrow the search.
+    transaction.get(pending
+      .where("capturedAt", ">=", Timestamp.fromMillis(candidate.occurredAtMs - window - 60 * 60 * 1_000))
+      .where("capturedAt", "<=", Timestamp.fromMillis(candidate.occurredAtMs + window + 60 * 60 * 1_000))
+      .limit(100)),
+  ];
+  if (candidate.captureId) {
+    reads.push(transaction.get(transactions.where("dedupeKeys", "array-contains", captureKey(candidate.captureId)).limit(1)));
+    reads.push(transaction.get(pending.where("captureId", "==", candidate.captureId).limit(1)));
+  }
+  const snapshots = await Promise.all(reads);
+  // The same capture id means the same notice, however much later it arrives
+  // (the pending draft being confirmed is, of course, not its own duplicate).
+  const sameCapture = snapshots.slice(4).flatMap((snapshot) => snapshot.docs).find((item) => item.id !== ignorePendingId);
+  if (sameCapture) return {kind: "same", snapshot: sameCapture};
+
+  const seen = new Set<string>();
+  let possible: DuplicateVerdict | null = null;
+  for (const snapshot of snapshots.slice(0, 4)) {
+    for (const item of snapshot.docs) {
+      if (seen.has(item.ref.path) || item.id === ignorePendingId) continue;
+      seen.add(item.ref.path);
+      const existing = comparableOf(item);
+      if (!existing) continue;
+      const relation = duplicateRelation(candidate, existing);
+      if (relation === "same") return {kind: "same", snapshot: item};
+      if (relation === "possible" && !possible) possible = {kind: "possible", snapshot: item};
+    }
+  }
+  return possible;
+}
+
+function bangkokTime(millis: number) {
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "numeric", hour: "2-digit", minute: "2-digit", month: "short", timeZone: "Asia/Bangkok",
+  }).format(new Date(millis));
+}
+
+/** The Thai warning a flagged draft carries into the review list. */
+function possibleDuplicateWarning(existing: FirebaseFirestore.DocumentSnapshot) {
+  const facts = comparableOf(existing);
+  const draft = (existing.get("parsedDraft") ?? existing.data() ?? {}) as Record<string, unknown>;
+  const merchant = typeof draft.merchant === "string" && draft.merchant ? ` ${draft.merchant.slice(0, 40)}` : "";
+  const when = facts ? ` เมื่อ ${bangkokTime(facts.occurredAtMs)}` : "";
+  const amount = facts ? ` ฿${facts.amount.toLocaleString("th-TH", {maximumFractionDigits: 2})}` : "";
+  return `อาจซ้ำกับรายการที่มีอยู่แล้ว${amount}${merchant}${when} ถ้าเป็นคนละรายการ กดยืนยันเพื่อบันทึก`.slice(0, 240);
 }
 
 function createLineTransactionPayload(
@@ -279,6 +423,7 @@ function createLineTransactionPayload(
   source: LineSource,
   status: "needs_review" | "verified",
   confirmationMethod: "auto_verified_line_notification" | "explicit_user_confirm",
+  captureId = "",
 ) {
   return {
     accountLast4: draft.accountLast4 || null,
@@ -289,7 +434,9 @@ function createLineTransactionPayload(
     confidence: draft.confidence,
     confirmationMethod,
     createdAt: FieldValue.serverTimestamp(),
-    dedupeKeys: semanticDuplicateKeys(draft),
+    // The capture id rides in the existing key list, so a late re-send of the
+    // same notice is recognised without a new field on the transaction.
+    dedupeKeys: [...semanticDuplicateKeys(draft), ...(captureId ? [captureKey(captureId)] : [])],
     fingerprint: draftFingerprint,
     merchant: draft.merchant,
     note: draft.note,
@@ -393,31 +540,32 @@ export const enqueueLinePendingReview = onCall({region}, async (request) => {
     );
   }
 
+  // Optional and additive: older apps do not send it and are matched on content.
+  const captureId = optionalCaptureId(request.data?.captureId);
+
   const pendingReviews = db.collection("users").doc(uid)
     .collection("pendingReview");
-  const draftRef = pendingReviews.doc(draftFingerprint);
   const transactionRef = db.collection("users").doc(uid)
     .collection("transactions").doc();
-  const transactions = db.collection("users").doc(uid)
-    .collection("transactions");
   const dedupeKeys = semanticDuplicateKeys(parsedDraft);
+  const candidate: DuplicateCandidate = {
+    accountLast4: parsedDraft.accountLast4,
+    amount: parsedDraft.amount,
+    balanceAfterReported: parsedDraft.balanceAfterReported,
+    bank: parsedDraft.bank,
+    captureId,
+    fingerprint: draftFingerprint,
+    occurredAtMs: Date.parse(parsedDraft.occurredAt),
+    source,
+    type: parsedDraft.type,
+  };
   const result = await db.runTransaction(async (transaction) => {
-    const existingDraft = await findDuplicatePendingReview(
-      transaction,
-      pendingReviews,
-      draftFingerprint,
-      dedupeKeys,
-    );
-    const existingTransaction = await findDuplicateTransaction(
-      transaction,
-      transactions,
-      draftFingerprint,
-      dedupeKeys,
-    );
-    if (existingDraft?.exists || existingTransaction) {
+    const duplicate = await findLineDuplicate(transaction, uid, candidate);
+    const fingerprintIdTaken = (await transaction.get(pendingReviews.doc(draftFingerprint))).exists;
+    if (duplicate?.kind === "same") {
       return {autoSaved: false, created: false, draftId: draftFingerprint};
     }
-    if (shouldAutoSaveLineDraft(parsedDraft)) {
+    if (!duplicate && shouldAutoSaveLineDraft(parsedDraft)) {
       transaction.create(transactionRef, createLineTransactionPayload(
         uid,
         parsedDraft,
@@ -425,6 +573,7 @@ export const enqueueLinePendingReview = onCall({region}, async (request) => {
         source,
         "verified",
         "auto_verified_line_notification",
+        captureId,
       ));
       return {
         autoSaved: true,
@@ -433,9 +582,17 @@ export const enqueueLinePendingReview = onCall({region}, async (request) => {
         transactionId: transactionRef.id,
       };
     }
+    // A possible duplicate is never auto-saved and never dropped: it waits for
+    // the user with a warning that says what it may repeat. Its id cannot be
+    // the fingerprint, which an identical earlier draft may already use.
+    const draftRef = duplicate || fingerprintIdTaken ? pendingReviews.doc() : pendingReviews.doc(draftFingerprint);
+    const draftToStore = duplicate ?
+      {...parsedDraft, needsReview: true, warnings: [possibleDuplicateWarning(duplicate.snapshot), ...parsedDraft.warnings].slice(0, 8)} :
+      parsedDraft;
     const createdAt = Timestamp.now();
     transaction.create(draftRef, {
       capturedAt: Timestamp.fromDate(capturedAt),
+      ...(captureId ? {captureId} : {}),
       createdAt,
       expiresAt: Timestamp.fromMillis(
         createdAt.toMillis() + PENDING_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
@@ -443,13 +600,19 @@ export const enqueueLinePendingReview = onCall({region}, async (request) => {
       fingerprint: draftFingerprint,
       dedupeKeys,
       ownerId: uid,
-      parsedDraft,
+      parsedDraft: draftToStore,
+      ...(duplicate ? {possibleDuplicateOf: duplicate.snapshot.ref.path} : {}),
       rawText,
       source,
       status: "pending",
       updatedAt: createdAt,
     });
-    return {autoSaved: false, created: true, draftId: draftFingerprint};
+    return {
+      autoSaved: false,
+      created: true,
+      draftId: draftRef.id,
+      ...(duplicate ? {possibleDuplicate: true} : {}),
+    };
   });
   return result;
 });
@@ -505,7 +668,11 @@ export const confirmLineTransaction = onCall({region}, async (request) => {
     let pendingRef: FirebaseFirestore.DocumentReference | null = null;
     let finalFingerprint = inputFingerprint;
     let pendingSource = source;
-    if (source === "line_auto_listener") {
+    let pendingCaptureId = "";
+    let flaggedAsPossibleDuplicate = false;
+    // A bank-app draft is a pending review too; with its id it is looked up and
+    // cleared exactly like a LINE one (it used to be left behind after saving).
+    if (source === "line_auto_listener" || (source === "bank_auto_listener" && draftId)) {
       if (!draftId) {
         throw new HttpsError("failed-precondition", "Pending draft is required.");
       }
@@ -521,30 +688,28 @@ export const confirmLineTransaction = onCall({region}, async (request) => {
       }
       finalFingerprint = pending.get("fingerprint");
       pendingSource = pending.get("source") ?? source;
+      pendingCaptureId = typeof pending.get("captureId") === "string" ? pending.get("captureId") : "";
+      flaggedAsPossibleDuplicate = typeof pending.get("possibleDuplicateOf") === "string";
     }
 
     const transactions = db.collection("users").doc(uid)
       .collection("transactions");
-    const duplicateSnapshot = await findDuplicateTransaction(
-      transaction,
-      transactions,
-      finalFingerprint,
-      semanticDuplicateKeys({
-        accountLast4: accountLast4 || null,
-        amount,
-        balanceAfterReported,
-        bank: bankCode(bank),
-        category,
-        confidence,
-        merchant,
-        needsReview,
-        note,
-        occurredAt: occurredAt.toISOString(),
-        parserMode: "generic",
-        type,
-        warnings: [],
-      }),
-    );
+    const verdict = await findLineDuplicate(transaction, uid, {
+      accountLast4: accountLast4 || null,
+      amount,
+      balanceAfterReported,
+      bank: bankCode(bank),
+      captureId: pendingCaptureId,
+      fingerprint: finalFingerprint,
+      occurredAtMs: occurredAt.getTime(),
+      source: pendingSource,
+      type,
+    }, pendingRef?.id ?? "");
+    // The user has already been shown that this draft might repeat an earlier
+    // record and confirmed it anyway: that is the decision, so save it.
+    const duplicateSnapshot = verdict && !(flaggedAsPossibleDuplicate && verdict.kind === "possible") ?
+      verdict.snapshot :
+      null;
     if (duplicateSnapshot) {
       const existing = duplicateSnapshot;
       if (duplicateAction === "skip") {
@@ -594,7 +759,7 @@ export const confirmLineTransaction = onCall({region}, async (request) => {
         parserMode: "generic",
         type,
         warnings: [],
-      }),
+      }).concat(pendingCaptureId ? [captureKey(pendingCaptureId)] : []),
       fingerprint: finalFingerprint,
       merchant,
       note,

@@ -114,12 +114,14 @@ const reportListenerStatusCall = httpsCallable<
 const enqueuePendingReviewCall = httpsCallable<
   {
     capturedAt: string;
+    /** The device queue's id for this capture: a re-send of it is the same notice (FN-001). */
+    captureId?: string;
     fingerprint: string;
     parsedDraft: Omit<ParsedLineImportDraft, 'fingerprint' | 'rawText'>;
     rawText: string;
     source?: 'bank_auto_listener' | 'line_auto_listener';
   },
-  {autoSaved?: boolean; created: boolean; draftId: string; transactionId?: string}
+  {autoSaved?: boolean; created: boolean; draftId: string; possibleDuplicate?: boolean; transactionId?: string}
 >(functions, 'enqueueLinePendingReview');
 const confirmLineTransactionCall = httpsCallable<
   ConfirmInput,
@@ -257,10 +259,12 @@ export async function enqueueAutoBankReview(
   draft: ParsedLineImportDraft,
   capturedAt: Date,
   source: 'bank_auto_listener' | 'line_auto_listener',
+  captureId?: string,
 ) {
   const {fingerprint, rawText, ...parsedDraft} = draft;
   const result = await enqueuePendingReviewCall({
     capturedAt: capturedAt.toISOString(),
+    ...(captureId ? {captureId} : {}),
     fingerprint,
     parsedDraft,
     rawText: rawText.slice(0, 12_000),
@@ -401,11 +405,11 @@ async function performLineAutoImportSync(uid: string) {
         ? 'bank_auto_listener'
         : 'line_auto_listener';
       try {
-        result = await enqueueAutoBankReview(draft, safeCapturedAt, source);
+        result = await enqueueAutoBankReview(draft, safeCapturedAt, source, item.id);
       } catch (error) {
         if (!isFirebaseError(error, 'permission-denied')) throw error;
         await ensureBackendAutoConsent(activeConsent);
-        result = await enqueueAutoBankReview(draft, safeCapturedAt, source);
+        result = await enqueueAutoBankReview(draft, safeCapturedAt, source, item.id);
       }
       if (result.created && result.autoSaved) autoSavedCount += 1;
       else if (result.created) pendingCount += 1;

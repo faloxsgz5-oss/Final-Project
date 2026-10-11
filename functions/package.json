@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test:ocr": "npm run build && node scripts/test-ocr-pipeline.cjs",
     "test:adaptive": "npm run build && node scripts/test-adaptive-scheduling.cjs",
-    "test:adaptive-transactions:local": "npm run build && node scripts/test-adaptive-transactions.cjs"
+    "test:adaptive-transactions:local": "npm run build && node scripts/test-adaptive-transactions.cjs",
+    "test:line-dedupe:local": "npm run build && node scripts/test-line-dedupe.cjs"
   },
   "dependencies": {
     "@google-cloud/vision": "^5.3.3",
