@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react';
 import {Animated, Easing, Modal, StyleSheet, Text, View} from 'react-native';
+import {BrandLogo} from '@/components/brand-logo';
 import {Touchable} from '@/components/touchable';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -113,7 +114,7 @@ export default function LoadingAndSuccessModal({
           {phase === 'loading' ? <View style={styles.spinnerTrack}>
             <Animated.View style={[styles.spinnerArc, {transform: [{rotate: spin}]}]} />
             <Animated.View style={[styles.spinnerCore, {transform: [{scale: pulse}]}]}>
-              <Text style={styles.spinnerMark}>SL</Text>
+              <BrandLogo decorative size={36} />
             </Animated.View>
           </View> : <Animated.View style={{transform: [{scale: pop}]}}>
             <LinearGradient colors={['#89aa82', '#547a50']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.checkCircle}>
@@ -154,7 +155,6 @@ const styles = StyleSheet.create({
   progressTrack: {backgroundColor: 'rgba(44,52,27,.09)', borderRadius: 4, height: 6, marginTop: 22, overflow: 'hidden', width: '100%'},
   spinnerArc: {borderColor: '#789a75', borderLeftColor: '#9297bb', borderRadius: 40, borderRightColor: 'rgba(120,154,117,.18)', borderWidth: 6, height: 78, position: 'absolute', width: 78},
   spinnerCore: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.88)', borderRadius: 25, height: 50, justifyContent: 'center', width: 50},
-  spinnerMark: {color: '#5b7857', fontFamily: 'Prompt_700Bold', fontSize: 14},
   spinnerTrack: {alignItems: 'center', height: 78, justifyContent: 'center', width: 78},
   subtitle: {color: '#7d8678', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 5, textAlign: 'center'},
   title: {color: '#2c341b', fontFamily: 'Prompt_700Bold', fontSize: 18, marginTop: 18, textAlign: 'center'},

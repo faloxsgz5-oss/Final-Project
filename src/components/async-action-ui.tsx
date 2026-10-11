@@ -12,6 +12,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import {BrandLogo} from '@/components/brand-logo';
 import {Touchable} from '@/components/touchable';
 import {LinearGradient} from 'expo-linear-gradient';
 import {useCallback, useEffect, useRef, useState, type ReactNode} from 'react';
@@ -439,7 +440,7 @@ function LoadingGlyph({color, size}: {color: string; size: number}) {
           width: size,
         }}
       />
-      {size >= 40 ? <View style={[styles.loadingCore, {height: size * .62, width: size * .62}]}><Text style={[styles.loadingCoreText, {color}]}>SL</Text></View> : null}
+      {size >= 40 ? <View style={[styles.loadingCore, {height: size * .62, width: size * .62}]}><BrandLogo decorative size={Math.round(size * .62 * .74)} /></View> : null}
     </View>
   );
 }
@@ -475,7 +476,6 @@ const styles = StyleSheet.create({
   errorBadge: {alignItems: 'center', borderRadius: 31, height: 62, justifyContent: 'center', width: 62},
   errorMark: {fontFamily: 'Prompt_800ExtraBold', fontSize: 31},
   loadingCore: {alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, .88)', borderRadius: 999, justifyContent: 'center'},
-  loadingCoreText: {fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
   message: {fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 7, textAlign: 'center'},
   overlay: {alignItems: 'center', flex: 1, justifyContent: 'center', padding: 20},
   panel: {borderRadius: 29, borderWidth: 1, elevation: 18, maxWidth: 520, overflow: 'hidden', shadowColor: '#182013', shadowOffset: {height: 20, width: 0}, shadowOpacity: .31, shadowRadius: 34, width: '100%'},

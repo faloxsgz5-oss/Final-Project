@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {BrandLogo} from '@/components/brand-logo';
 import {Touchable} from '@/components/touchable';
 import {LinearGradient} from 'expo-linear-gradient';
 
@@ -188,7 +189,7 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
 
         <LinearGradient colors={['rgba(255,255,255,.98)', 'rgba(240,245,236,.94)']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.headerLight}>
           {page === 'admin_dashboard' ? (
-            <View style={styles.headerAvatar}><Text style={styles.headerAvatarText}>SL</Text></View>
+            <BrandLogo size={46} />
           ) : (
             <Touchable
               accessibilityLabel="กลับหน้าภาพรวม"
@@ -281,8 +282,6 @@ const styles = StyleSheet.create({
   confirmLogoutText: {color: '#fff', fontFamily: F.b, fontSize: 12},
   content: {padding: 19, paddingBottom: 27},
   disabled: {opacity: 0.6},
-  headerAvatar: {alignItems: 'center', backgroundColor: '#754b59', borderColor: '#fff', borderRadius: 24, borderWidth: 3, height: 46, justifyContent: 'center', width: 46},
-  headerAvatarText: {color: '#fff', fontFamily: F.x, fontSize: 13},
   headerBack: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, height: 42, justifyContent: 'center', width: 42},
   headerBrand: {color: '#668d65', fontFamily: F.s, fontSize: 12},
   headerCopy: {flex: 1},
