@@ -58,6 +58,7 @@
     "eslint-config-expo": "~57.0.1",
     "patch-package": "^8.0.1",
     "playwright": "^1.62.1",
+    "pngjs": "3.4.0",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -111,6 +112,7 @@
     "test:expense-categories": "node --experimental-strip-types --import ./scripts/register-ts-alias.mjs ./scripts/test-expense-categories.mjs",
     "test:spending-analytics": "node --experimental-strip-types --import ./scripts/register-ts-alias.mjs ./scripts/test-spending-analytics.mjs",
     "test:sleep-widget-text": "node --experimental-strip-types --import ./scripts/register-ts-alias.mjs ./scripts/test-sleep-widget-text.mjs",
+    "brand:assets": "node ./scripts/generate-brand-assets.cjs",
     "test:desktop-web": "node --experimental-strip-types --import ./scripts/register-ts-alias.mjs ./scripts/test-desktop-web.mjs",
     "test:page-titles": "node --experimental-strip-types ./scripts/test-page-titles.mjs",
     "test:notification-seen": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-notification-seen.mjs",

@@ -86,6 +86,8 @@ Thumbs.db
 mumu-*.png
 mumu-*.xml
 smartlife-*.png
+# The owner's logo is the source every brand asset is generated from.
+!/assets/brand/smartlife-logo-source.png
 scripts/*.png
 diff_*.txt
 .codex-runtime/
