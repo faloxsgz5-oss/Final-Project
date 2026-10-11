@@ -80,9 +80,9 @@ class SmartLifeLineNotificationService : NotificationListenerService() {
       .setContentTitle("พบรายการการเงินใหม่ $queueCount รายการ")
       .setNumber(queueCount)
       .setOnlyAlertOnce(true)
-      // A framework monochrome icon is valid on every supported Android
-      // version. Adaptive launcher icons are not valid notification icons.
-      .setSmallIcon(android.R.drawable.ic_dialog_info)
+      // The logo's white silhouette; adaptive launcher icons are not valid
+      // notification icons.
+      .setSmallIcon(smartLifeNotificationIcon(android.R.drawable.ic_dialog_info))
       .build()
     runCatching {
       NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)

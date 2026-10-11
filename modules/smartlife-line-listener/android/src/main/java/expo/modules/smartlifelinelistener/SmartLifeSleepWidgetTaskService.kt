@@ -67,7 +67,7 @@ class SmartLifeSleepWidgetTaskService : HeadlessJsTaskService() {
     }
     return NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("กำลังบันทึกการนอน")
-      .setSmallIcon(android.R.drawable.ic_popup_reminder)
+      .setSmallIcon(smartLifeNotificationIcon(android.R.drawable.ic_popup_reminder))
       .setPriority(NotificationCompat.PRIORITY_MIN)
       .setCategory(NotificationCompat.CATEGORY_SERVICE)
       .build()

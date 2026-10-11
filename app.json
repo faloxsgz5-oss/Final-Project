@@ -4,12 +4,12 @@
     "slug": "smartlife",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/brand/icon-app-1024.png",
     "scheme": "smartlife",
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.smartlife.student",
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/brand/icon-app-1024.png",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -21,10 +21,9 @@
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#F4F5EF",
+        "foregroundImage": "./assets/brand/icon-adaptive-foreground.png",
+        "monochromeImage": "./assets/brand/icon-adaptive-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -40,7 +39,7 @@
       "lang": "th",
       "themeColor": "#688a65",
       "backgroundColor": "#e9ebe2",
-      "favicon": "./assets/images/favicon-smartlife.png"
+      "favicon": "./public/icon-pwa-192.png"
     },
     "plugins": [
       "expo-router",
@@ -51,7 +50,8 @@
       [
         "expo-notifications",
         {
-          "color": "#5F875F",
+          "icon": "./assets/brand/icon-notification-96.png",
+          "color": "#33402A",
           "defaultChannel": "adaptive-scheduling"
         }
       ],
@@ -65,7 +65,8 @@
       [
         "expo-notifications",
         {
-          "color": "#6F8F6D",
+          "icon": "./assets/brand/icon-notification-96.png",
+          "color": "#33402A",
           "defaultChannel": "smartlife-deadlines"
         }
       ],
@@ -80,8 +81,8 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#F4F5EF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "image": "./assets/brand/brand-splash.png",
+          "imageWidth": 200
         }
       ]
     ],
