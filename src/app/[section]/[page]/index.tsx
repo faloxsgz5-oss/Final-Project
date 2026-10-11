@@ -17,6 +17,7 @@ import {loadLegacyPageData, runLegacyDataAction, type LegacyDataAction} from '@/
 import { uploadAndAnalyzeScan } from '@/services/ocr';
 import AdminPortal from '@/screens/admin/admin-portal';
 import AuthPortal from '@/screens/auth/auth-portal';
+import {ProfileSetupErrorScreen} from '@/screens/auth/profile-setup-error';
 import DashboardScreen from '@/screens/native/user/dashboard-screen';
 import CalendarScreen from '@/screens/native/user/calendar-screen';
 import PlannerScreen from '@/screens/native/user/planner-screen';
@@ -79,7 +80,7 @@ function authErrorMessage(error: unknown) {
 function LegacyPageRouteContent() {
   const params = useLocalSearchParams<{ autoAsk?: string; autoListen?: string; id?: string; page: string; section: string }>();
   const router = useRouter();
-  const {initializing, role, signOut, user} = useAuth();
+  const {initializing, profileStatus, retryProfile, role, signOut, user} = useAuth();
   const section = String(params.section ?? '').toLowerCase();
   const page = String(params.page ?? '');
   const html = legacyPages[`${section}/${page}`];
@@ -204,6 +205,9 @@ function LegacyPageRouteContent() {
   }, [user]);
 
   if (initializing) return <View style={styles.loading}><ActivityIndicator color="#6f966f" size="large" /></View>;
+  // The account exists but its profile could not be written: offer a retry
+  // rather than the old silent drop back to an empty login form (USER-001).
+  if (user && profileStatus === 'error') return <ProfileSetupErrorScreen onLogout={handleLogout} onRetry={retryProfile} />;
   if (section === 'login' && user) {
     // `role` resolves *after* `user`: the auth listener sets the user, then
     // awaits the `admin` custom claim. Redirecting while the role is still
@@ -212,7 +216,8 @@ function LegacyPageRouteContent() {
     // won the race by awaiting `getUserRole` itself. Wait for the answer
     // instead of guessing it; the listener always resolves the role to
     // 'admin' or 'user', including on error, so this cannot hang.
-    if (role === null) return <View style={styles.loading}><ActivityIndicator color="#6f966f" size="large" /></View>;
+    // Also wait for the profile, so the first screen after sign-up has it.
+    if (role === null || profileStatus === 'pending') return <View style={styles.loading}><ActivityIndicator color="#6f966f" size="large" /></View>;
     return <Redirect href={(role === 'admin' ? '/admin/admin_dashboard' : '/user/index') as Href} />;
   }
   if (section === 'login') return <AuthPortal mode={page === 'register' ? 'register' : 'login'} onFacebook={onFacebookAuthenticate} onGoogle={onGoogleAuthenticate} onSubmit={onAuthenticate} onSwitch={(target) => router.push(`/login/${target}` as Href)} />;

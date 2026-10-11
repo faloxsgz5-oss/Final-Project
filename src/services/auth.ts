@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createUserWithEmailAndPassword,
-  deleteUser,
   FacebookAuthProvider,
   getIdTokenResult,
   GoogleAuthProvider,
@@ -53,33 +52,68 @@ function googleWebClientId() {
   return hasRealPublicConfigValue(configured) ? configured : FIREBASE_GOOGLE_WEB_CLIENT_ID;
 }
 
-export async function registerWithEmail({ displayName, email, password }: RegisterInput) {
-  if (isDemoMode) return {...demoUser, displayName: displayName || demoUser.displayName, email} as User;
-  requireFirebaseConfig();
-  const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+/**
+ * The longest display name the `users/{uid}` rule accepts. The rule's
+ * `size()` counts UTF-16 code units, exactly like JavaScript's `length`: an
+ * emoji outside the basic plane counts as 2, each Thai vowel or tone mark as 1.
+ */
+export const DISPLAY_NAME_MAX_LENGTH = 80;
 
-  try {
-    await updateProfile(credential.user, { displayName: displayName.trim() });
-    await setDoc(doc(db, 'users', credential.user.uid), {
-      uid: credential.user.uid,
-      email: credential.user.email,
-      displayName: displayName.trim(),
-      avatarUrl: '',
-      consentHistory: [{changedAt: new Date(), method: 'onboarding', tier: 'manual_only'}],
-      consentTier: 'manual_only',
-      lineConsentUpdatedAt: serverTimestamp(),
-      lineConsentVersion: 1,
-      lineListenerStatus: 'not_applicable',
-      role: 'user',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (error) {
-    await deleteUser(credential.user);
-    throw error;
+/** Why a display name cannot be used, in Thai, or null when it is fine. */
+export function displayNameProblem(raw: string) {
+  const name = raw.trim();
+  if (!name) return 'กรุณากรอกชื่อ - นามสกุล';
+  if (name.length > DISPLAY_NAME_MAX_LENGTH) {
+    return `ชื่อยาวเกิน ${DISPLAY_NAME_MAX_LENGTH} ตัวอักษร (ตอนนี้ ${name.length}; อีโมจิ 1 ตัวนับเป็น 2) กรุณาย่อชื่อลง`;
   }
+  return null;
+}
 
-  return credential.user;
+/**
+ * The account exists, but its `users/{uid}` profile could not be written even
+ * after retrying. Nothing is rolled back: the account is kept, the app offers a
+ * retry, and the next sign-in creates the missing profile on its own.
+ */
+export class ProfileSetupError extends Error {
+  constructor(readonly reason: unknown) {
+    super('สร้างบัญชีแล้ว แต่บันทึกข้อมูลโปรไฟล์ไม่สำเร็จ บัญชีของคุณยังอยู่ครบ กรุณาตรวจสอบอินเทอร์เน็ตแล้วกด "ลองใหม่"');
+    this.name = 'ProfileSetupError';
+  }
+}
+
+/**
+ * The name the person typed while their account is being created. The token
+ * listener in `AuthProvider` runs as soon as the account exists -- before
+ * `registerWithEmail` gets to its own write -- so the shared profile creation
+ * below reads the typed name from here rather than from Auth, which may not
+ * have it yet.
+ */
+let registeringName: {email: string; name: string} | null = null;
+
+export async function registerWithEmail({ displayName, email, password }: RegisterInput) {
+  // Checked before the account exists: a name the profile rule would refuse
+  // used to create the account first and then delete it (USER-002).
+  const problem = displayNameProblem(displayName);
+  if (problem) throw new Error(problem);
+  const name = displayName.trim();
+  if (isDemoMode) return {...demoUser, displayName: name, email} as User;
+  requireFirebaseConfig();
+
+  registeringName = {email: email.trim().toLowerCase(), name};
+  try {
+    const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    // Auth's own copy of the name is cosmetic -- every screen reads the profile
+    // document -- so a failure here must not cost the account.
+    await updateProfile(credential.user, {displayName: name}).catch((error) => {
+      console.warn('[Auth] Could not copy the display name into Firebase Auth', error);
+    });
+    // Shares the listener's in-flight creation when it got there first, so the
+    // two never write over each other. It never deletes the account (USER-001).
+    await ensureUserProfile(credential.user, name);
+    return credential.user;
+  } finally {
+    registeringName = null;
+  }
 }
 
 export async function signInWithEmail(email: string, password: string) {
@@ -105,31 +139,89 @@ async function createSocialUserProfile(user: User) {
   await ensureUserProfile(user);
 }
 
-export async function ensureUserProfile(user = auth.currentUser) {
+/** Attempts and backoff for writing a missing profile (USER-001). */
+export const PROFILE_WRITE_ATTEMPTS = 4;
+const PROFILE_WRITE_BACKOFF_MS = 400;
+
+/** Clamps a name from Auth or a social provider to what the rule accepts. */
+function profileName(user: User, preferred?: string) {
+  const fromRegistration = registeringName && user.email?.toLowerCase() === registeringName.email ? registeringName.name : '';
+  const candidate = (preferred || fromRegistration || user.displayName || user.email?.split('@')[0] || '').trim();
+  // A Google or Facebook name past the limit is shortened, not rejected: the
+  // person never typed it, so there is nothing for them to correct.
+  const clamped = candidate.length > DISPLAY_NAME_MAX_LENGTH ? Array.from(candidate).reduce((kept, char) => (kept + char).length <= DISPLAY_NAME_MAX_LENGTH ? kept + char : kept, '') : candidate;
+  return clamped || 'ผู้ใช้ SmartLife';
+}
+
+/**
+ * Runs `attempt` until it reports success, waiting longer each time, and
+ * throws `ProfileSetupError` once every attempt has failed. Exported so the
+ * retry policy can be tested without a network.
+ */
+export async function withProfileRetry(attempt: () => Promise<void>, {attempts = PROFILE_WRITE_ATTEMPTS, backoffMs = PROFILE_WRITE_BACKOFF_MS, sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))} = {}) {
+  let lastError: unknown = null;
+  for (let index = 0; index < attempts; index += 1) {
+    if (index) await sleep(backoffMs * 2 ** (index - 1));
+    try {
+      await attempt();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new ProfileSetupError(lastError);
+}
+
+/** One creation per account at a time, shared by every caller (USER-001). */
+const profileCreations = new Map<string, Promise<void>>();
+
+/**
+ * Makes sure `users/{uid}` exists, creating it if it does not. This is the only
+ * code that creates a profile: the token listener, sign-up, Google/Facebook
+ * sign-in and the scan save path all come through here.
+ *
+ * - Single-flight: concurrent callers for the same account share one attempt,
+ *   so the listener and `registerWithEmail` can no longer race each other into
+ *   a rule rejection.
+ * - Idempotent: every attempt re-reads first, so a document created by another
+ *   device or an earlier attempt ends the work instead of being written over.
+ * - Never destructive: on repeated failure it throws `ProfileSetupError` and
+ *   leaves the account alone. An account that exists without a profile (for
+ *   example one left behind by the old bug) is healed the next time it signs in.
+ */
+export function ensureUserProfile(user = auth.currentUser, preferredName?: string): Promise<void> {
   // Demo mode has no signed-in user and writes nothing to Firestore; every
   // save path in it stops at this check otherwise.
-  if (isDemoMode) return;
+  if (isDemoMode) return Promise.resolve();
   if (!user) {
-    throw new Error('กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล');
+    return Promise.reject(new Error('กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล'));
   }
+  const running = profileCreations.get(user.uid);
+  if (running) return running;
 
   const reference = doc(db, 'users', user.uid);
-  if ((await getDoc(reference)).exists()) return;
-
-  await setDoc(reference, {
-    uid: user.uid,
-    email: user.email ?? '',
-    displayName: user.displayName?.trim() || user.email?.split('@')[0] || 'ผู้ใช้ SmartLife',
-    avatarUrl: user.photoURL?.startsWith('https://') ? user.photoURL : '',
-    consentHistory: [{changedAt: new Date(), method: 'onboarding', tier: 'manual_only'}],
-    consentTier: 'manual_only',
-    lineConsentUpdatedAt: serverTimestamp(),
-    lineConsentVersion: 1,
-    lineListenerStatus: 'not_applicable',
-    role: 'user',
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+  const creation = withProfileRetry(async () => {
+    if ((await getDoc(reference)).exists()) return;
+    // Exactly the keys and values the create rule accepts.
+    await setDoc(reference, {
+      uid: user.uid,
+      email: user.email ?? '',
+      displayName: profileName(user, preferredName),
+      avatarUrl: user.photoURL?.startsWith('https://') && user.photoURL.length <= 2048 ? user.photoURL : '',
+      consentHistory: [{changedAt: new Date(), method: 'onboarding', tier: 'manual_only'}],
+      consentTier: 'manual_only',
+      lineConsentUpdatedAt: serverTimestamp(),
+      lineConsentVersion: 1,
+      lineListenerStatus: 'not_applicable',
+      role: 'user',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }).finally(() => {
+    profileCreations.delete(user.uid);
   });
+  profileCreations.set(user.uid, creation);
+  return creation;
 }
 
 function parseOAuthCallbackParams(url: string) {
