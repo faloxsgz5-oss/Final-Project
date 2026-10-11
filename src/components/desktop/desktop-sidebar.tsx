@@ -1,7 +1,7 @@
-import {LinearGradient} from 'expo-linear-gradient';
 import {Pressable, StyleSheet, Text, View, type PressableStateCallbackType} from 'react-native';
 import {useReducedMotion} from 'react-native-reanimated';
 
+import {BrandLogo} from '@/components/brand-logo';
 import {useShellTourTarget} from '@/hooks/use-tour-target';
 import type {DesktopNavKey} from '@/lib/desktop-web';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
@@ -15,19 +15,6 @@ const web = (props: Record<string, unknown>) => props as object;
 
 /** Nav icon size: the icon is what you scan for, and the rail shows nothing else. */
 const ICON = 24;
-
-/**
- * The app's mark, as the login screen draws it -- the green infinity glyph on
- * its white-to-sage tile, the same mark the favicon is rendered from -- at
- * sidebar size.
- */
-function AppMark() {
-  return (
-    <LinearGradient colors={['#ffffff', '#f2f6ed']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.mark}>
-      <MaterialIcon color="#688a65" name="all_inclusive" size={21} />
-    </LinearGradient>
-  );
-}
 
 /**
  * The desktop sidebar: the app's brand, search, a few shortcuts, the screens,
@@ -107,7 +94,8 @@ export function DesktopSidebar({activeKey, badge, canToggle = true, collapsed, o
           no switcher chevron. It goes home; the profile is the โปรไฟล์ row. */}
       <View style={[styles.header, collapsed && styles.headerCollapsed]}>
         <Pressable accessibilityLabel="SmartLife ไปหน้าหลัก" onPress={() => onNavigate('index')} style={(state: WebState) => [collapsed ? styles.brandCollapsed : styles.brand, (state.hovered || state.pressed) && styles.rowHover, hoverTransition]}>
-          <AppMark />
+          {/* The row's label already says SmartLife, so the logo itself stays silent. */}
+          <BrandLogo decorative size={36} />
           {collapsed ? null : <Text numberOfLines={1} style={styles.brandName}>SmartLife</Text>}
         </Pressable>
         {toggle}
@@ -148,7 +136,6 @@ const styles = StyleSheet.create({
   headerCollapsed: {flexDirection: 'column', gap: 6, justifyContent: 'center'},
   iconButton: {alignItems: 'center', borderRadius: 8, height: 40, justifyContent: 'center', width: 40},
   kbd: {borderColor: DESKTOP_C.border, borderRadius: 4, borderWidth: 1, color: DESKTOP_C.muted, fontFamily: DESKTOP_F.m, fontSize: 10, paddingHorizontal: 5, paddingVertical: 1},
-  mark: {alignItems: 'center', borderColor: 'rgba(221, 223, 194, 0.55)', borderRadius: 9, borderWidth: 1, height: 34, justifyContent: 'center', width: 34},
   row: {alignItems: 'center', borderRadius: 8, flexDirection: 'row', gap: 12, minHeight: 42, paddingHorizontal: 10},
   rowActive: {backgroundColor: DESKTOP_C.active},
   rowCollapsed: {justifyContent: 'center', paddingHorizontal: 0},
