@@ -1469,11 +1469,74 @@ export function addReceiptReview(
   };
 }
 
+/*
+ * Abuse limits for analyzeScan (SEC-001). Every scan can call paid services
+ * (iApp OCR, Google Vision, Gemini), and anyone can register an account, so
+ * each account is capped server-side. Tune here.
+ */
+/** Scans one account may start in a rolling hour. */
+export const SCANS_PER_HOUR = 20;
+/** Scans one account may start in a Bangkok calendar day. */
+export const SCANS_PER_DAY = 100;
+/** Concurrent instances, so a burst cannot fan out without bound. */
+export const SCAN_MAX_INSTANCES = 10;
+/** The largest file a scan will read: the Storage rules' own upload cap. */
+export const MAX_SCAN_BYTES = 10 * 1024 * 1024;
+const MAX_STORAGE_PATH_LENGTH = 512;
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Counts one scan against the caller's hourly and daily allowance, or refuses
+ * with a Thai message the scan screen shows as it is. The counter lives in
+ * scanRateLimits/{uid}: written only here with the Admin SDK, and denied to
+ * every client by the rules' catch-all (test:firestore-server-only-rules).
+ * One transaction per scan, so concurrent scans cannot both take the last slot.
+ */
+async function enforceScanRateLimit(uid: string) {
+  const reference = db.collection("scanRateLimits").doc(uid);
+  const now = Date.now();
+  const today = assistantDayKey();
+  await db.runTransaction(async (transaction) => {
+    const data = (await transaction.get(reference)).data() ?? {};
+    const hourStartedAt = data.hourStartedAt instanceof Timestamp ? data.hourStartedAt.toMillis() : 0;
+    const sameHour = now - hourStartedAt < HOUR_MS;
+    const hourCount = sameHour ? Number(data.hourCount ?? 0) : 0;
+    const dayCount = data.dayKey === today ? Number(data.dayCount ?? 0) : 0;
+    if (hourCount >= SCANS_PER_HOUR) {
+      const retryAfterSeconds = Math.max(60, Math.ceil((hourStartedAt + HOUR_MS - now) / 1000));
+      throw new HttpsError(
+        "resource-exhausted",
+        `สแกนครบ ${SCANS_PER_HOUR} ครั้งในหนึ่งชั่วโมงแล้ว กรุณารออีกประมาณ ${Math.ceil(retryAfterSeconds / 60)} นาทีแล้วลองใหม่`,
+        {reason: "scan-hourly-limit", retryAfterSeconds},
+      );
+    }
+    if (dayCount >= SCANS_PER_DAY) {
+      throw new HttpsError(
+        "resource-exhausted",
+        `วันนี้สแกนครบ ${SCANS_PER_DAY} ครั้งแล้ว กรุณาลองใหม่พรุ่งนี้`,
+        {reason: "scan-daily-limit", retryAfterSeconds: 60 * 60},
+      );
+    }
+    transaction.set(reference, {
+      dayCount: dayCount + 1,
+      dayKey: today,
+      hourCount: hourCount + 1,
+      hourStartedAt: sameHour ? data.hourStartedAt : Timestamp.fromMillis(now),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+}
+
 export const analyzeScan = onCall(
   {
     region,
     memory: "512MiB",
     timeoutSeconds: 120,
+    maxInstances: SCAN_MAX_INSTANCES,
+    // Not enforced yet: installed APKs and cached web bundles do not send a
+    // token for this call. The presence of a verified token is recorded on
+    // each scan log (`appCheck`) so enforcement can be switched on once
+    // nearly every scan arrives with one. See the SEC-001 report.
     enforceAppCheck: false,
     secrets: [geminiOcrApiKey, iappApiKey],
   },
@@ -1482,6 +1545,9 @@ export const analyzeScan = onCall(
     if (!uid) throw new HttpsError("unauthenticated", "Please sign in before scanning.");
 
     const storagePath = requireString(request.data?.storagePath, "storagePath");
+    if (storagePath.length > MAX_STORAGE_PATH_LENGTH || storagePath.includes("..") || storagePath.includes("//")) {
+      throw new HttpsError("invalid-argument", "storagePath is invalid.");
+    }
     const requestedType = requireString(request.data?.scanType, "scanType") as ScanRequestType;
     if (requestedType !== "auto" && requestedType !== "receipt" &&
       requestedType !== "schedule" && requestedType !== "document") {
@@ -1496,6 +1562,9 @@ export const analyzeScan = onCall(
       throw new HttpsError("permission-denied", "You can only scan your own uploaded files.");
     }
 
+    // Counted only once the request is otherwise valid, and before any paid call.
+    await enforceScanRateLimit(uid);
+
     const logRef = db.collection("users").doc(uid).collection("scanLogs").doc();
     await logRef.set({
       ownerId: uid,
@@ -1504,11 +1573,27 @@ export const analyzeScan = onCall(
       status: "processing",
       extractedText: "",
       errorMessage: "",
+      // Whether this call carried a valid App Check token (SEC-001).
+      appCheck: request.app ? "verified" : "missing",
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
 
     try {
+      // The file's size is read from its metadata before anything downloads it
+      // or sends it to a paid service.
+      let sizeBytes: number;
+      try {
+        const [metadata] = await bucket.file(storagePath).getMetadata();
+        sizeBytes = Number(metadata.size ?? 0);
+      } catch (error) {
+        const code = (error as {code?: unknown}).code;
+        if (code === 404) throw new HttpsError("not-found", "ไม่พบไฟล์ที่อัปโหลด กรุณาลองสแกนใหม่อีกครั้ง");
+        throw new HttpsError("unavailable", "อ่านไฟล์สแกนไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+      }
+      if (sizeBytes > MAX_SCAN_BYTES) {
+        throw new HttpsError("invalid-argument", `ไฟล์ใหญ่เกิน ${MAX_SCAN_BYTES / (1024 * 1024)} MB กรุณาถ่ายหรือเลือกภาพที่เล็กลง`);
+      }
       let visionResult: Awaited<ReturnType<typeof readStorageDocumentWithVision>> | undefined;
       let scanFile: Awaited<ReturnType<typeof storageScanFile>> | undefined;
       let imageDataUrl: string | undefined;

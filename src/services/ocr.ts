@@ -146,6 +146,12 @@ export async function uploadAndAnalyzeScan({
   onStage?.('uploading');
   const upload = await uploadUserImage({contentType, kind, uid, uri});
   onStage?.('analyzing');
+  // Attach an App Check token when this device can mint one (SEC-001). The
+  // server records whether it arrived but does not require it yet, so a device
+  // that cannot get a token (an old build, localhost) still scans normally.
+  await ensureAppCheckReady().catch((error) => {
+    console.warn('[OCR] App Check token unavailable; scanning without it', error instanceof Error ? error.name : error);
+  });
   const response = await analyzeScan({
     scanType,
     storagePath: upload.path,

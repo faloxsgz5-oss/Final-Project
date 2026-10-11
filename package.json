@@ -128,6 +128,7 @@
     "test:line-dedupe": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:line-dedupe:local\"",
     "test:notes-pagination": "npx -y firebase-tools@latest emulators:exec --only firestore,auth --project smartlife-budget \"node --experimental-strip-types --import ./scripts/register-signup-profile-test.mjs ./scripts/test-notes-pagination.mjs\"",
     "test:admin-password-reset": "npx -y firebase-tools@latest emulators:exec --only firestore,auth --project smartlife-budget \"npm --prefix functions run test:admin-password-reset:local\"",
+    "test:scan-rate-limit": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"npm --prefix functions run test:scan-rate-limit:local\"",
     "emulator:clear": "node ./scripts/clear-firestore-emulator.cjs",
     "test:risk-meter-render": "node --import ./scripts/register-render-test.mjs ./scripts/render-risk-meter.mjs",
     "screenshots:verify": "node ./scripts/screenshots/capture.mjs",

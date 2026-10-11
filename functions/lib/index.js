@@ -1,7 +1,7 @@
 "use strict";
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.processLineBankNotification = exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminPasswordReset = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminRecommendationAudit = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.transcribeAssistantAudio = exports.enhanceSmartLifeRecommendations = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.updateAdaptiveSchedulingPreferences = exports.undoScheduleChange = exports.scheduledAutomaticAdaptiveScheduling = exports.scheduledAdaptivePatternRecalculation = exports.scheduledAdaptiveOutcomeSweep = exports.rejectSchedulingSuggestion = exports.registerAdaptivePushToken = exports.recordSchedulingBehavior = exports.rebalanceUserWeek = exports.rebalanceUserDay = exports.processNaturalLanguageScheduleCommand = exports.lockAdaptiveScheduleItem = exports.getAdaptiveSchedulingDashboard = exports.generateAdaptiveSuggestion = exports.deleteSchedulingPattern = exports.deleteSchedulingBehaviorHistory = exports.createAdaptiveActivity = exports.chooseAlternativeSchedulingTime = exports.calculateSchedulingPatterns = exports.activateAdaptiveScheduling = exports.acceptSchedulingSuggestion = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
+exports.processLineBankNotification = exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminPasswordReset = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminRecommendationAudit = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.transcribeAssistantAudio = exports.enhanceSmartLifeRecommendations = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.MAX_SCAN_BYTES = exports.SCAN_MAX_INSTANCES = exports.SCANS_PER_DAY = exports.SCANS_PER_HOUR = exports.updateAdaptiveSchedulingPreferences = exports.undoScheduleChange = exports.scheduledAutomaticAdaptiveScheduling = exports.scheduledAdaptivePatternRecalculation = exports.scheduledAdaptiveOutcomeSweep = exports.rejectSchedulingSuggestion = exports.registerAdaptivePushToken = exports.recordSchedulingBehavior = exports.rebalanceUserWeek = exports.rebalanceUserDay = exports.processNaturalLanguageScheduleCommand = exports.lockAdaptiveScheduleItem = exports.getAdaptiveSchedulingDashboard = exports.generateAdaptiveSuggestion = exports.deleteSchedulingPattern = exports.deleteSchedulingBehaviorHistory = exports.createAdaptiveActivity = exports.chooseAlternativeSchedulingTime = exports.calculateSchedulingPatterns = exports.activateAdaptiveScheduling = exports.acceptSchedulingSuggestion = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
 exports.addReceiptReview = addReceiptReview;
 const vision_1 = require("@google-cloud/vision");
 const node_crypto_1 = require("node:crypto");
@@ -1264,10 +1264,63 @@ function addReceiptReview(rawParsed, classification, ocrConfidence) {
         verificationStatus: needsReview ? "needs_review" : "verified",
     };
 }
+/*
+ * Abuse limits for analyzeScan (SEC-001). Every scan can call paid services
+ * (iApp OCR, Google Vision, Gemini), and anyone can register an account, so
+ * each account is capped server-side. Tune here.
+ */
+/** Scans one account may start in a rolling hour. */
+exports.SCANS_PER_HOUR = 20;
+/** Scans one account may start in a Bangkok calendar day. */
+exports.SCANS_PER_DAY = 100;
+/** Concurrent instances, so a burst cannot fan out without bound. */
+exports.SCAN_MAX_INSTANCES = 10;
+/** The largest file a scan will read: the Storage rules' own upload cap. */
+exports.MAX_SCAN_BYTES = 10 * 1024 * 1024;
+const MAX_STORAGE_PATH_LENGTH = 512;
+const HOUR_MS = 60 * 60 * 1000;
+/**
+ * Counts one scan against the caller's hourly and daily allowance, or refuses
+ * with a Thai message the scan screen shows as it is. The counter lives in
+ * scanRateLimits/{uid}: written only here with the Admin SDK, and denied to
+ * every client by the rules' catch-all (test:firestore-server-only-rules).
+ * One transaction per scan, so concurrent scans cannot both take the last slot.
+ */
+async function enforceScanRateLimit(uid) {
+    const reference = db.collection("scanRateLimits").doc(uid);
+    const now = Date.now();
+    const today = assistantDayKey();
+    await db.runTransaction(async (transaction) => {
+        const data = (await transaction.get(reference)).data() ?? {};
+        const hourStartedAt = data.hourStartedAt instanceof firestore_1.Timestamp ? data.hourStartedAt.toMillis() : 0;
+        const sameHour = now - hourStartedAt < HOUR_MS;
+        const hourCount = sameHour ? Number(data.hourCount ?? 0) : 0;
+        const dayCount = data.dayKey === today ? Number(data.dayCount ?? 0) : 0;
+        if (hourCount >= exports.SCANS_PER_HOUR) {
+            const retryAfterSeconds = Math.max(60, Math.ceil((hourStartedAt + HOUR_MS - now) / 1000));
+            throw new https_1.HttpsError("resource-exhausted", `สแกนครบ ${exports.SCANS_PER_HOUR} ครั้งในหนึ่งชั่วโมงแล้ว กรุณารออีกประมาณ ${Math.ceil(retryAfterSeconds / 60)} นาทีแล้วลองใหม่`, { reason: "scan-hourly-limit", retryAfterSeconds });
+        }
+        if (dayCount >= exports.SCANS_PER_DAY) {
+            throw new https_1.HttpsError("resource-exhausted", `วันนี้สแกนครบ ${exports.SCANS_PER_DAY} ครั้งแล้ว กรุณาลองใหม่พรุ่งนี้`, { reason: "scan-daily-limit", retryAfterSeconds: 60 * 60 });
+        }
+        transaction.set(reference, {
+            dayCount: dayCount + 1,
+            dayKey: today,
+            hourCount: hourCount + 1,
+            hourStartedAt: sameHour ? data.hourStartedAt : firestore_1.Timestamp.fromMillis(now),
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        }, { merge: true });
+    });
+}
 exports.analyzeScan = (0, https_1.onCall)({
     region,
     memory: "512MiB",
     timeoutSeconds: 120,
+    maxInstances: exports.SCAN_MAX_INSTANCES,
+    // Not enforced yet: installed APKs and cached web bundles do not send a
+    // token for this call. The presence of a verified token is recorded on
+    // each scan log (`appCheck`) so enforcement can be switched on once
+    // nearly every scan arrives with one. See the SEC-001 report.
     enforceAppCheck: false,
     secrets: [geminiOcrApiKey, iappApiKey],
 }, async (request) => {
@@ -1275,6 +1328,9 @@ exports.analyzeScan = (0, https_1.onCall)({
     if (!uid)
         throw new https_1.HttpsError("unauthenticated", "Please sign in before scanning.");
     const storagePath = requireString(request.data?.storagePath, "storagePath");
+    if (storagePath.length > MAX_STORAGE_PATH_LENGTH || storagePath.includes("..") || storagePath.includes("//")) {
+        throw new https_1.HttpsError("invalid-argument", "storagePath is invalid.");
+    }
     const requestedType = requireString(request.data?.scanType, "scanType");
     if (requestedType !== "auto" && requestedType !== "receipt" &&
         requestedType !== "schedule" && requestedType !== "document") {
@@ -1287,6 +1343,8 @@ exports.analyzeScan = (0, https_1.onCall)({
     if (!allowedFolders.some((folder) => storagePath.startsWith(`users/${uid}/${folder}/`))) {
         throw new https_1.HttpsError("permission-denied", "You can only scan your own uploaded files.");
     }
+    // Counted only once the request is otherwise valid, and before any paid call.
+    await enforceScanRateLimit(uid);
     const logRef = db.collection("users").doc(uid).collection("scanLogs").doc();
     await logRef.set({
         ownerId: uid,
@@ -1295,10 +1353,28 @@ exports.analyzeScan = (0, https_1.onCall)({
         status: "processing",
         extractedText: "",
         errorMessage: "",
+        // Whether this call carried a valid App Check token (SEC-001).
+        appCheck: request.app ? "verified" : "missing",
         createdAt: firestore_1.FieldValue.serverTimestamp(),
         updatedAt: firestore_1.FieldValue.serverTimestamp(),
     });
     try {
+        // The file's size is read from its metadata before anything downloads it
+        // or sends it to a paid service.
+        let sizeBytes;
+        try {
+            const [metadata] = await bucket.file(storagePath).getMetadata();
+            sizeBytes = Number(metadata.size ?? 0);
+        }
+        catch (error) {
+            const code = error.code;
+            if (code === 404)
+                throw new https_1.HttpsError("not-found", "ไม่พบไฟล์ที่อัปโหลด กรุณาลองสแกนใหม่อีกครั้ง");
+            throw new https_1.HttpsError("unavailable", "อ่านไฟล์สแกนไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+        }
+        if (sizeBytes > exports.MAX_SCAN_BYTES) {
+            throw new https_1.HttpsError("invalid-argument", `ไฟล์ใหญ่เกิน ${exports.MAX_SCAN_BYTES / (1024 * 1024)} MB กรุณาถ่ายหรือเลือกภาพที่เล็กลง`);
+        }
         let visionResult;
         let scanFile;
         let imageDataUrl;
