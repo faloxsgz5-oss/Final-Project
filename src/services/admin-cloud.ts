@@ -1,9 +1,11 @@
+import {FirebaseError} from 'firebase/app';
+import {sendPasswordResetEmail} from 'firebase/auth';
 import {getFunctions, httpsCallable} from 'firebase/functions';
 import {Platform} from 'react-native';
 
 import {appCheckErrorMessage, ensureAppCheckReady} from '@/lib/app-check';
 import {isDemoMode} from '@/lib/demo-mode';
-import {firebaseApp} from '@/lib/firebase';
+import {auth, firebaseApp} from '@/lib/firebase';
 
 export type AdminAuthUser = {
   createdAt: string;
@@ -19,7 +21,42 @@ const functions = getFunctions(firebaseApp, 'asia-southeast1');
 
 const listUsersCall = httpsCallable<Record<string, never>, {users: AdminAuthUser[]}>(functions, 'adminListUsers');
 const setDisabledCall = httpsCallable<{disabled: boolean; uid: string}, {disabled: boolean; uid: string}>(functions, 'adminSetUserDisabled');
-const resetLinkCall = httpsCallable<{email: string}, {link: string}>(functions, 'adminCreatePasswordResetLink');
+/** ADMIN-002: authorise and audit a reset; the email itself is sent by Firebase Auth. */
+const passwordResetCall = httpsCallable<
+  {action: 'authorize'; uid: string} | {action: 'record'; auditId: string; errorCode?: string; ok: boolean},
+  {auditId: string; email: string; maskedEmail: string} | {recorded: boolean}
+>(functions, 'adminPasswordReset');
+
+/** The real reason a reset email could not be sent, in Thai. */
+export function passwordResetErrorMessage(error: unknown) {
+  const code = error instanceof FirebaseError ? error.code : '';
+  if (code === 'auth/too-many-requests') return 'ส่งคำขอรีเซ็ตรหัสผ่านบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่';
+  if (code === 'auth/user-not-found') return 'ไม่พบบัญชีนี้ใน Firebase Authentication แล้ว จึงส่งอีเมลไม่ได้';
+  if (code === 'auth/invalid-email' || code === 'auth/missing-email') return 'อีเมลของบัญชีนี้ไม่ถูกต้อง จึงส่งอีเมลรีเซ็ตไม่ได้';
+  if (code === 'auth/network-request-failed') return 'เชื่อมต่ออินเทอร์เน็ตไม่ได้ อีเมลยังไม่ถูกส่ง กรุณาลองใหม่';
+  if (code === 'auth/quota-exceeded') return 'โควตาการส่งอีเมลของ Firebase เต็มแล้ว กรุณาลองใหม่ภายหลัง';
+  return `ส่งอีเมลรีเซ็ตรหัสผ่านไม่สำเร็จ${code ? ` (${code})` : ''}`;
+}
+
+/**
+ * Sends Firebase's own password-reset email to the user's address (ADMIN-002).
+ * The server authorises and audits it; the email is sent by Firebase Auth via
+ * `sendPasswordResetEmail`, so the reset link only ever exists in the user's
+ * inbox. Resolves with the masked address only once the send succeeded;
+ * throws a Thai error otherwise. The outcome is recorded on the audit entry.
+ */
+async function sendUserPasswordReset(uid: string) {
+  const authorized = (await passwordResetCall({action: 'authorize', uid})).data as {auditId: string; email: string; maskedEmail: string};
+  try {
+    await sendPasswordResetEmail(auth, authorized.email);
+  } catch (error) {
+    const errorCode = error instanceof FirebaseError ? error.code : 'unknown';
+    await passwordResetCall({action: 'record', auditId: authorized.auditId, errorCode, ok: false}).catch(() => undefined);
+    throw new Error(passwordResetErrorMessage(error));
+  }
+  await passwordResetCall({action: 'record', auditId: authorized.auditId, ok: true}).catch(() => undefined);
+  return {maskedEmail: authorized.maskedEmail};
+}
 export type AppCheckClientReport = {
   applicable: boolean;
   ok: boolean;
@@ -111,7 +148,16 @@ const recommendationAuditCall = httpsCallable<{path: string}, RecommendationAudi
 export const adminCloud = {
   listUsers: async () => (await listUsersCall({})).data.users,
   setUserDisabled: async (uid: string, disabled: boolean) => (await setDisabledCall({uid, disabled})).data,
-  createPasswordResetLink: async (email: string) => (await resetLinkCall({email})).data,
+  sendPasswordReset: sendUserPasswordReset,
+  /**
+   * Retired with ADMIN-002: it returned a usable reset link to the browser.
+   * Kept only because the archived snapshot in docs/admin-dashboard still
+   * names it; it always refuses and never returns a link.
+   */
+  createPasswordResetLink: async (email: string): Promise<never> => {
+    void email;
+    throw new Error('ใช้ sendPasswordReset แทน: ลิงก์รีเซ็ตรหัสผ่านจะไม่ถูกส่งกลับมาที่เบราว์เซอร์อีกแล้ว');
+  },
   refreshSystemStatus: async () => {
     // Order matters: the token has to exist before the callable is invoked,
     // otherwise the SDK sends the request without an App Check header.

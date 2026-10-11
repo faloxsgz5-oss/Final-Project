@@ -95,7 +95,9 @@ export default function AdminUsersView({actionLoading, data, onAction, onNavigat
                     showToast('ไม่มีอีเมล', 'บัญชีนี้ไม่มีอีเมลจึงส่งลิงก์รีเซ็ตรหัสผ่านไม่ได้');
                     return;
                   }
-                  onAction(`${uid}-reset`, 'reset-user-password', {email: user.email}, `ส่งลิงก์รีเซ็ตรหัสผ่านไปที่ ${user.email} แล้ว`);
+                  // "Sent" only after Firebase accepted the email, to the address
+                  // it actually went to; any failure shows its real reason.
+                  onAction(`${uid}-reset`, 'reset-user-password', {uid}, (result) => `ส่งอีเมลรีเซ็ตรหัสผ่านไปที่ ${(result as {maskedEmail?: string})?.maskedEmail ?? 'อีเมลของผู้ใช้'} แล้ว`);
                 }}
                 tone="purple"
               />

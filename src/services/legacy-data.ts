@@ -383,7 +383,8 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
     return adminCloud.setUserDisabled(asString(data.uid), data.disabled === true);
   }
   if (pageKey.startsWith('admin/') && request.action === 'reset-user-password') {
-    return adminCloud.createPasswordResetLink(asString(data.email));
+    // ADMIN-002: Firebase emails the reset link to the user; nothing returns it.
+    return adminCloud.sendPasswordReset(asString(data.uid));
   }
   throw new Error(`Unsupported data action: ${request.action}`);
 }

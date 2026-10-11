@@ -3221,11 +3221,104 @@ export const adminSetUserDisabled = onCall({region}, async (request) => {
   return {uid, disabled};
 });
 
+/**
+ * Retired (ADMIN-002). It used to generate a password-reset link and return it
+ * to the admin's browser -- where it was thrown away, so no email was ever sent,
+ * while the admin was told one had been. Anyone holding such a link can set the
+ * account's password. It now refuses, so a cached admin page still calling it
+ * shows "please refresh" instead of a false "sent". It stays exported so a
+ * functions deploy does not delete it out from under those pages.
+ */
 export const adminCreatePasswordResetLink = onCall({region}, async (request) => {
   requireAdmin(request);
-  const email = requireString(request.data?.email, "email");
-  const link = await getAuth().generatePasswordResetLink(email);
-  return {link};
+  throw new HttpsError(
+    "failed-precondition",
+    "ระบบรีเซ็ตรหัสผ่านถูกปรับปรุงแล้ว กรุณารีเฟรชหน้าเว็บแล้วลองอีกครั้ง",
+    {reason: "retired-endpoint"},
+  );
+});
+
+/** `a****@example.com`: enough for an admin to recognise, not to copy. */
+function maskEmail(email: string) {
+  const [local, domain] = email.split("@");
+  if (!domain) return "***";
+  return `${local.slice(0, 1)}${"*".repeat(Math.max(3, local.length - 1))}@${domain}`;
+}
+
+/**
+ * Admin password reset (ADMIN-002), in two steps around the email itself:
+ *
+ * 1. `action: "authorize", uid` -- only an admin; refused (and audited) when
+ *    the target is another admin; returns the target's address and an audit id.
+ *    No reset link is generated here or anywhere else.
+ * 2. The admin's client calls Firebase Auth's `sendPasswordResetEmail(address)`,
+ *    so Firebase emails the link to the user's own inbox and nobody else ever
+ *    holds it.
+ * 3. `action: "record", auditId, ok, errorCode?` -- the same admin records the
+ *    outcome on the audit entry.
+ *
+ * Audit entries live in `adminAuditLog/{id}`, written only here with the Admin
+ * SDK; the rules' catch-all denies every client read and write of that path.
+ */
+export const adminPasswordReset = onCall({region}, async (request) => {
+  requireAdmin(request);
+  const actorUid = request.auth?.uid ?? "";
+  const action = request.data?.action;
+  const audits = db.collection("adminAuditLog");
+
+  if (action === "record") {
+    const auditId = requireString(request.data?.auditId, "auditId").slice(0, 128);
+    const reference = audits.doc(auditId);
+    const errorCode = typeof request.data?.errorCode === "string" ?
+      request.data.errorCode.replace(/[^a-z0-9/_-]/gi, "").slice(0, 80) :
+      "";
+    await db.runTransaction(async (transaction) => {
+      const audit = await transaction.get(reference);
+      if (!audit.exists || audit.get("action") !== "password_reset") {
+        throw new HttpsError("not-found", "ไม่พบรายการคำขอรีเซ็ตรหัสผ่านนี้");
+      }
+      if (audit.get("actorUid") !== actorUid) {
+        throw new HttpsError("permission-denied", "บันทึกผลได้เฉพาะผู้ดูแลที่ส่งคำขอนี้");
+      }
+      transaction.update(reference, {
+        completedAt: FieldValue.serverTimestamp(),
+        ...(errorCode ? {errorCode} : {}),
+        result: request.data?.ok === true ? "sent" : "failed",
+      });
+    });
+    return {recorded: true};
+  }
+
+  if (action !== "authorize") {
+    throw new HttpsError("invalid-argument", "action must be authorize or record.");
+  }
+  const targetUid = requireString(request.data?.uid, "uid").slice(0, 128);
+  let target: Awaited<ReturnType<ReturnType<typeof getAuth>["getUser"]>>;
+  try {
+    target = await getAuth().getUser(targetUid);
+  } catch {
+    throw new HttpsError("not-found", "ไม่พบบัญชีผู้ใช้นี้ในระบบแล้ว");
+  }
+  const auditBase = {
+    action: "password_reset",
+    actorUid,
+    requestedAt: FieldValue.serverTimestamp(),
+    targetUid,
+  };
+  if (target.customClaims?.admin === true && targetUid !== actorUid) {
+    await audits.add({...auditBase, result: "refused_admin_target"});
+    throw new HttpsError(
+      "permission-denied",
+      "ไม่สามารถรีเซ็ตรหัสผ่านของผู้ดูแลระบบคนอื่นได้ ให้ผู้ดูแลคนนั้นใช้ \"ลืมรหัสผ่าน\" ที่หน้าเข้าสู่ระบบเอง",
+    );
+  }
+  if (!target.email) {
+    await audits.add({...auditBase, result: "refused_no_email"});
+    throw new HttpsError("failed-precondition", "บัญชีนี้ไม่มีอีเมล จึงส่งลิงก์รีเซ็ตรหัสผ่านไม่ได้");
+  }
+  const maskedEmail = maskEmail(target.email);
+  const audit = await audits.add({...auditBase, result: "authorized", targetEmailMasked: maskedEmail});
+  return {auditId: audit.id, email: target.email, maskedEmail};
 });
 
 /**

@@ -8,7 +8,8 @@ export type AdminActionRunner = (
   id: string,
   action: string,
   payload: Record<string, unknown>,
-  successMessage: string,
+  /** A fixed message, or one built from what the action returned. */
+  successMessage: string | ((result: unknown) => string),
 ) => Promise<boolean>;
 
 export type AdminViewProps = {

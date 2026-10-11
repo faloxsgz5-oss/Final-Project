@@ -148,13 +148,14 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
     id: string,
     action: string,
     payload: Record<string, unknown>,
-    successMessage: string,
+    successMessage: string | ((result: unknown) => string),
   ) => {
     setActionLoading(id);
     try {
-      await runLegacyDataAction(uid, key, {action, payload});
+      const result = await runLegacyDataAction(uid, key, {action, payload});
       await load();
-      if (successMessage) showToast('สำเร็จ', successMessage, 'success');
+      const message = typeof successMessage === 'function' ? successMessage(result) : successMessage;
+      if (message) showToast('สำเร็จ', message, 'success');
       return true;
     } catch (error) {
       showToast('ข้อผิดพลาด', error instanceof Error ? error.message : 'กรุณาลองอีกครั้ง');
