@@ -66,9 +66,9 @@ export function useTourTarget(tabKey: TourTabKey, stepId: string) {
 }
 
 /**
- * The same, for a target outside any screen -- the desktop web top bar, whose
- * bell stands in for the dashboard header bell there. It has no screen focus
- * to read, so `visible` says when it is the one on show.
+ * The same, for a target outside any screen -- the desktop web sidebar, whose
+ * การแจ้งเตือน row stands in for the dashboard header bell there. It has no
+ * screen focus to read, so `visible` says when it is the one on show.
  */
 export function useShellTourTarget(tabKey: TourTabKey, stepId: string, visible: boolean) {
   return useTourTargetWhen(tabKey, stepId, visible);

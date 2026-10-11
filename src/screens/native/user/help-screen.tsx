@@ -349,7 +349,7 @@ export default function HelpScreen({onNavigate}: {onNavigate: UserNavigate}) {
       </Touchable>
       <View style={{flex: 1}}>
         <Text style={styles.title}>คู่มือการใช้งาน</Text>
-        {desktop ? <Text style={styles.desktopNote}>บนคอมพิวเตอร์ เมนูที่รูปด้านล่างแสดงเป็นแถบด้านล่างจะอยู่ในแถบด้านซ้ายแทน และปุ่ม + อยู่ที่ “เพิ่ม” มุมขวาบน รูปตัวอย่างเป็นหน้าจอโทรศัพท์</Text> : null}
+        {desktop ? <Text style={styles.desktopNote}>บนคอมพิวเตอร์ เมนูที่รูปด้านล่างแสดงเป็นแถบด้านล่างจะอยู่ในแถบด้านซ้ายแทน ปุ่ม + คือ “เพิ่ม” และกระดิ่งคือ “การแจ้งเตือน” ในแถบเดียวกัน รูปตัวอย่างเป็นหน้าจอโทรศัพท์</Text> : null}
         <Text style={styles.subtitle}>แตะหัวข้อเพื่อดูวิธีใช้แบบละเอียด พร้อมรูปตัวอย่างว่าต้องกดตรงไหน</Text>
       </View>
     </View>

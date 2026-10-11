@@ -349,8 +349,8 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
               bell is -- always on screen, nothing to scroll past -- without
               claiming the screen's most prominent slot for a twice-a-day habit. */}
           <SoftPress onPress={() => setSleepSheetOpen(true)} style={styles.sleepButton}><MaterialIcon color={colors.night} name="bedtime" size={22} /></SoftPress>
-          {/* On the desktop web layout the top bar already has the bell (and carries
-              this tour step), so the header keeps only the moon. Phones unchanged. */}
+          {/* On the desktop web layout the sidebar's การแจ้งเตือน row is the bell (and
+              carries this tour step), so the header keeps only the moon. Phones unchanged. */}
           {desktop ? null : <SoftPress onLayout={bellOnLayout} onPress={() => onNavigate('smartlife_notifications')} ref={bellRef} style={styles.bell}><MaterialIcon name="notifications" size={24} />{unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{unread > 9 ? '9+' : unread}</Text></View> : null}</SoftPress>}
         </View>
       </View>

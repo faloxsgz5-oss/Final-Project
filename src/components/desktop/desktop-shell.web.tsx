@@ -1,4 +1,4 @@
-import {usePathname, useRouter, type Href} from 'expo-router';
+import {useGlobalSearchParams, usePathname, useRouter, type Href} from 'expo-router';
 import {useCallback, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {StyleSheet, View} from 'react-native';
 
@@ -6,6 +6,7 @@ import {AddItemSheet} from '@/components/add-item-sheet';
 import {useDesktopWebLayout} from '@/hooks/use-is-desktop-web';
 import {useNotificationBadge} from '@/hooks/use-notification-badge';
 import {navKeyForPage} from '@/lib/desktop-web';
+import {shellPage} from '@/lib/planner-tabs';
 import {useAuth} from '@/providers/auth-provider';
 import type {FeedItem} from '@/services/notification-feed';
 import {loadNotificationFeed} from '@/services/notification-feed-loader';
@@ -30,7 +31,7 @@ function writeCollapsed(value: boolean) {
 const FEED_REFRESH_MS = 30_000;
 
 /**
- * The desktop web layout: a persistent sidebar and a slim top bar around the
+ * The desktop web layout: a persistent sidebar and a title bar around the
  * same screens the phone layout shows. It takes over only on a desktop-sized
  * web window (see `useIsDesktopWeb`), only for the signed-in user section --
  * sign-in pages and the admin portal keep their own layouts -- and otherwise
@@ -51,7 +52,7 @@ export function DesktopShell({children}: {children: ReactNode}) {
 
 function ShellFrame({children, compact, page, uid}: {children: ReactNode; compact: boolean; page: string; uid: string}) {
   const router = useRouter();
-  const {user} = useAuth();
+  const {tab} = useGlobalSearchParams<{tab?: string}>();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [addOpen, setAddOpen] = useState(false);
   const [jumpOpen, setJumpOpen] = useState(false);
@@ -85,8 +86,10 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
     return () => window.removeEventListener('keydown', onKey);
   }, [compact, toggleCollapsed]);
 
-  const activeKey = useMemo(() => navKeyForPage(page), [page]);
-  const name = user?.displayName || user?.email?.split('@')[0] || 'SmartLife';
+  // On the planner the open tab decides both the highlight and the title:
+  // ตาราง and Adaptive are แพลนเนอร์, โน้ต is โน้ต (see `@/lib/planner-tabs`).
+  const shown = shellPage(page, tab) ?? 'index';
+  const activeKey = useMemo(() => navKeyForPage(shown), [shown]);
 
   return (
     <View style={styles.frame}>
@@ -97,14 +100,14 @@ function ShellFrame({children, compact, page, uid}: {children: ReactNode; compac
         // collapse preference applies from 1100px up.
         canToggle={!compact}
         collapsed={compact || collapsed}
-        name={name}
         onAdd={() => setAddOpen(true)}
+        onDashboard={page === 'index'}
         onNavigate={navigate}
         onSearch={() => setJumpOpen(true)}
         onToggleCollapsed={toggleCollapsed}
       />
       <View style={styles.main}>
-        <DesktopTopBar badge={badge} name={name} onAdd={() => setAddOpen(true)} onNavigate={navigate} page={page} />
+        <DesktopTopBar page={shown} />
         <View style={styles.content}>{children}</View>
       </View>
       <AddItemSheet onClose={() => setAddOpen(false)} onNavigate={navigate} visible={addOpen} />
