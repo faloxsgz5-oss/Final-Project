@@ -142,7 +142,8 @@
     "deploy:functions": "node ./scripts/deploy-guard.cjs functions",
     "test:deploy-guard": "node ./scripts/test-deploy-guard.cjs",
     "deploy:storage-rules": "node ./scripts/deploy-guard.cjs storage-rules",
-    "deploy:scan-functions": "node ./scripts/deploy-guard.cjs scan-functions"
+    "deploy:scan-functions": "node ./scripts/deploy-guard.cjs scan-functions",
+    "deploy:audit-fix-functions": "node ./scripts/deploy-guard.cjs audit-fix-functions"
   },
   "private": true
 }

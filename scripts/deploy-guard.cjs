@@ -71,6 +71,14 @@ const TARGETS = {
     steps: ['npm --prefix functions run build', `${FIREBASE} deploy --only functions:analyzeScan,functions:saveReviewedReceipt --project ${PROJECT}`],
     watch: ['functions/src'],
   },
+  // Only the five callables the audit fixes touch (FN-001, ADMIN-002, SEC-001);
+  // adminPasswordReset is new. Deploying every function would also replace
+  // ones redeployed since from other trees.
+  'audit-fix-functions': {
+    description: 'Cloud Functions analyzeScan, adminPasswordReset (new), adminCreatePasswordResetLink, enqueueLinePendingReview, confirmLineTransaction only, rebuilt from this commit',
+    steps: ['npm --prefix functions run build', `${FIREBASE} deploy --only functions:analyzeScan,functions:adminPasswordReset,functions:adminCreatePasswordResetLink,functions:enqueueLinePendingReview,functions:confirmLineTransaction --project ${PROJECT}`],
+    watch: ['functions/src'],
+  },
   functions: {
     description: 'ALL Cloud Functions, rebuilt from this commit',
     steps: ['npm --prefix functions run build', `${FIREBASE} deploy --only functions --project ${PROJECT}`],
@@ -246,7 +254,7 @@ function hook() {
   if (confirmed && confirmed === head) return 0;
   console.error('\nREFUSED by scripts/deploy-guard.cjs: this deploy did not go through the guard' +
     (confirmed ? ` (it confirmed ${confirmed.slice(0, 7)}, but HEAD is now ${head.slice(0, 7)})` : '') + '.');
-  console.error('Deploy with one of: npm run deploy:web | deploy:firestore-rules | deploy:storage-rules | deploy:scan-functions | deploy:functions | deploy:adaptive-backend | preview:web');
+  console.error('Deploy with one of: npm run deploy:web | deploy:firestore-rules | deploy:storage-rules | deploy:scan-functions | deploy:audit-fix-functions | deploy:functions | deploy:adaptive-backend | preview:web');
   return 1;
 }
 
