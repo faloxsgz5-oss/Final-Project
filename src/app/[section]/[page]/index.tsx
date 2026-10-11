@@ -270,7 +270,7 @@ function PageTitle() {
   const params = useLocalSearchParams<{ page: string; section: string }>();
   // Static export collapses a trailing `index` segment (/user/index is written
   // as /user), so the page comes through empty there; it is still the index.
-  return <Head><title>{pageTitle(String(params.section ?? '').toLowerCase(), String(params.page ?? '') || 'index')}</title><link href="/favicon.ico" rel="icon" /></Head>;
+  return <Head><title>{pageTitle(String(params.section ?? '').toLowerCase(), String(params.page ?? '') || 'index')}</title><link href="/icon-favicon.ico" rel="icon" /></Head>;
 }
 
 // The web build has no native stack transition, so a screen would otherwise cut in

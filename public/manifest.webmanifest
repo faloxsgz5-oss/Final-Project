@@ -1,0 +1,16 @@
+{
+  "name": "SmartLife & Budget Balance",
+  "short_name": "SmartLife",
+  "description": "จัดการชีวิตและการเงินในที่เดียว: ตารางเรียน งาน โน้ต และงบประมาณ พร้อมผู้ช่วย AI",
+  "lang": "th",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#688a65",
+  "background_color": "#e9ebe2",
+  "icons": [
+    {"src": "/icon-pwa-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/icon-pwa-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+    {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
