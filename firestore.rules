@@ -72,7 +72,10 @@ service cloud.firestore {
         ])
         && data.uid == userId
         && data.uid is string
-        && data.email == request.auth.token.email
+        // A token with an email must match it exactly. A Facebook account
+        // without an email has no `email` claim at all; it stores ''.
+        && (('email' in request.auth.token && data.email == request.auth.token.email)
+          || (!('email' in request.auth.token) && data.email == ''))
         && data.email is string
         && data.email.size() <= 254
         && data.displayName is string

@@ -136,6 +136,7 @@
     "screenshots:verify": "node ./scripts/screenshots/capture.mjs",
     "screenshots:production": "node ./scripts/screenshots/capture-production.mjs",
     "test:firestore-activity-delete-rules": "npm run emulator:clear && npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-activity-delete.rules.test.cjs\"",
+    "test:firestore-user-profile-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-user-profile.rules.test.cjs\"",
     "test:firestore-server-only-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-server-only-paths.rules.test.cjs\"",
     "test:timezone-sweep": "node --experimental-transform-types --import ./scripts/register-timezone-sweep.mjs ./scripts/test-timezone-sweep.mjs",
     "test:scan-classification": "node --experimental-strip-types ./scripts/test-scan-classification.mjs",
