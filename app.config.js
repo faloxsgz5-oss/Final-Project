@@ -14,8 +14,16 @@ module.exports = () => {
     delete config.android.googleServicesFile;
   }
   // The Facebook SDK library is autolinked into every Android build, and its
-  // own manifest may request the advertising ID; the app never uses it.
-  config.android.blockedPermissions = [...(config.android.blockedPermissions ?? []), 'com.google.android.gms.permission.AD_ID'];
+  // own manifest requests the advertising ID and the Privacy Sandbox ad
+  // permissions; the app shows no ads and uses none of them.
+  config.android.blockedPermissions = [
+    ...(config.android.blockedPermissions ?? []),
+    'com.google.android.gms.permission.AD_ID',
+    'android.permission.ACCESS_ADSERVICES_AD_ID',
+    'android.permission.ACCESS_ADSERVICES_ATTRIBUTION',
+    'android.permission.ACCESS_ADSERVICES_CUSTOM_AUDIENCE',
+    'android.permission.ACCESS_ADSERVICES_TOPICS',
+  ];
   // Facebook Login uses the native SDK on Android. Its config plugin is added
   // only when both public values are present, so a build without them has no
   // Facebook configuration and the button keeps its "not configured" message.
