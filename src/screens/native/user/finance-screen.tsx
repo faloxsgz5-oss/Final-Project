@@ -31,9 +31,10 @@ type Period = 'day' | 'week' | 'month';
 const C = {accent: '#626fa8', accentSoft: '#eceef8', ink: '#29351f', mist: '#f4f6f1', muted: '#89928a', red: '#db6762', redSoft: '#fde9e1', sage: '#618661', sageSoft: '#e2eddf'};
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
 const periods: {label: string; page: 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month'}[] = [{label: 'วัน', page: 'smartlife_finance_day'}, {label: 'สัปดาห์', page: 'smartlife_finance_week'}, {label: 'เดือน', page: 'smartlife_finance_month'}];
-// Keep every finance receipt shortcut on the shared Smart Scan landing page.
-// The scanner classifies the selected document after the user uploads it.
-const SMART_SCAN_PAGE = 'smartlife_scan_finance';
+// Every finance scan shortcut opens the one Smart Scan page, preset to read
+// slips and receipts -- in batches of up to ten, as the old receipt-only page
+// did. The user can still switch the type there or on the result.
+const SMART_SCAN_PAGE = 'smartlife_scan_schedule?type=receipt';
 
 function list(value: unknown) { return Array.isArray(value) ? value.filter((item): item is Item => Boolean(item) && typeof item === 'object') : []; }
 function str(item: Item, key: string, fallback = '-') { const value = item[key]; return typeof value === 'string' && value.trim() ? value : fallback; }
@@ -56,7 +57,7 @@ export function financeHeaderAction(filter: Filter) {
     ? {icon: 'add', label: 'เพิ่มรายรับ', page: 'smartlife_add_income'}
     : filter === 'expense'
       ? {icon: 'add', label: 'เพิ่มรายจ่าย', page: 'smartlife_add_expense'}
-      : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
+      : {icon: 'receipt_long', label: 'สแกนเอกสาร', page: SMART_SCAN_PAGE};
 }
 export const QUICK_ADD_LABELS = {expense: 'รายจ่าย', income: 'รายรับ'} as const;
 function budgetCardSubtitle(period: Period, budget: {amount: number; rolledOver: boolean} | null) {
