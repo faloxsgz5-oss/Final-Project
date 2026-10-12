@@ -7,6 +7,7 @@ import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 
 import type {LegacyAuthRequest, LegacyAuthResult} from '@/components/legacy/legacy-page-dom';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
+import {facebookLoginEnabled} from '@/lib/feature-flags';
 import {displayNameProblem} from '@/services/auth';
 
 // Served from public/ by Hosting, so the page works without signing in.
@@ -113,7 +114,7 @@ export default function AuthPortal({mode, onFacebook, onGoogle, onSubmit, onSwit
         <View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>{registering ? 'หรือสมัครผ่าน' : 'หรือเข้าสู่ระบบด้วย'}</Text><View style={styles.dividerLine} /></View>
         <View style={styles.socials}>
           <Touchable accessibilityLabel="เข้าสู่ระบบด้วย Google" accessibilityRole="button" disabled={busy} onPress={googleLogin} style={({pressed}) => [styles.google, pressed && !busy && styles.pressed, busy && styles.disabled]}>{socialBusy === 'google' ? <ActivityIndicator color="#4285f4" size="small" /> : <Text style={styles.googleMark}>G</Text>}<Text style={styles.googleText}>{socialBusy === 'google' ? 'กำลังเชื่อมต่อ...' : 'Google'}</Text></Touchable>
-          <Touchable accessibilityLabel="เข้าสู่ระบบด้วย Facebook" accessibilityRole="button" disabled={busy} onPress={facebookLogin} style={({pressed}) => [styles.facebook, pressed && !busy && styles.pressed, busy && styles.disabled]}>{socialBusy === 'facebook' ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.facebookMark}>f</Text>}<Text style={styles.facebookText}>{socialBusy === 'facebook' ? 'กำลังเชื่อมต่อ...' : 'Facebook'}</Text></Touchable>
+          {facebookLoginEnabled ? <Touchable accessibilityLabel="เข้าสู่ระบบด้วย Facebook" accessibilityRole="button" disabled={busy} onPress={facebookLogin} style={({pressed}) => [styles.facebook, pressed && !busy && styles.pressed, busy && styles.disabled]}>{socialBusy === 'facebook' ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.facebookMark}>f</Text>}<Text style={styles.facebookText}>{socialBusy === 'facebook' ? 'กำลังเชื่อมต่อ...' : 'Facebook'}</Text></Touchable> : null}
         </View>
 
         <Touchable onPress={() => onSwitch(registering ? 'login' : 'register')} style={styles.switch}><Text style={styles.switchMuted}>{registering ? 'มีบัญชีอยู่แล้วใช่ไหม? ' : 'ยังไม่มีบัญชีใช่ไหม? '}<Text style={styles.switchLink}>{registering ? 'เข้าสู่ระบบ' : 'ลงทะเบียนเลย'}</Text></Text></Touchable>
