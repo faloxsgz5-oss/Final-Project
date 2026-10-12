@@ -5,10 +5,14 @@ import {BrandLogo} from '@/components/brand-logo';
 import {Touchable} from '@/components/touchable';
 import {LinearGradient} from 'expo-linear-gradient';
 
+import {DesktopSidebar, type SidebarSection} from '@/components/desktop/desktop-sidebar';
+import {DESKTOP_C} from '@/components/desktop/desktop-theme';
+import {DesktopTopBar} from '@/components/desktop/desktop-top-bar';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {useDesktopWebLayout} from '@/hooks/use-is-desktop-web';
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
-import {MaterialIcon} from '@/screens/native/user/user-ui';
-import {C, F, LoadingBlock, type Data} from './admin-ui';
+import {MaterialIcon, UserGradientBackdrop} from '@/screens/native/user/user-ui';
+import {AdminPageIntro, C, F, LoadingBlock, type Data} from './admin-ui';
 import AdminAiKnowledgeView from './views/ai-knowledge-view';
 import AdminAnnouncementsView from './views/announcements-view';
 import AdminCalendarView from './views/calendar-view';
@@ -66,9 +70,23 @@ const MORE_PAGES = [
   'admin_announcements', 'admin_feedback', 'admin_ai_knowledge', 'admin_system_health',
 ];
 
+/**
+ * The desktop sidebar's groups: the bottom bar's four destinations under เมนู,
+ * then every tool the เมนูผู้ดูแล page lists, named and iconed as in pageInfo.
+ */
+const ADMIN_SECTIONS: SidebarSection[] = [
+  {items: TABS.filter(([, label]) => label).map(([icon, label, target]) => ({icon, key: target, label, page: target})), title: 'เมนู'},
+  {items: MORE_PAGES.filter((target) => target !== 'admin_more').map((target) => ({icon: pageInfo[target][2], key: target, label: pageInfo[target][0], page: target})), title: 'เครื่องมือผู้ดูแลระบบ'},
+];
+
+/**
+ * The phone tab bar, drawn like the User app's: the same surface, label
+ * colours, active indicator and raised centre button, with the admin
+ * portal's own five destinations.
+ */
 function AdminTabs({active, onNavigate}: {active: string; onNavigate: (page: string) => void}) {
   return (
-    <LinearGradient colors={['rgba(255,255,255,.99)', '#f6f8f3']} style={styles.tabs}>
+    <LinearGradient colors={['rgba(255,255,255,.99)', '#f7f9f4']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={styles.tabs}>
       {TABS.map(([icon, label, target], index) => {
         const selected = active === target || (target === 'admin_more' && MORE_PAGES.includes(active));
         return (
@@ -76,16 +94,17 @@ function AdminTabs({active, onNavigate}: {active: string; onNavigate: (page: str
             accessibilityLabel={label || 'เมนูผู้ดูแล'}
             key={target}
             onPress={() => onNavigate(target)}
-            style={({pressed}) => [styles.tab, pressed && styles.pressed]}
+            style={({pressed}) => [styles.tab, pressed && styles.tabPressed]}
           >
             {index === 2 ? (
-              <LinearGradient colors={selected ? ['#60875d', '#31572d'] : ['#789a75', '#4d7049']} style={styles.centerTab}>
+              <LinearGradient colors={['#71936e', '#3f633a']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.centerTab}>
                 <MaterialIcon color="#fff" name="apps" size={28} />
               </LinearGradient>
             ) : (
               <>
-                <MaterialIcon color={selected ? C.pine2 : '#9ea69b'} name={icon} size={20} />
-                <Text style={[styles.tabText, selected && styles.tabTextActive]}>{label}</Text>
+                <MaterialIcon color={selected ? '#4f754b' : '#9aa39a'} name={icon} size={22} />
+                <Text numberOfLines={1} style={[styles.tabText, selected && styles.tabTextActive]}>{label}</Text>
+                <View style={[styles.tabIndicator, !selected && styles.tabIndicatorHidden]} />
               </>
             )}
           </Touchable>
@@ -165,6 +184,9 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
     }
   }, [key, load, uid]);
 
+  const layout = useDesktopWebLayout();
+  const [collapsed, setCollapsed] = useState(false);
+
   const viewProps: AdminViewProps = {actionLoading, data, onAction: handleAction, onNavigate, reload: load};
 
   const body = useMemo(() => {
@@ -183,10 +205,88 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actionLoading, data, handleAction, load, logout, onNavigate, page]);
 
+  const pageBody = (
+    <>
+      <AdminPageIntro icon={info[2]} subtitle={info[1]} title={info[0]} />
+      {loading ? <LoadingBlock /> : body}
+    </>
+  );
+  const refreshControl = perUser ? undefined : <RefreshControl onRefresh={refresh} refreshing={refreshing} tintColor={C.sage} />;
+
+  const logoutModal = (
+    <Modal animationType="fade" onRequestClose={() => { if (!loggingOut) setLogoutOpen(false); }} transparent visible={logoutOpen}>
+      <View style={styles.modalBackdrop}>
+        <Pressable disabled={loggingOut} onPress={() => setLogoutOpen(false)} style={StyleSheet.absoluteFill} />
+        <View accessibilityViewIsModal style={styles.logoutDialog}>
+          <View style={styles.logoutDialogIcon}><MaterialIcon color={C.red} name="logout" size={25} /></View>
+          <Text style={styles.logoutDialogTitle}>ออกจากระบบ Admin?</Text>
+          <Text style={styles.logoutDialogMessage}>ต้องการกลับไปหน้าเข้าสู่ระบบใช่ไหม?</Text>
+          {logoutError ? (
+            <View style={styles.logoutErrorBox}>
+              <MaterialIcon color={C.red} name="error" size={17} />
+              <Text style={styles.logoutErrorText}>{logoutError}</Text>
+            </View>
+          ) : null}
+          <View style={styles.logoutActions}>
+            <Touchable
+              disabled={loggingOut}
+              onPress={() => setLogoutOpen(false)}
+              style={({pressed}) => [styles.cancelLogout, pressed && styles.pressed, loggingOut && styles.disabled]}
+            >
+              <Text style={styles.cancelLogoutText}>ยกเลิก</Text>
+            </Touchable>
+            <Touchable
+              disabled={loggingOut}
+              onPress={confirmLogout}
+              style={({pressed}) => [styles.confirmLogout, pressed && styles.pressed, loggingOut && styles.disabled]}
+            >
+              {loggingOut ? (
+                <><ActivityIndicator color="#fff" size="small" /><Text style={styles.confirmLogoutText}>กำลังออก...</Text></>
+              ) : (
+                <><MaterialIcon color="#fff" name="logout" size={17} /><Text style={styles.confirmLogoutText}>ออกจากระบบ</Text></>
+              )}
+            </Touchable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  // Desktop web: the User app's sidebar and title bar around the same views.
+  // A compact window (900-1099px) gets the icon rail, as in the User shell.
+  if (layout !== 'none') {
+    const compact = layout === 'compact';
+    return (
+      <View style={styles.desktopFrame}>
+        <DesktopSidebar
+          account={{items: [{danger: true, icon: 'logout', key: 'logout', label: 'ออกจากระบบ', onPress: logout}], title: 'บัญชี'}}
+          activeKey={page}
+          badge={0}
+          brandLabel="กลับหน้าภาพรวม"
+          brandPage="admin_dashboard"
+          canToggle={!compact}
+          collapsed={compact || collapsed}
+          onDashboard={false}
+          onNavigate={onNavigate}
+          onToggleCollapsed={() => setCollapsed((current) => !current)}
+          sections={ADMIN_SECTIONS}
+          shortcuts={false}
+        />
+        <View style={styles.desktopMain}>
+          <DesktopTopBar page={page} title={info[0]} />
+          <ScrollView contentContainerStyle={styles.desktopContent} refreshControl={refreshControl}>
+            <View style={styles.desktopColumn}>{pageBody}</View>
+          </ScrollView>
+        </View>
+        {logoutModal}
+      </View>
+    );
+  }
+
   return (
     <ResponsiveSafeArea style={styles.safe}>
       <View style={styles.shell}>
-        <LinearGradient colors={['#f7f9f4', '#eef3e9', '#e5ebdf']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
+        <UserGradientBackdrop />
 
         <LinearGradient colors={['rgba(255,255,255,.98)', 'rgba(240,245,236,.94)']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.headerLight}>
           {page === 'admin_dashboard' ? (
@@ -214,59 +314,13 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
           </Touchable>
         </LinearGradient>
 
-        <ScrollView
-          contentContainerStyle={styles.content}
-          refreshControl={perUser ? undefined : <RefreshControl onRefresh={refresh} refreshing={refreshing} tintColor={C.sage} />}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.pageHead}>
-            <View style={styles.pageIcon}><MaterialIcon color={C.sage} name={info[2]} size={22} /></View>
-            <View style={{flex: 1}}>
-              <Text style={styles.title}>{info[0]}</Text>
-              <Text style={styles.subtitle}>{info[1]}</Text>
-            </View>
-          </View>
-          {loading ? <LoadingBlock /> : body}
+        <ScrollView contentContainerStyle={styles.content} refreshControl={refreshControl} showsVerticalScrollIndicator={false}>
+          {pageBody}
         </ScrollView>
 
         <AdminTabs active={page} onNavigate={onNavigate} />
 
-        <Modal animationType="fade" onRequestClose={() => { if (!loggingOut) setLogoutOpen(false); }} transparent visible={logoutOpen}>
-          <View style={styles.modalBackdrop}>
-            <Pressable disabled={loggingOut} onPress={() => setLogoutOpen(false)} style={StyleSheet.absoluteFill} />
-            <View accessibilityViewIsModal style={styles.logoutDialog}>
-              <View style={styles.logoutDialogIcon}><MaterialIcon color={C.red} name="logout" size={25} /></View>
-              <Text style={styles.logoutDialogTitle}>ออกจากระบบ Admin?</Text>
-              <Text style={styles.logoutDialogMessage}>ต้องการกลับไปหน้าเข้าสู่ระบบใช่ไหม?</Text>
-              {logoutError ? (
-                <View style={styles.logoutErrorBox}>
-                  <MaterialIcon color={C.red} name="error" size={17} />
-                  <Text style={styles.logoutErrorText}>{logoutError}</Text>
-                </View>
-              ) : null}
-              <View style={styles.logoutActions}>
-                <Touchable
-                  disabled={loggingOut}
-                  onPress={() => setLogoutOpen(false)}
-                  style={({pressed}) => [styles.cancelLogout, pressed && styles.pressed, loggingOut && styles.disabled]}
-                >
-                  <Text style={styles.cancelLogoutText}>ยกเลิก</Text>
-                </Touchable>
-                <Touchable
-                  disabled={loggingOut}
-                  onPress={confirmLogout}
-                  style={({pressed}) => [styles.confirmLogout, pressed && styles.pressed, loggingOut && styles.disabled]}
-                >
-                  {loggingOut ? (
-                    <><ActivityIndicator color="#fff" size="small" /><Text style={styles.confirmLogoutText}>กำลังออก...</Text></>
-                  ) : (
-                    <><MaterialIcon color="#fff" name="logout" size={17} /><Text style={styles.confirmLogoutText}>ออกจากระบบ</Text></>
-                  )}
-                </Touchable>
-              </View>
-            </View>
-          </View>
-        </Modal>
+        {logoutModal}
       </View>
     </ResponsiveSafeArea>
   );
@@ -278,10 +332,15 @@ const styles = StyleSheet.create({
   adminTitle: {color: C.pine, fontFamily: F.x, fontSize: 18, lineHeight: 22, marginTop: 1},
   cancelLogout: {alignItems: 'center', backgroundColor: '#eff3eb', borderRadius: 13, flex: 1, justifyContent: 'center', minHeight: 46},
   cancelLogoutText: {color: C.pine, fontFamily: F.b, fontSize: 12},
-  centerTab: {...shadow, alignItems: 'center', borderColor: '#fff', borderRadius: 32, borderWidth: 5, height: 64, justifyContent: 'center', marginTop: -27, width: 64},
+  // The User tab bar's raised centre button.
+  centerTab: {alignItems: 'center', borderColor: '#fff', borderRadius: 31, borderWidth: 5, boxShadow: '0 8px 13px rgba(35, 48, 30, 0.28)', height: 62, justifyContent: 'center', marginTop: -27, width: 62},
   confirmLogout: {alignItems: 'center', backgroundColor: C.red, borderRadius: 13, flex: 1.25, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 46},
   confirmLogoutText: {color: '#fff', fontFamily: F.b, fontSize: 12},
   content: {padding: 19, paddingBottom: 27},
+  desktopColumn: {alignSelf: 'center', maxWidth: 1180, width: '100%'},
+  desktopContent: {padding: 28, paddingBottom: 40},
+  desktopFrame: {backgroundColor: DESKTOP_C.page, flex: 1, flexDirection: 'row'},
+  desktopMain: {flex: 1, minWidth: 0},
   disabled: {opacity: 0.6},
   headerBack: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, height: 42, justifyContent: 'center', width: 42},
   headerBrand: {color: '#668d65', fontFamily: F.s, fontSize: 12},
@@ -296,15 +355,16 @@ const styles = StyleSheet.create({
   logoutErrorBox: {alignItems: 'center', backgroundColor: '#fff0ee', borderRadius: 10, flexDirection: 'row', gap: 7, marginTop: 12, padding: 9},
   logoutErrorText: {color: C.red, flex: 1, fontFamily: F.m, fontSize: 12, lineHeight: 18},
   modalBackdrop: {alignItems: 'center', backgroundColor: 'rgba(24,30,19,.48)', flex: 1, justifyContent: 'center', padding: 18},
-  pageHead: {alignItems: 'center', flexDirection: 'row', gap: 11},
-  pageIcon: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, height: 47, justifyContent: 'center', width: 47},
   pressed: {opacity: 0.78, transform: [{scale: 0.987}]},
   safe: {backgroundColor: C.pine, flex: 1},
-  shell: {backgroundColor: C.mist, flex: 1},
-  subtitle: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2},
+  // The User shell's page colour under its gradient backdrop.
+  shell: {backgroundColor: '#f0f2ec', flex: 1},
+  // Tab bar values from the User app's tab bar (user-ui).
   tab: {alignItems: 'center', flex: 1, justifyContent: 'center'},
-  tabText: {color: '#9da59a', fontFamily: F.m, fontSize: 12, marginTop: 3},
-  tabTextActive: {color: C.pine2, fontFamily: F.b},
-  tabs: {alignItems: 'center', borderTopColor: 'rgba(44,52,27,.08)', borderTopWidth: 1, flexDirection: 'row', height: 78, paddingHorizontal: 11},
-  title: {color: C.pine, fontFamily: F.x, fontSize: 22},
+  tabIndicator: {backgroundColor: '#5f835f', borderRadius: 2, height: 3, marginTop: 4, width: 18},
+  tabIndicatorHidden: {opacity: 0},
+  tabPressed: {opacity: 0.65, transform: [{translateY: -1}]},
+  tabText: {color: '#9aa39a', fontFamily: F.m, fontSize: 12, marginTop: 4, textAlign: 'center'},
+  tabTextActive: {color: '#4f754b'},
+  tabs: {alignItems: 'center', borderTopColor: '#e2e6df', borderTopWidth: 1, boxShadow: '0 -8px 18px rgba(44, 52, 27, 0.07)', flexDirection: 'row', height: 78},
 });

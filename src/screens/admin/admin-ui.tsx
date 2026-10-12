@@ -3,6 +3,7 @@ import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
 import {LinearGradient} from 'expo-linear-gradient';
 
+import {AuroraGradient} from '@/components/color-motion';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
 /**
@@ -112,6 +113,26 @@ export function toneBackground(tone: Tone) {
   if (tone === 'red') return C.redSoft;
   if (tone === 'amber') return C.amberSoft;
   return '#f5f8f2';
+}
+
+/** The User home's hero palette (its AI Assistant card), reused for each admin page's intro. */
+export const HERO_COLORS = ['#769674', '#8fa69a', '#9297bb', '#a8b7aa'] as const;
+
+/**
+ * The page's own icon, title and subtitle, set in the User app's hero card:
+ * the same drifting gradient, radius and shadow as the dashboard's top card.
+ */
+export function AdminPageIntro({icon, title, subtitle}: {icon: string; subtitle: string; title: string}) {
+  return (
+    <AuroraGradient colors={HERO_COLORS} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.intro}>
+      <View style={styles.introIcon}><MaterialIcon color="#fff" name={icon} size={24} /></View>
+      <View style={{flex: 1}}>
+        <Text style={styles.introBrand}>SmartLife Admin</Text>
+        <Text style={styles.introTitle}>{title}</Text>
+        <Text style={styles.introSubtitle}>{subtitle}</Text>
+      </View>
+    </AuroraGradient>
+  );
 }
 
 export function AdminCard({children, style}: {children: ReactNode; style?: object}) {
@@ -422,6 +443,11 @@ export const styles = StyleSheet.create({
   formToggleText: {color: C.pine, fontFamily: F.b, fontSize: 12},
   input: {backgroundColor: '#f6f8f3', borderColor: '#e1e6dd', borderRadius: 13, borderWidth: 1, color: C.pine, fontFamily: F.m, fontSize: 12, marginTop: 5, minHeight: 46, paddingHorizontal: 12, paddingVertical: 10},
   inputLabel: {color: C.pine, fontFamily: F.s, fontSize: 12, marginTop: 13},
+  intro: {...shadow, alignItems: 'center', backgroundColor: '#88a188', borderRadius: 18, flexDirection: 'row', gap: 14, overflow: 'hidden', padding: 18},
+  introBrand: {color: 'rgba(255,255,255,.82)', fontFamily: F.s, fontSize: 12},
+  introIcon: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.22)', borderRadius: 16, height: 50, justifyContent: 'center', width: 50},
+  introSubtitle: {color: 'rgba(255,255,255,.86)', fontFamily: F.r, fontSize: 13, lineHeight: 19, marginTop: 2},
+  introTitle: {color: '#fff', fontFamily: F.x, fontSize: 21, lineHeight: 27, marginTop: 1},
   insight: {...shadow, alignItems: 'center', borderRadius: 18, flexDirection: 'row', gap: 12, marginTop: 13, padding: 15},
   insightSub: {color: 'rgba(255,255,255,.76)', fontFamily: F.r, fontSize: 12, marginTop: 2},
   insightTitle: {color: '#fff', fontFamily: F.b, fontSize: 14},
