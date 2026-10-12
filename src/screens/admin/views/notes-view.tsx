@@ -1,7 +1,6 @@
 import {useCallback, useMemo, useState} from 'react';
 import {StyleSheet, Text, TextInput, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
-import {LinearGradient} from 'expo-linear-gradient';
 
 import {summarizeNotes, type AdminNoteInput} from '@/admin/analytics';
 import {adminUserNotes} from '@/services/admin-user-data';
@@ -12,6 +11,7 @@ import {
   Empty,
   ErrorBlock,
   F,
+  InsightBanner,
   LoadingBlock,
   Pill,
   SectionHead,
@@ -79,13 +79,7 @@ export default function AdminNotesView() {
 
   return (
     <>
-      <LinearGradient colors={['#9c7b4a', '#c4a374']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={ui.insight}>
-        <MaterialIcon color="#fff" name="sticky_note_2" size={29} />
-        <View style={{flex: 1}}>
-          <Text style={ui.insightTitle}>โน้ตรายผู้ใช้</Text>
-          <Text style={ui.insightSub}>สัดส่วนหมวดโน้ตและรายการโน้ตของผู้ใช้แต่ละคน</Text>
-        </View>
-      </LinearGradient>
+      <InsightBanner colors={['#9c7b4a', '#c4a374']} icon="sticky_note_2" subtitle="สัดส่วนหมวดโน้ตและรายการโน้ตของผู้ใช้แต่ละคน" title="โน้ตรายผู้ใช้" />
 
       <UserPicker subtitle="ดูโน้ตของผู้ใช้แต่ละคน พร้อมสรุปว่าเขามักเขียนโน้ตแนวไหน" />
 

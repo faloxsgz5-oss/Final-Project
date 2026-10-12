@@ -1,7 +1,6 @@
 import {useCallback, useMemo, useState} from 'react';
 import {ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
-import {LinearGradient} from 'expo-linear-gradient';
 
 import {
   RECOMMENDATION_SOURCES,
@@ -14,6 +13,7 @@ import {adminCloud, type RecommendationAudit} from '@/services/admin-cloud';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {
   AdminCard, C, Empty, F, KindBadge, Row, SectionHead, StatTile, Tag,
+  InsightBanner,
   date, dateTimeFromMillis, items, money, strings, styles as ui, text,
 } from '../admin-ui';
 import type {AdminViewProps} from './view-props';
@@ -140,13 +140,7 @@ export default function AdminAiKnowledgeView({data}: AdminViewProps) {
 
   return (
     <>
-      <LinearGradient colors={['#777da5', '#9297bb']} style={ui.insight}>
-        <MaterialIcon color="#fff" name="psychology" size={29} />
-        <View style={{flex: 1}}>
-          <Text style={ui.insightTitle}>AI Context Audit</Text>
-          <Text style={ui.insightSub}>แตะคำแนะนำแต่ละรายการเพื่อดูข้อมูลจริงที่ AI ใช้ประกอบ</Text>
-        </View>
-      </LinearGradient>
+      <InsightBanner colors={['#777da5', '#9297bb']} icon="psychology" subtitle="แตะคำแนะนำแต่ละรายการเพื่อดูข้อมูลจริงที่ AI ใช้ประกอบ" title="AI Context Audit" />
 
       {/* 1 — Summary */}
       <AdminCard>

@@ -1,10 +1,9 @@
 import type {ReactNode} from 'react';
 import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
-import {LinearGradient} from 'expo-linear-gradient';
 
 import {AuroraGradient} from '@/components/color-motion';
-import {MaterialIcon} from '@/screens/native/user/user-ui';
+import {Card, MaterialIcon, PrimaryButton} from '@/screens/native/user/user-ui';
 
 /**
  * Presentation primitives shared by every admin view.
@@ -135,12 +134,25 @@ export function AdminPageIntro({icon, title, subtitle}: {icon: string; subtitle:
   );
 }
 
-export function AdminCard({children, style}: {children: ReactNode; style?: object}) {
+/**
+ * A view's own heading (ปฏิทินรายผู้ใช้, AI Context Audit...), once a solid
+ * gradient banner, now a User card: its colour in a tinted icon chip.
+ */
+export function InsightBanner({colors, icon, subtitle, title}: {colors: readonly [string, string]; icon: string; subtitle: string; title: string}) {
   return (
-    <LinearGradient colors={['rgba(255,255,255,.99)', '#f8faf6']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={[styles.card, style]}>
-      {children}
-    </LinearGradient>
+    <Card style={styles.insight}>
+      <View style={[styles.insightIcon, {backgroundColor: `${colors[0]}1f`}]}><MaterialIcon color={colors[0]} name={icon} size={24} /></View>
+      <View style={{flex: 1}}>
+        <Text style={styles.insightTitle}>{title}</Text>
+        <Text style={styles.insightSub}>{subtitle}</Text>
+      </View>
+    </Card>
   );
+}
+
+/** The User app's card, as is: white surface, 18 radius, soft shadow. */
+export function AdminCard({children, style}: {children: ReactNode; style?: object}) {
+  return <Card style={style}>{children}</Card>;
 }
 
 export function SectionHead({title, meta, right}: {title: string; meta?: string; right?: ReactNode}) {
@@ -219,32 +231,38 @@ export function SummaryAction({icon, label, value, accent = 'green', onPress, hi
 }) {
   const purple = accent === 'purple';
   const rose = accent === 'rose';
-  const colors = purple ? ['#eef0fb', '#e7ebf8'] as const : rose ? ['#F3E8E8', '#F3E8E8'] as const : ['#eff6ed', '#e6f0e3'] as const;
   const iconColor = purple ? '#6572b1' : rose ? '#b98080' : '#5a8d5d';
-  const iconSoft = purple ? '#d8ddf1' : rose ? '#ead4d4' : '#dcebd9';
+  const iconSoft = purple ? '#eceef7' : rose ? '#f3e8e8' : '#e7efe3';
+  // A white User-style list card; the accent lives in the icon chip and the number.
   return (
     <Touchable disabled={!onPress} onPress={onPress} style={({pressed}) => pressed && styles.pressed}>
-      <LinearGradient colors={colors} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.summaryAction}>
+      <View style={styles.summaryAction}>
         <View style={[styles.summaryIcon, {backgroundColor: iconSoft}]}><MaterialIcon color={iconColor} name={icon} size={22} /></View>
         <View style={styles.summaryCopy}>
           <Text style={styles.summaryLabel}>{label}</Text>
           <Text style={[styles.summaryValue, {color: purple ? '#465382' : rose ? '#8b5d5d' : C.pine}]}>{number(value)}</Text>
           <Text style={styles.summaryHint}>{hint}</Text>
         </View>
-        <MaterialIcon color={purple ? '#465382' : rose ? '#8b5d5d' : C.pine} name="chevron_right" size={23} />
-      </LinearGradient>
+        <MaterialIcon color="#a0a99c" name="chevron_right" size={23} />
+      </View>
     </Touchable>
   );
 }
 
-/** Compact metric tile used by the Notes and Finance summaries. */
+/**
+ * Compact metric tile used by the Notes and Finance summaries, drawn like the
+ * User home's stat tiles: a white rounded tile, the number large, a tone dot.
+ */
 export function StatTile({label, value, tone = 'green', hint}: {hint?: string; label: string; tone?: Tone; value: string}) {
   return (
-    <LinearGradient colors={toneGradient(tone)} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.statTile}>
-      <Text style={styles.statLabel}>{label}</Text>
+    <View style={styles.statTile}>
+      <View style={styles.statLabelRow}>
+        <View style={[styles.statDot, {backgroundColor: toneColor(tone)}]} />
+        <Text style={styles.statLabel}>{label}</Text>
+      </View>
       <Text numberOfLines={1} style={[styles.statValue, {color: toneColor(tone)}]}>{value}</Text>
       {hint ? <Text style={styles.statHint}>{hint}</Text> : null}
-    </LinearGradient>
+    </View>
   );
 }
 
@@ -325,29 +343,27 @@ export function FeatureSection({icon, title, subtitle, accent, gradient, onOpen,
   subtitle: string;
   title: string;
 }) {
+  // A User-style card: the section's colour moves from a solid banner into the
+  // icon chip and the bars, and the open action is the User app's primary button.
+  const tint = gradient[0] ?? accent;
   return (
-    <LinearGradient colors={['rgba(255,255,255,.99)', '#f8faf6']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.feature}>
-      <LinearGradient colors={gradient} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.featureHead}>
-        <View style={styles.featureIcon}>
-          <MaterialIcon color="#fff" name={icon} size={26} />
+    <Card style={styles.feature}>
+      <View style={styles.featureHead}>
+        <View style={[styles.featureIcon, {backgroundColor: `${tint}1f`}]}>
+          <MaterialIcon color={tint} name={icon} size={24} />
         </View>
         <View style={{flex: 1}}>
           <Text style={styles.featureTitle}>{title}</Text>
           <Text style={styles.featureSubtitle}>{subtitle}</Text>
         </View>
-      </LinearGradient>
+      </View>
 
       <View style={styles.featureBody}>
         {children}
         {footnote ? <Text style={styles.featureFootnote}>{footnote}</Text> : null}
-        <Touchable onPress={onOpen} style={({pressed}) => pressed && styles.pressed}>
-          <LinearGradient colors={gradient} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={styles.featureButton}>
-            <Text style={styles.featureButtonText}>{openLabel}</Text>
-            <MaterialIcon color="#fff" name="arrow_forward" size={18} />
-          </LinearGradient>
-        </Touchable>
+        <View style={styles.featureButton}><PrimaryButton label={openLabel} onPress={onOpen} /></View>
       </View>
-    </LinearGradient>
+    </Card>
   );
 }
 
@@ -415,20 +431,19 @@ export const styles = StyleSheet.create({
   audience: {alignItems: 'center', backgroundColor: C.sageSoft, borderRadius: 12, flexDirection: 'row', gap: 7, marginTop: 12, paddingHorizontal: 11, paddingVertical: 10},
   audienceText: {color: C.pine2, fontFamily: F.s, fontSize: 12},
   chart: {gap: 4, marginTop: 12},
-  chartFill: {borderRadius: 7, height: '100%'},
-  chartLabel: {color: C.pine, fontFamily: F.m, fontSize: 12, width: 96},
-  chartRow: {alignItems: 'center', flexDirection: 'row', gap: 8, paddingVertical: 5},
-  chartTrack: {backgroundColor: '#eaeee5', borderRadius: 7, flex: 1, height: 14, overflow: 'hidden'},
-  chartValue: {color: C.pine, fontFamily: F.b, fontSize: 12, minWidth: 40, textAlign: 'right'},
-  feature: {...shadow, borderColor: 'rgba(255,255,255,.85)', borderRadius: 20, borderWidth: 1, marginTop: 16, overflow: 'hidden'},
-  featureBody: {padding: 15},
-  featureButton: {alignItems: 'center', borderRadius: 14, flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 14, minHeight: 48},
-  featureButtonText: {color: '#fff', fontFamily: F.b, fontSize: 12},
+  chartFill: {borderRadius: 99, height: '100%'},
+  chartLabel: {color: C.pine, fontFamily: F.m, fontSize: 13, width: 110},
+  chartRow: {alignItems: 'center', flexDirection: 'row', gap: 10, paddingVertical: 6},
+  chartTrack: {backgroundColor: '#e7ede4', borderRadius: 99, flex: 1, height: 10, overflow: 'hidden'},
+  chartValue: {color: C.pine, fontFamily: F.b, fontSize: 13, minWidth: 40, textAlign: 'right'},
+  feature: {marginTop: 16},
+  featureBody: {marginTop: 12},
+  featureButton: {marginTop: -3},
   featureFootnote: {color: C.muted, fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 10},
-  featureHead: {alignItems: 'center', flexDirection: 'row', gap: 12, paddingHorizontal: 15, paddingVertical: 15},
-  featureIcon: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.18)', borderRadius: 17, height: 50, justifyContent: 'center', width: 50},
-  featureSubtitle: {color: 'rgba(255,255,255,.78)', fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 2},
-  featureTitle: {color: '#fff', fontFamily: F.x, fontSize: 17},
+  featureHead: {alignItems: 'center', borderBottomColor: '#eef1ea', borderBottomWidth: 1, flexDirection: 'row', gap: 12, paddingBottom: 14},
+  featureIcon: {alignItems: 'center', borderRadius: 14, height: 46, justifyContent: 'center', width: 46},
+  featureSubtitle: {color: C.muted, fontFamily: F.r, fontSize: 13, lineHeight: 19, marginTop: 2},
+  featureTitle: {color: '#29351f', fontFamily: F.b, fontSize: 17},
   card: {...shadow, borderColor: 'rgba(255,255,255,.85)', borderRadius: 18, borderWidth: 1, marginTop: 13, padding: 14},
   colorDot: {borderRadius: 6, height: 12, width: 12},
   composer: {padding: 15},
@@ -448,9 +463,10 @@ export const styles = StyleSheet.create({
   introIcon: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.22)', borderRadius: 16, height: 50, justifyContent: 'center', width: 50},
   introSubtitle: {color: 'rgba(255,255,255,.86)', fontFamily: F.r, fontSize: 13, lineHeight: 19, marginTop: 2},
   introTitle: {color: '#fff', fontFamily: F.x, fontSize: 21, lineHeight: 27, marginTop: 1},
-  insight: {...shadow, alignItems: 'center', borderRadius: 18, flexDirection: 'row', gap: 12, marginTop: 13, padding: 15},
-  insightSub: {color: 'rgba(255,255,255,.76)', fontFamily: F.r, fontSize: 12, marginTop: 2},
-  insightTitle: {color: '#fff', fontFamily: F.b, fontSize: 14},
+  insight: {alignItems: 'center', flexDirection: 'row', gap: 12},
+  insightIcon: {alignItems: 'center', borderRadius: 14, height: 46, justifyContent: 'center', width: 46},
+  insightSub: {color: C.muted, fontFamily: F.r, fontSize: 13, lineHeight: 19, marginTop: 2},
+  insightTitle: {color: '#29351f', fontFamily: F.b, fontSize: 16},
   kindBadge: {alignItems: 'center', borderRadius: 8, height: 20, justifyContent: 'center', paddingHorizontal: 8},
   kindBadgeText: {fontFamily: F.b, fontSize: 12},
   loading: {alignItems: 'center', gap: 10, paddingVertical: 90},
@@ -472,30 +488,32 @@ export const styles = StyleSheet.create({
   publishText: {color: '#fff', fontFamily: F.b, fontSize: 12},
   refreshButton: {alignItems: 'center', backgroundColor: C.sageSoft, borderRadius: 14, flexDirection: 'row', gap: 6, justifyContent: 'center', marginTop: 12, minHeight: 40},
   refreshButtonText: {color: C.pine, fontFamily: F.b, fontSize: 12},
-  row: {alignItems: 'center', backgroundColor: '#f5f8f2', borderRadius: 13, flexDirection: 'row', gap: 10, marginTop: 9, minHeight: 64, padding: 11},
+  row: {alignItems: 'center', backgroundColor: '#f7f9f4', borderRadius: 13, flexDirection: 'row', gap: 11, marginTop: 10, minHeight: 64, padding: 12},
   rowDetail: {color: C.muted, fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 2},
   rowIcon: {alignItems: 'center', borderRadius: 13, height: 39, justifyContent: 'center', width: 39},
   rowSide: {fontFamily: F.s, fontSize: 12},
   rowTitle: {color: C.pine, fontFamily: F.s, fontSize: 12},
   sectionHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   sectionMeta: {color: C.muted, fontFamily: F.r, fontSize: 12},
-  sectionTitle: {color: C.pine, fontFamily: F.b, fontSize: 13},
+  sectionTitle: {color: '#29351f', fontFamily: F.b, fontSize: 15},
   shareBar: {borderRadius: 6, flexDirection: 'row', height: 10, marginTop: 10, overflow: 'hidden'},
   shareBarEmpty: {backgroundColor: C.mist, borderRadius: 6, height: 10, marginTop: 10},
   smallBtn: {alignItems: 'center', borderRadius: 11, flexDirection: 'row', gap: 4, height: 32, justifyContent: 'center', paddingHorizontal: 10},
   smallBtnText: {fontFamily: F.b, fontSize: 12},
+  statDot: {borderRadius: 4, height: 8, width: 8},
   statHint: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2},
-  statLabel: {color: C.muted, fontFamily: F.s, fontSize: 12},
-  statTile: {borderRadius: 14, flexGrow: 1, flexShrink: 1, minWidth: 96, padding: 11},
-  statValue: {fontFamily: F.x, fontSize: 16, marginTop: 3},
+  statLabel: {color: C.muted, fontFamily: F.m, fontSize: 12},
+  statLabelRow: {alignItems: 'center', flexDirection: 'row', gap: 6},
+  statTile: {boxShadow: '0 8px 18px rgba(44, 52, 27, 0.07)', backgroundColor: '#fff', borderColor: 'rgba(44,52,27,.05)', borderRadius: 17, borderWidth: 1, flexGrow: 1, flexShrink: 1, minWidth: 110, paddingHorizontal: 14, paddingVertical: 12},
+  statValue: {fontFamily: F.x, fontSize: 19, marginTop: 4},
   statusDegraded: {backgroundColor: C.amber},
   statusOperational: {backgroundColor: C.sage},
   statusOutage: {backgroundColor: C.red},
   statusUnknown: {backgroundColor: C.purple},
-  summaryAction: {...shadow, alignItems: 'center', borderColor: 'rgba(255,255,255,.9)', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 12, minHeight: 78, paddingHorizontal: 15, paddingVertical: 10},
+  summaryAction: {boxShadow: '0 8px 18px rgba(44, 52, 27, 0.07)', alignItems: 'center', backgroundColor: '#fff', borderColor: 'rgba(255,255,255,.8)', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 12, minHeight: 78, paddingHorizontal: 16, paddingVertical: 11},
   summaryCopy: {flex: 1},
   summaryHint: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1},
-  summaryIcon: {alignItems: 'center', borderRadius: 18, height: 42, justifyContent: 'center', width: 42},
+  summaryIcon: {alignItems: 'center', borderRadius: 14, height: 44, justifyContent: 'center', width: 44},
   summaryLabel: {color: C.pine, fontFamily: F.b, fontSize: 12},
   summaryList: {gap: 9, marginTop: 13},
   summaryValue: {fontFamily: F.x, fontSize: 21, lineHeight: 25, marginTop: 1},

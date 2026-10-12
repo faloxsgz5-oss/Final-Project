@@ -1,7 +1,6 @@
 import {useCallback, useMemo, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
-import {LinearGradient} from 'expo-linear-gradient';
 
 import {
   monthKeyFromMillis,
@@ -18,6 +17,7 @@ import {
   Empty,
   ErrorBlock,
   F,
+  InsightBanner,
   LoadingBlock,
   Pill,
   SectionHead,
@@ -108,13 +108,7 @@ export default function AdminFinanceView() {
 
   return (
     <>
-      <LinearGradient colors={['#777da5', '#9297bb']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={ui.insight}>
-        <MaterialIcon color="#fff" name="account_balance_wallet" size={29} />
-        <View style={{flex: 1}}>
-          <Text style={ui.insightTitle}>การเงินรายผู้ใช้</Text>
-          <Text style={ui.insightSub}>รายรับ รายจ่าย เงินคงเหลือ และใบเสร็จที่สแกนด้วย OCR</Text>
-        </View>
-      </LinearGradient>
+      <InsightBanner colors={['#777da5', '#9297bb']} icon="account_balance_wallet" subtitle="รายรับ รายจ่าย เงินคงเหลือ และใบเสร็จที่สแกนด้วย OCR" title="การเงินรายผู้ใช้" />
 
       <UserPicker subtitle="ติดตามรายรับ รายจ่าย และเงินคงเหลือของผู้ใช้แต่ละคน" />
 

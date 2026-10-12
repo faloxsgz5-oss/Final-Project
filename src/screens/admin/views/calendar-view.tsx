@@ -1,7 +1,6 @@
 import {useCallback, useMemo, useState} from 'react';
 import {Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Touchable} from '@/components/touchable';
-import {LinearGradient} from 'expo-linear-gradient';
 import {Calendar} from 'react-native-calendars';
 
 import {
@@ -22,6 +21,7 @@ import {
   Empty,
   ErrorBlock,
   F,
+  InsightBanner,
   LoadingBlock,
   SectionHead,
   SmallButton,
@@ -112,13 +112,7 @@ export default function AdminCalendarView() {
 
   return (
     <>
-      <LinearGradient colors={['#4d7049', '#789a75']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={ui.insight}>
-        <MaterialIcon color="#fff" name="calendar_month" size={29} />
-        <View style={{flex: 1}}>
-          <Text style={ui.insightTitle}>ปฏิทินรายผู้ใช้</Text>
-          <Text style={ui.insightSub}>กิจกรรม งาน นัดหมาย และตารางเรียนของผู้ใช้แต่ละคน</Text>
-        </View>
-      </LinearGradient>
+      <InsightBanner colors={['#4d7049', '#789a75']} icon="calendar_month" subtitle="กิจกรรม งาน นัดหมาย และตารางเรียนของผู้ใช้แต่ละคน" title="ปฏิทินรายผู้ใช้" />
 
       <UserPicker subtitle="เลือกผู้ใช้เพื่อดูปฏิทินกิจกรรมของคนนั้น เดือนที่เลือกจะคงอยู่เมื่อสลับผู้ใช้" />
 
