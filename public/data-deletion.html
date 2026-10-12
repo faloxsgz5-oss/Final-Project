@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>การลบข้อมูล · SmartLife</title>
+<meta name="description" content="วิธีขอลบบัญชีและข้อมูลของคุณใน SmartLife">
+<link rel="icon" href="/icon-favicon.ico">
+<style>
+  :root { --bg: #f4f5ef; --card: #ffffff; --ink: #22301c; --muted: #5b6652; --brand: #33402a; --sage: #688a65; --line: #dfe5d6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", Tahoma, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  header img { width: 44px; height: 44px; border-radius: 10px; }
+  h1 { color: var(--brand); font-size: 1.6rem; line-height: 1.3; margin: 0; }
+  h2 { color: var(--brand); font-size: 1.15rem; margin: 28px 0 8px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 18px 14px; margin-top: 16px; }
+  ol, ul { padding-left: 1.2em; margin: 6px 0; }
+  li { margin: 4px 0; }
+  .muted { color: var(--muted); font-size: .95rem; }
+  .placeholder { background: #fff3c4; border-radius: 6px; padding: 0 6px; font-weight: 600; }
+  a { color: var(--sage); }
+</style>
+</head>
+<body>
+<main>
+  <header><img src="/icon-pwa-192.png" alt=""><h1>การลบบัญชีและข้อมูล</h1></header>
+  <p class="muted">ตอนนี้แอป SmartLife ยังไม่มีปุ่มลบบัญชีในแอป การลบบัญชีทำได้โดยส่งอีเมลถึงทีม</p>
+
+  <section>
+    <h2>วิธีขอลบ</h2>
+    <ol>
+      <li>ส่งอีเมลถึง <span class="placeholder">[อีเมลติดต่อของทีม]</span> หัวข้อ “ขอลบบัญชี SmartLife”</li>
+      <li>บอกวิธีที่คุณใช้เข้าสู่ระบบ (อีเมลและรหัสผ่าน, Google หรือ Facebook) และอีเมลของบัญชี ถ้าบัญชี Facebook ของคุณไม่มีอีเมล ให้บอกชื่อที่แสดงในแอป</li>
+      <li>ทีมอาจถามข้อมูลเพิ่มเพื่อยืนยันว่าคุณเป็นเจ้าของบัญชี แล้วจะตอบกลับทางอีเมลเมื่อลบเสร็จ</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>สิ่งที่จะถูกลบ</h2>
+    <ul>
+      <li>บัญชีผู้ใช้ใน Firebase Authentication</li>
+      <li>โปรไฟล์และข้อมูลทั้งหมดในบัญชี: ตาราง กิจกรรม งาน โน้ต การเงิน งบรายเดือน รายการรอตรวจ ประวัติการสแกน ประวัติผู้ช่วย AI ข้อมูลการจัดตารางอัจฉริยะ การแจ้งเตือน การตั้งค่า และการเชื่อมต่อ</li>
+      <li>ไฟล์ที่คุณอัปโหลด เช่น รูปที่สแกน ไฟล์แนบ และรูปโปรไฟล์</li>
+    </ul>
+    <p class="muted">ความคิดเห็นที่คุณเคยส่งผ่านเมนูแจ้งปัญหาจะถูกลบไปพร้อมบัญชีด้วย</p>
+  </section>
+
+  <section>
+    <h2>ถ้าคุณเข้าสู่ระบบด้วย Facebook</h2>
+    <p>คุณถอนสิทธิ์ของ SmartLife ใน Facebook ได้เองที่ Facebook › การตั้งค่าและความเป็นส่วนตัว › การตั้งค่า › แอพและเว็บไซต์ › เลือก SmartLife › ลบ การถอนสิทธิ์นี้หยุดไม่ให้ SmartLife รับข้อมูลจาก Facebook อีก แต่ไม่ลบข้อมูลที่อยู่ใน SmartLife แล้ว หากต้องการลบข้อมูลนั้นด้วย ให้ส่งอีเมลตามขั้นตอนด้านบน</p>
+  </section>
+
+  <section>
+    <p>อ่านเพิ่มเติม: <a href="/privacy.html">นโยบายความเป็นส่วนตัว</a></p>
+    <p class="muted">ปรับปรุงล่าสุด: 12 ตุลาคม 2569</p>
+  </section>
+</main>
+</body>
+</html>

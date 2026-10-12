@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>นโยบายความเป็นส่วนตัว · SmartLife</title>
+<meta name="description" content="นโยบายความเป็นส่วนตัวของแอป SmartLife">
+<link rel="icon" href="/icon-favicon.ico">
+<style>
+  :root { --bg: #f4f5ef; --card: #ffffff; --ink: #22301c; --muted: #5b6652; --brand: #33402a; --sage: #688a65; --line: #dfe5d6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", Tahoma, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  header img { width: 44px; height: 44px; border-radius: 10px; }
+  h1 { color: var(--brand); font-size: 1.6rem; line-height: 1.3; margin: 0; }
+  h2 { color: var(--brand); font-size: 1.15rem; margin: 28px 0 8px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 18px 14px; margin-top: 16px; }
+  ul { padding-left: 1.2em; margin: 6px 0; }
+  li { margin: 4px 0; }
+  .muted { color: var(--muted); font-size: .95rem; }
+  .placeholder { background: #fff3c4; border-radius: 6px; padding: 0 6px; font-weight: 600; }
+  a { color: var(--sage); }
+</style>
+</head>
+<body>
+<main>
+  <header><img src="/icon-pwa-192.png" alt=""><h1>นโยบายความเป็นส่วนตัว</h1></header>
+  <p class="muted">SmartLife — แอปจัดการตารางเรียน งาน โน้ต และการเงิน พร้อมผู้ช่วย AI (เว็บ smartlife-budget.web.app และแอป Android)</p>
+
+  <section>
+    <h2>1. ข้อมูลที่เราเก็บ</h2>
+    <p>ข้อมูลของคุณเก็บไว้ใน Google Firebase (Authentication, Cloud Firestore, Cloud Storage) แยกตามบัญชีของคุณ:</p>
+    <ul>
+      <li><strong>บัญชีและโปรไฟล์</strong> — ชื่อที่แสดง อีเมล (ถ้ามี) รูปโปรไฟล์ (ถ้ามี) รหัสนักศึกษา (ถ้าคุณกรอก) และสถานะการยินยอม</li>
+      <li><strong>ตารางและกิจกรรม</strong> — ตารางเรียน งาน นัดหมาย กิจกรรม และประวัติการทำเสร็จ</li>
+      <li><strong>โน้ต</strong> — เนื้อหาโน้ตและโฟลเดอร์ที่คุณสร้าง</li>
+      <li><strong>การเงิน</strong> — รายรับรายจ่าย งบรายเดือน และรายการที่รอตรวจ</li>
+      <li><strong>การสแกน</strong> — รูปตารางเรียน ใบเสร็จ หรือเอกสารที่คุณอัปโหลด และประวัติการสแกน</li>
+      <li><strong>ผู้ช่วย AI</strong> — ประวัติบทสนทนา คำแนะนำที่ระบบสร้าง และข้อมูลการใช้งานผู้ช่วย</li>
+      <li><strong>การจัดตารางอัจฉริยะ</strong> — การตั้งค่า พฤติกรรมการทำกิจกรรม รูปแบบที่ระบบเรียนรู้ คำแนะนำ และประวัติการเปลี่ยนตาราง</li>
+      <li><strong>การแจ้งเตือน</strong> — รายการแจ้งเตือนในแอป และรหัสอุปกรณ์สำหรับส่งแจ้งเตือน (push token)</li>
+      <li><strong>การตั้งค่าและการเชื่อมต่อ</strong> — การตั้งค่าแอป (เช่น เวลานอน) และสถานะการเชื่อม Google Calendar (ถ้าคุณเชื่อม)</li>
+      <li><strong>ความคิดเห็น</strong> — ข้อความที่คุณส่งผ่านเมนูแจ้งปัญหา</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>2. การเข้าสู่ระบบ</h2>
+    <ul>
+      <li><strong>อีเมลและรหัสผ่าน</strong> — จัดการโดย Firebase Authentication แอปไม่เก็บรหัสผ่านของคุณเอง</li>
+      <li><strong>Google</strong> — เรารับชื่อ อีเมล และรูปโปรไฟล์จากบัญชี Google ของคุณ</li>
+      <li><strong>Facebook</strong> — เรารับชื่อ อีเมล (เฉพาะเมื่อบัญชี Facebook ของคุณมีอีเมลและคุณอนุญาต) รูปโปรไฟล์ และรหัสผู้ใช้ Facebook ของแอปนี้ ข้อมูลนี้ใช้สร้างและยืนยันบัญชี SmartLife เท่านั้น เราไม่โพสต์อะไรลง Facebook และไม่อ่านรายชื่อเพื่อนของคุณ</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. ข้อมูลที่ส่งไปประมวลผลกับบริการภายนอก</h2>
+    <p>การประมวลผลเหล่านี้ทำผ่าน Cloud Functions ของ SmartLife บนเซิร์ฟเวอร์ ไม่ได้ส่งจากเครื่องของคุณไปยังผู้ให้บริการโดยตรง:</p>
+    <ul>
+      <li><strong>การสแกน (OCR)</strong> — รูปตารางเรียน ใบเสร็จ หรือเอกสารที่คุณสแกน ถูกส่งไปอ่านข้อความด้วย Google Cloud Vision, iApp (บริการ OCR ภาษาไทย) และ Google Gemini</li>
+      <li><strong>ผู้ช่วย AI</strong> — ข้อความที่คุณพิมพ์ ไฟล์ที่คุณแนบ และข้อความเสียงที่ส่งให้ถอดความ รวมถึงข้อมูลในแอปที่เกี่ยวข้องกับคำถามของคุณ (เช่น ตาราง งาน หรือการเงิน) ถูกส่งไปยัง Google Gemini เพื่อสร้างคำตอบ</li>
+      <li><strong>การจัดตารางอัจฉริยะ</strong> — ตารางและกิจกรรมของคุณอาจถูกส่งไปยัง Google Gemini เมื่อคุณสั่งด้วยภาษาธรรมชาติหรือให้ระบบจัดตารางใหม่</li>
+      <li><strong>Google Calendar</strong> — เฉพาะเมื่อคุณกดเชื่อมต่อเอง แอปจะอ่านและเขียนกิจกรรมในปฏิทินของคุณ</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. การนำเข้ารายการจาก LINE และแอปธนาคาร (Android)</h2>
+    <p>ฟีเจอร์นี้ทำงานเฉพาะบน Android และปิดอยู่จนกว่าคุณจะยินยอมและอนุญาตให้แอปอ่านการแจ้งเตือนเอง เมื่อเปิดใช้ ข้อความแจ้งเตือนที่เกี่ยวกับยอดเงินจะถูกส่งไปที่ Cloud Functions ของ SmartLife เพื่อแยกเป็นรายการรอตรวจ คุณต้องยืนยันก่อนรายการจะถูกบันทึกเป็นรายรับรายจ่าย รายการรอตรวจเก็บข้อความต้นฉบับไว้ไม่เกิน 7 วัน รายการที่คุณยืนยันแล้วไม่เก็บข้อความต้นฉบับ คุณปิดฟีเจอร์นี้ได้ทุกเมื่อในหน้าตั้งค่า</p>
+  </section>
+
+  <section>
+    <h2>5. ระยะเวลาเก็บข้อมูล</h2>
+    <ul>
+      <li>ข้อมูลในบัญชีเก็บไว้ตราบที่บัญชีของคุณยังอยู่ หรือจนกว่าคุณจะลบรายการนั้นในแอป</li>
+      <li>รายการรอตรวจจาก LINE/ธนาคาร หมดอายุภายใน 7 วัน</li>
+      <li>เมื่อคุณขอลบบัญชี เราจะลบข้อมูลตามหน้า <a href="/data-deletion.html">การลบข้อมูล</a></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>6. สิทธิของคุณ</h2>
+    <ul>
+      <li>ดูและแก้ไขข้อมูลส่วนใหญ่ได้เองในแอป (โปรไฟล์ ตาราง โน้ต การเงิน)</li>
+      <li>ยกเลิกการเชื่อม Google Calendar และปิดการนำเข้าจาก LINE/ธนาคารได้ทุกเมื่อ</li>
+      <li>ขอสำเนาข้อมูลหรือขอลบบัญชีและข้อมูลทั้งหมด โดยติดต่อทีมตามด้านล่าง</li>
+    </ul>
+    <p>เราไม่ขายข้อมูลของคุณ และไม่ใช้ข้อมูลเพื่อโฆษณา</p>
+  </section>
+
+  <section>
+    <h2>7. ติดต่อเรา</h2>
+    <p>อีเมล: <span class="placeholder">[อีเมลติดต่อของทีม]</span></p>
+    <p class="muted">หากนโยบายนี้เปลี่ยน เราจะแก้ไขหน้านี้และวันที่ด้านล่าง</p>
+    <p class="muted">ปรับปรุงล่าสุด: 12 ตุลาคม 2569</p>
+  </section>
+</main>
+</body>
+</html>

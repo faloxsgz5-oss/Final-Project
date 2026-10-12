@@ -1,5 +1,5 @@
 import {useState} from 'react';
-import {ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {BrandLogo} from '@/components/brand-logo';
 import {Touchable} from '@/components/touchable';
 import {LinearGradient} from 'expo-linear-gradient';
@@ -8,6 +8,17 @@ import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import type {LegacyAuthRequest, LegacyAuthResult} from '@/components/legacy/legacy-page-dom';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {displayNameProblem} from '@/services/auth';
+
+// Served from public/ by Hosting, so the page works without signing in.
+const PRIVACY_POLICY_URL = 'https://smartlife-budget.web.app/privacy.html';
+
+function openPrivacyPolicy() {
+  if (Platform.OS === 'web') {
+    window.open('/privacy.html', '_blank', 'noopener,noreferrer');
+    return;
+  }
+  Linking.openURL(PRIVACY_POLICY_URL).catch((error) => console.warn('[Auth] Could not open the privacy policy', error));
+}
 
 type AuthPortalProps = {
   mode: 'login' | 'register';
@@ -94,7 +105,7 @@ export default function AuthPortal({mode, onFacebook, onGoogle, onSubmit, onSwit
         <Field icon="lock" label="รหัสผ่าน" onChangeText={setPassword} onToggle={() => setShowPassword((value) => !value)} placeholder="••••••••" secure={!showPassword} value={password} />
         {registering ? <Field icon="verified" label="ยืนยันรหัสผ่าน" onChangeText={setConfirmPassword} placeholder="••••••••" secure={!showPassword} value={confirmPassword} /> : <Touchable disabled={busy} onPress={resetPassword} style={styles.forgot}><Text style={styles.forgotText}>ลืมรหัสผ่าน?</Text></Touchable>}
 
-        {registering ? <Touchable onPress={() => setAccepted((value) => !value)} style={styles.terms}><View style={[styles.checkbox, accepted && styles.checkboxActive]}>{accepted ? <MaterialIcon color="#fff" name="check" size={14} /> : null}</View><Text style={styles.termsText}>ฉันยอมรับ <Text style={styles.termsLink}>ข้อตกลงและเงื่อนไข</Text> และ <Text style={styles.termsLink}>นโยบายความเป็นส่วนตัว</Text></Text></Touchable> : null}
+        {registering ? <Touchable onPress={() => setAccepted((value) => !value)} style={styles.terms}><View style={[styles.checkbox, accepted && styles.checkboxActive]}>{accepted ? <MaterialIcon color="#fff" name="check" size={14} /> : null}</View><Text style={styles.termsText}>ฉันยอมรับ <Text style={styles.termsLink}>ข้อตกลงและเงื่อนไข</Text> และ <Text accessibilityRole="link" onPress={openPrivacyPolicy} style={styles.termsLink}>นโยบายความเป็นส่วนตัว</Text></Text></Touchable> : null}
         {message ? <View style={styles.message}><MaterialIcon color={message.includes('แล้ว') ? C.green : '#bd625b'} name={message.includes('แล้ว') ? 'check_circle' : 'error'} size={17} /><Text style={styles.messageText}>{message}</Text></View> : null}
 
         <Touchable disabled={busy} onPress={submit} style={({pressed}) => [styles.primaryShell, pressed && styles.pressed, busy && styles.disabled]}><LinearGradient colors={['#789a75', '#4b7047']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.primary}>{busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{registering ? 'สมัครสมาชิก' : 'เข้าสู่ระบบ'}</Text>}</LinearGradient></Touchable>
