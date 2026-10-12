@@ -64,7 +64,7 @@ export default function AuthPortal({mode, onFacebook, onGoogle, onSubmit, onSwit
     setSocialBusy('facebook'); setBusy(true); setMessage('');
     try {
       const result = await onFacebook();
-      if (!result.ok) setMessage(result.message ?? 'ไม่สามารถเข้าสู่ระบบด้วย Facebook ได้');
+      if (!result.ok && !result.cancelled) setMessage(result.message ?? 'ไม่สามารถเข้าสู่ระบบด้วย Facebook ได้');
     } finally {
       setSocialBusy(null);
       setBusy(false);

@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createUserWithEmailAndPassword,
   FacebookAuthProvider,
+  fetchSignInMethodsForEmail,
   getIdTokenResult,
   GoogleAuthProvider,
   sendPasswordResetEmail,
@@ -13,13 +14,13 @@ import {
   User,
 } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import * as Linking from 'expo-linking';
-import * as WebBrowser from 'expo-web-browser';
 import { Platform } from 'react-native';
 
 import {demoUid, hasFirebaseConfig, hasRealPublicConfigValue, isDemoMode} from '@/lib/demo-mode';
 import { auth, db } from '@/lib/firebase';
 import {isExpoGo} from '@/lib/expo-runtime';
+import {EXISTING_ACCOUNT_FALLBACK, existingAccountMessage, isNetworkFailure, SOCIAL_NETWORK_MESSAGE} from '@/services/auth-messages';
+import {FacebookLoginCancelledError, getFacebookAccessToken, isFacebookSdkConfigured, signOutFacebook} from '@/services/facebook-native';
 import { clearGoogleCalendarSession } from '@/services/google-calendar';
 
 export type AppRole = 'user' | 'admin';
@@ -224,12 +225,6 @@ export function ensureUserProfile(user = auth.currentUser, preferredName?: strin
   return creation;
 }
 
-function parseOAuthCallbackParams(url: string) {
-  const fragment = url.includes('#') ? url.split('#')[1] : '';
-  const query = url.includes('?') ? url.split('?')[1]?.split('#')[0] ?? '' : '';
-  return new URLSearchParams(fragment || query);
-}
-
 export async function signInWithGoogle() {
   if (isDemoMode) return demoUser;
   requireFirebaseConfig();
@@ -292,19 +287,19 @@ export async function signInWithFacebook() {
 
     const appId = process.env.EXPO_PUBLIC_FACEBOOK_APP_ID?.trim();
     if (!appId) throw new Error('ยังไม่ได้ตั้งค่า EXPO_PUBLIC_FACEBOOK_APP_ID ใน .env.local');
+    // The App ID alone is not enough: the SDK is only in builds that also had
+    // the client token, and calling it elsewhere would fail natively.
+    if (!isFacebookSdkConfigured()) throw new Error('ยังไม่ได้ตั้งค่า Facebook Login ใน build นี้ (ต้องมี EXPO_PUBLIC_FACEBOOK_APP_ID และ FACEBOOK_CLIENT_TOKEN)');
 
-    const redirectUri = Linking.createURL('auth/facebook');
-    const state = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const loginUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${encodeURIComponent(appId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent('public_profile,email')}&state=${encodeURIComponent(state)}`;
-    const result = await WebBrowser.openAuthSessionAsync(loginUrl, redirectUri);
-    if (result.type !== 'success') throw new Error('ยกเลิกการเข้าสู่ระบบด้วย Facebook');
-
-    const params = parseOAuthCallbackParams(result.url);
-    if (params.get('state') !== state) throw new Error('Facebook Login ถูกปฏิเสธเพราะ state ไม่ตรงกัน');
-    const error = params.get('error_description') ?? params.get('error_message') ?? params.get('error');
-    if (error) throw new Error(error);
-    const accessToken = params.get('access_token');
-    if (!accessToken) throw new Error('Facebook ไม่ได้ส่ง access token กลับมา');
+    let accessToken: string;
+    try {
+      accessToken = await getFacebookAccessToken();
+    } catch (error) {
+      if (error instanceof FacebookLoginCancelledError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (isNetworkFailure(undefined, message)) throw new Error(SOCIAL_NETWORK_MESSAGE);
+      throw error;
+    }
 
     const credential = FacebookAuthProvider.credential(accessToken);
     user = (await signInWithCredential(auth, credential)).user;
@@ -312,6 +307,33 @@ export async function signInWithFacebook() {
 
   await createSocialUserProfile(user);
   return user;
+}
+
+/** True when the person closed the Facebook dialog or popup themselves. */
+export function isFacebookLoginCancelled(error: unknown) {
+  if (error instanceof FacebookLoginCancelledError) return true;
+  const code = (error as {code?: string} | null)?.code;
+  return code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request';
+}
+
+/**
+ * The message for a failed Facebook sign-in that the generic auth messages do
+ * not cover well, or `null` to fall back to them. For an email that already
+ * signs in another way it names that way when Firebase still reports it.
+ */
+export async function facebookSignInErrorMessage(error: unknown): Promise<string | null> {
+  const {code, customData} = (error ?? {}) as {code?: string; customData?: {email?: string}};
+  if (code === 'auth/account-exists-with-different-credential') {
+    const email = customData?.email;
+    if (!email) return EXISTING_ACCOUNT_FALLBACK;
+    try {
+      return existingAccountMessage(await fetchSignInMethodsForEmail(auth, email));
+    } catch {
+      return EXISTING_ACCOUNT_FALLBACK;
+    }
+  }
+  if (isNetworkFailure(code, error instanceof Error ? error.message : '')) return SOCIAL_NETWORK_MESSAGE;
+  return null;
 }
 
 export async function sendResetEmail(email: string) {
@@ -326,6 +348,7 @@ export async function signOutCurrentUser() {
     AsyncStorage.removeItem('smartlife:last-ocr:receipt'),
     AsyncStorage.removeItem('smartlife:last-ocr:schedule'),
     clearGoogleCalendarSession(),
+    signOutFacebook(),
   ]);
 }
 

@@ -12,7 +12,7 @@ export type LegacyAuthRequest = {
   password?: string;
 };
 
-export type LegacyAuthResult = { message?: string; ok: boolean };
+export type LegacyAuthResult = { cancelled?: boolean; message?: string; ok: boolean };
 
 export type LegacyScanRequest = {
   scanType: 'receipt' | 'schedule';

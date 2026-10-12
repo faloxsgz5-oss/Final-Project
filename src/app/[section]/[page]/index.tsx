@@ -12,7 +12,7 @@ import { legacyPageParams, legacyPages } from '@/generated/legacy-pages';
 import { resolveLegacyRoute } from '@/lib/legacy-route';
 import { pageTitle } from '@/lib/page-titles';
 import { useAuth } from '@/providers/auth-provider';
-import { getUserRole, registerWithEmail, sendResetEmail, signInWithEmail, signInWithFacebook, signInWithGoogle } from '@/services/auth';
+import { facebookSignInErrorMessage, getUserRole, isFacebookLoginCancelled, registerWithEmail, sendResetEmail, signInWithEmail, signInWithFacebook, signInWithGoogle } from '@/services/auth';
 import {loadLegacyPageData, runLegacyDataAction, type LegacyDataAction} from '@/services/legacy-data';
 import { uploadAndAnalyzeScan } from '@/services/ocr';
 import AdminPortal from '@/screens/admin/admin-portal';
@@ -156,7 +156,9 @@ function LegacyPageRouteContent() {
       router.replace((facebookRole === 'admin' ? '/admin/admin_dashboard' : '/user/index') as Href);
       return {ok: true};
     } catch (error) {
-      return {ok: false, message: authErrorMessage(error)};
+      // Closing the Facebook dialog is a choice, not a failure: no message.
+      if (isFacebookLoginCancelled(error)) return {cancelled: true, ok: false};
+      return {ok: false, message: (await facebookSignInErrorMessage(error)) ?? authErrorMessage(error)};
     }
   }, [router]);
 
