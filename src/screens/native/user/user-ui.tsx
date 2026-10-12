@@ -36,8 +36,11 @@ export function UserShell({children, active, edgeToEdge = false, onNavigate, scr
   return <ResponsiveSafeArea style={[styles.safe, edgeToEdge && styles.flatSurface]}><View style={[styles.shell, edgeToEdge && styles.flatSurface]}>{edgeToEdge ? null : <UserGradientBackdrop />}{scroll ? <ScrollView contentContainerStyle={styles.scroll} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">{body}</ScrollView> : body}<UserTabBar active={active} onNavigate={onNavigate} /></View></ResponsiveSafeArea>;
 }
 
-export function UserHeader({title, subtitle, right, onNavigate}: {title: string; subtitle?: string; right?: ReactNode; onNavigate: UserNavigate}) {
-  return <LinearGradient colors={['rgba(255,255,255,.98)', 'rgba(240,245,236,.94)']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.header}><View><Text style={styles.brand}>SmartLife</Text><Text style={styles.title}>{title}</Text>{subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}</View>{right ?? <Touchable onPress={() => onNavigate('smartlife_profile')} style={styles.avatar}><Text style={styles.avatarText}>SL</Text></Touchable>}</LinearGradient>;
+export function UserHeader({title, subtitle, right, onBack, onNavigate}: {title: string; subtitle?: string; right?: ReactNode; onBack?: () => void; onNavigate: UserNavigate}) {
+  const heading = <View style={onBack ? styles.headingWithBack : undefined}><Text style={styles.brand}>SmartLife</Text><Text style={styles.title}>{title}</Text>{subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}</View>;
+  // A screen opened from another one (Smart Scan from Finance, say) offers
+  // the way back to it on the page itself, not only in the browser or the OS.
+  return <LinearGradient colors={['rgba(255,255,255,.98)', 'rgba(240,245,236,.94)']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.header}>{onBack ? <View style={styles.headerLead}><Touchable accessibilityLabel="ย้อนกลับ" accessibilityRole="button" onPress={onBack} style={styles.back}><MaterialIcon color="#29351f" name="chevron_left" size={25} /></Touchable>{heading}</View> : heading}{right ?? <Touchable onPress={() => onNavigate('smartlife_profile')} style={styles.avatar}><Text style={styles.avatarText}>SL</Text></Touchable>}</LinearGradient>;
 }
 
 export function Card({children, style, colors = ['rgba(255,255,255,.98)', '#f8faf5']}: {children: ReactNode; style?: object; colors?: readonly [string, string, ...string[]]}) {
@@ -149,6 +152,7 @@ const styles = StyleSheet.create({
   active: {color: '#4f754b'},
   avatar: {alignItems: 'center', backgroundColor: '#e8efe4', borderRadius: 22, height: 44, justifyContent: 'center', width: 44},
   avatarText: {color: '#52734b', fontFamily: 'Prompt_700Bold'},
+  back: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, height: 40, justifyContent: 'center', width: 40},
   body: {flex: 1, padding: 18},
   bodyEdge: {padding: 0},
   brand: {color: '#668d65', fontFamily: 'Prompt_600SemiBold', fontSize: 13},
@@ -157,6 +161,8 @@ const styles = StyleSheet.create({
   empty: {color: '#879082', fontFamily: 'Prompt_400Regular', fontSize: 13, paddingVertical: 20, textAlign: 'center'},
   flatSurface: {backgroundColor: '#f4f7f4'},
   header: {alignItems: 'center', borderBottomColor: '#e5e9e1', borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', padding: 18},
+  headerLead: {alignItems: 'center', flex: 1, flexDirection: 'row', gap: 12},
+  headingWithBack: {flex: 1, flexShrink: 1},
   loading: {alignItems: 'center', gap: 12, paddingTop: 90},
   muted: {color: '#808a7b', fontFamily: 'Prompt_400Regular', fontSize: 12},
   plus: {alignItems: 'center', borderColor: '#fff', borderRadius: 31, borderWidth: 5, boxShadow: '0 8px 13px rgba(35, 48, 30, 0.28)', height: 62, justifyContent: 'center', marginTop: -27, width: 62},
