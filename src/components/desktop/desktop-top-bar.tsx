@@ -10,8 +10,9 @@ import {DESKTOP_C, DESKTOP_F, TOP_BAR_HEIGHT} from './desktop-theme';
  * โปรไฟล์), so a second copy up here only repeated them. `page` is the screen
  * the title names -- for the planner, the one its open tab stands for.
  */
-export function DesktopTopBar({page}: {page: string}) {
-  const title = screenName('user', page) ?? APP_NAME;
+export function DesktopTopBar({page, title: given}: {page: string; title?: string}) {
+  // Another shell (the admin portal) names its own pages; the User shell's come from page-titles.
+  const title = given ?? screenName('user', page) ?? APP_NAME;
   return (
     <View style={styles.bar}>
       <Text numberOfLines={1} style={styles.title}>{title}</Text>

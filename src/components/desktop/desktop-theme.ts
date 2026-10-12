@@ -8,6 +8,8 @@ export const DESKTOP_C = {
   active: '#dfe7dc',
   badge: '#f35659',
   border: 'rgba(44, 52, 27, 0.09)',
+  /** The admin portal's logout red (its C.red), for a destructive sidebar entry. */
+  danger: '#c96761',
   hover: 'rgba(44, 52, 27, 0.055)',
   muted: '#7f897a',
   page: '#e9ebe2',
