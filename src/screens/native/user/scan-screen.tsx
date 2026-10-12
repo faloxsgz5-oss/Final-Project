@@ -1116,15 +1116,36 @@ const receiptStyles = StyleSheet.create({
 
 export default function ScanScreen({
   page,
+  presetType,
   uid,
+  onBack,
   onNavigate,
 }: {
   page: ScanPage;
+  /**
+   * The document type the screen that opened Smart Scan asked for. Finance
+   * opens it as `receipt`, which reads slips exactly as the receipt-only page
+   * always has; without a preset the classifier decides.
+   */
+  presetType?: "receipt";
   uid: string;
+  onBack?: () => void;
   onNavigate: UserNavigate;
 }) {
   const { ref: addDocumentRef, onLayout: addDocumentOnLayout } = useTourTarget("scan", "add-document");
   useTourScreen("scan");
+  const [scanMode, setScanMode] = useState<"auto" | "receipt">(presetType ?? "auto");
+  // On the web the same screen can be reused for another link to it; the
+  // preset that link carries wins over the mode the last visit left behind.
+  const [modePreset, setModePreset] = useState(presetType);
+  if (modePreset !== presetType) {
+    setModePreset(presetType);
+    setScanMode(presetType ?? "auto");
+  }
+  // Slips and receipts are the one type read in batches of up to ten, with the
+  // type fixed for the server: the old receipt page always, Smart Scan in its
+  // slip mode.
+  const receiptMode = page === "smartlife_scan_finance" || scanMode === "receipt";
   const safeAreaInsets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   // Keep the dismiss action clear of Android's system navigation controls.
@@ -1285,7 +1306,7 @@ export default function ScanScreen({
         phase: "loading",
         subtitle: stage === "uploading"
           ? "กำลังส่งรูปขึ้นระบบ ขั้นนี้ขึ้นกับความเร็วเน็ตของคุณ"
-          : page === "smartlife_scan_finance"
+          : receiptMode
             ? "iApp กำลังอ่านร้านค้า รายการสินค้า และยอดชำระ"
             : "กำลังตรวจชนิดเอกสารและแยกข้อความ",
         title: stage === "uploading" ? "กำลังอัปโหลดรูป" : "กำลังอ่านเอกสาร",
@@ -1297,7 +1318,7 @@ export default function ScanScreen({
         onStage: (stage) => {
           if (generation === scanGeneration.current) readingStage(stage);
         },
-        scanType: page === "smartlife_scan_finance" ? "receipt" : "auto",
+        scanType: receiptMode ? "receipt" : "auto",
         uri: asset.uri,
         contentType,
       });
@@ -1377,10 +1398,10 @@ export default function ScanScreen({
             })
           : await ImagePicker.launchImageLibraryAsync({
               allowsEditing: false,
-              allowsMultipleSelection: page === "smartlife_scan_finance",
+              allowsMultipleSelection: receiptMode,
               mediaTypes: ["images"],
               quality: 0.9,
-              selectionLimit: page === "smartlife_scan_finance" ? 10 : 1,
+              selectionLimit: receiptMode ? 10 : 1,
             });
       if (picked.canceled || !picked.assets?.[0]) {
         console.log("[SmartScan] Image selection canceled", { source });
@@ -1393,7 +1414,7 @@ export default function ScanScreen({
       // picker is a plain `<input multiple>` with no ceiling at all. Silently
       // slicing there threw away everything past the tenth photo without a
       // word, so the count is checked here and said out loud.
-      const limit = page === "smartlife_scan_finance" ? 10 : 1;
+      const limit = receiptMode ? 10 : 1;
       const chosen = source === "library" ? picked.assets : [picked.assets[0]];
       const assets = chosen.slice(0, limit);
       if (chosen.length > limit) {
@@ -1690,7 +1711,10 @@ export default function ScanScreen({
       });
       setTimeout(() => {
         if (generation !== scanGeneration.current) return;
-        if (result.scanType === "receipt" && nextAsset) {
+        // Any saved type moves the queue on: a slip batch can hold a statement
+        // the server keeps as a document, and saving that note must not throw
+        // away the slips still waiting behind it.
+        if (nextAsset) {
           setPendingAssets((current) => current.slice(1));
           resetCurrentScan(false);
           void analyzeAsset(nextAsset, scanGeneration.current);
@@ -1840,6 +1864,7 @@ export default function ScanScreen({
           scrollEventThrottle={32}
         >
           <UserHeader
+            onBack={onBack}
             onNavigate={onNavigate}
             right={
               <Touchable
@@ -1854,7 +1879,7 @@ export default function ScanScreen({
                 <MaterialIcon color="#fff" name="history" size={21} />
               </Touchable>
             }
-            title="Smart Scan"
+            title="Smart Scan · สแกนเอกสาร"
             subtitle="ถ่ายครั้งเดียว ระบบแยกสลิปและตารางเรียนให้อัตโนมัติ"
           />
           <Card style={localStyles.hero}>
@@ -1895,8 +1920,74 @@ export default function ScanScreen({
                 </LinearGradient>
               </Touchable>
               <Text style={localStyles.fabLabel}>แตะเพื่อถ่ายหรืออัปโหลด</Text>
+              {/* What the next pick is read as. Finance opens the slip mode,
+                  everything else lets the classifier decide; either way the
+                  type can still be changed on the result. */}
+              <View accessibilityRole="radiogroup" style={localStyles.modeRow}>
+                {([
+                  ["auto", "auto_awesome", "ตรวจอัตโนมัติ"],
+                  ["receipt", "receipt_long", "สลิป / ใบเสร็จ"],
+                ] as const).map(([mode, icon, label]) => {
+                  const active = scanMode === mode;
+                  return (
+                    <Touchable
+                      accessibilityLabel={`โหมด${label}`}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: active, disabled: saving || feedback?.phase === "loading" }}
+                      disabled={saving || feedback?.phase === "loading"}
+                      key={mode}
+                      onPress={() => setScanMode(mode)}
+                      style={({ pressed }) => [
+                        localStyles.modeOption,
+                        active && localStyles.modeOptionActive,
+                        pressed && localStyles.pressed,
+                      ]}
+                    >
+                      <MaterialIcon color={active ? "#fff" : C.sage} name={icon} size={15} />
+                      <Text style={[localStyles.modeText, active && localStyles.modeTextActive]}>{label}</Text>
+                    </Touchable>
+                  );
+                })}
+              </View>
+              <Text style={localStyles.modeHint}>
+                {scanMode === "receipt"
+                  ? "อ่านเป็นสลิปหรือใบเสร็จ เลือกได้ครั้งละไม่เกิน 10 รูป"
+                  : "ระบบตรวจชนิดเอกสารให้ ครั้งละ 1 รูป"}
+              </Text>
             </LinearGradient>
           </Card>
+
+          {/* The slip queue, as the receipt-only page has always shown it:
+              a failed slip can be retried or skipped, and the one under
+              review can be passed over without losing the rest. */}
+          {receiptMode && failedAsset ? (
+            <View style={receiptStyles.batchNotice}>
+              <Text style={receiptStyles.batchNoticeText}>
+                {pendingAssets.length > 0
+                  ? `รูปนี้อ่านไม่สำเร็จ อีก ${pendingAssets.length} รูปยังอยู่ในคิว`
+                  : "รูปนี้อ่านไม่สำเร็จ และเป็นรูปสุดท้ายแล้ว"}
+              </Text>
+              <Touchable accessibilityRole="button" onPress={() => { void analyzeAsset(failedAsset, scanGeneration.current); }} style={receiptStyles.batchAction}><Text style={receiptStyles.batchActionText}>ลองอีกครั้ง</Text></Touchable>
+              <Touchable accessibilityRole="button" onPress={() => { if (pendingAssets.length) advanceToNextAsset(); else handleClearData(); }} style={receiptStyles.batchAction}><Text style={receiptStyles.batchActionText}>{pendingAssets.length > 0 ? "ข้าม" : "เลิกสแกน"}</Text></Touchable>
+            </View>
+          ) : null}
+          {result && pendingAssets.length > 0 ? (
+            <View style={receiptStyles.batchNotice}>
+              <MaterialIcon color="#6573ad" name="photo_library" size={19} />
+              <Text style={receiptStyles.batchNoticeText}>
+                มีใบเสร็จรอประมวลผลอีก {pendingAssets.length} รูป
+              </Text>
+              <Touchable
+                accessibilityHint="ไม่บันทึกใบนี้ แล้วอ่านใบถัดไปในคิว"
+                accessibilityRole="button"
+                disabled={saving}
+                onPress={advanceToNextAsset}
+                style={[receiptStyles.batchAction, saving && receiptStyles.disabled]}
+              >
+                <Text style={receiptStyles.batchActionText}>ข้ามใบนี้</Text>
+              </Touchable>
+            </View>
+          ) : null}
 
           {/* The source image stays visible while the timetable import is being
               checked row by row, which is how that flow is meant to work. For a
@@ -2614,6 +2705,8 @@ export default function ScanScreen({
                       ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08"
                       : saving
                         ? "\u0e01\u0e33\u0e25\u0e31\u0e07\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01..."
+                        : pendingAssets.length > 0
+                          ? `\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e30\u0e44\u0e1b\u0e43\u0e1a\u0e16\u0e31\u0e14\u0e44\u0e1b (\u0e40\u0e2b\u0e25\u0e37\u0e2d ${pendingAssets.length})`
                         : result.scanType === "document"
                           ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e40\u0e1b\u0e47\u0e19\u0e42\u0e19\u0e49\u0e15"
                           : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"}
@@ -2656,7 +2749,9 @@ export default function ScanScreen({
                 <View style={localStyles.handle} />
                 <Text style={localStyles.sheetTitle}>เพิ่มเอกสาร</Text>
                 <Text style={localStyles.sheetText}>
-                  ระบบจะตรวจชนิดเอกสารให้อัตโนมัติ
+                  {receiptMode
+                    ? "โหมดสลิป / ใบเสร็จ เลือกรูปได้ครั้งละไม่เกิน 10 รูป"
+                    : "ระบบจะตรวจชนิดเอกสารให้อัตโนมัติ"}
                 </Text>
                 <View style={localStyles.sourceRow}>
                   <SourceButton
@@ -3523,6 +3618,22 @@ const localStyles = StyleSheet.create({
     width: 64,
   },
   fabLabel: { color: C.sage, fontFamily: F.s, fontSize: 12, marginTop: 8 },
+  modeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 16 },
+  modeOption: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,.85)",
+    borderColor: "#d6dfd1",
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 6,
+    minHeight: 36,
+    paddingHorizontal: 14,
+  },
+  modeOptionActive: { backgroundColor: C.sage, borderColor: C.sage },
+  modeText: { color: C.pine, fontFamily: F.m, fontSize: 12 },
+  modeTextActive: { color: "#fff" },
+  modeHint: { color: C.muted, fontFamily: F.r, fontSize: 11, marginTop: 8, textAlign: "center" },
   handle: {
     alignSelf: "center",
     backgroundColor: "#d1d6cd",
