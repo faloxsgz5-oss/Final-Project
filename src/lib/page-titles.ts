@@ -41,7 +41,7 @@ const FAMILIES: [prefix: string, title: string][] = [
   ['user/smartlife_notifications', 'การแจ้งเตือน'],
   ['user/smartlife_scan_finance', 'สแกนใบเสร็จ'],
   ['user/smartlife_receipt', 'สแกนใบเสร็จ'],
-  ['user/smartlife_scan', 'Smart Scan'],
+  ['user/smartlife_scan', 'Smart Scan · สแกนเอกสาร'],
   ['user/smartlife_line', 'นำเข้าจาก LINE'],
   ['user/smartlife_save_', 'เพิ่มรายการ'],
   ['user/smartlife_schedule_finance_sync', 'ตารางและการเงิน'],

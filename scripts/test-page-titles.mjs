@@ -22,7 +22,7 @@ const cases = [
   ['user', 'smartlife_notifications_ai', 'การแจ้งเตือน · SmartLife'],
   ['user', 'smartlife_profile', 'โปรไฟล์ · SmartLife'],
   ['user', 'smartlife_help', 'คู่มือการใช้งาน · SmartLife'],
-  ['user', 'smartlife_scan_schedule', 'Smart Scan · SmartLife'],
+  ['user', 'smartlife_scan_schedule', 'Smart Scan · สแกนเอกสาร · SmartLife'],
   ['user', 'smartlife_scan_finance', 'สแกนใบเสร็จ · SmartLife'],
   ['user', 'smartlife_add_note', 'โน้ต · SmartLife'],
   ['user', 'smartlife_add_income', 'เพิ่มรายรับ · SmartLife'],
