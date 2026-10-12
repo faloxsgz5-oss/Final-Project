@@ -13,6 +13,22 @@
       "distribution": "internal",
       "channel": "preview"
     },
+    "apk-sideload": {
+      "distribution": "internal",
+      "environment": "preview",
+      "channel": "sideload",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "smartlife-budget.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "smartlife-budget",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "smartlife-budget.firebasestorage.app",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "302211453614-ui2mf0hqknu0itr8r4g76g1odrfhc6fe.apps.googleusercontent.com",
+        "EXPO_PUBLIC_SMARTLIFE_DEMO": "false"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "channel": "production"

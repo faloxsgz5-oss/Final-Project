@@ -1,0 +1,121 @@
+# EAS Build reads this file INSTEAD of .gitignore, so every .gitignore rule is
+# repeated below, followed by what must also stay off Expo's servers.
+# Keep the first block in sync with .gitignore.
+
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+dist-android/
+dist-web/
+expo-env.d.ts
+.expo-web-port
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+keystore.properties
+local.properties
+
+# Metro
+.metro-health-check*
+.codex-metro*.log
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+expo-*.log
+.expo-web*.log
+metro-*.log
+gradle-build.log
+gradle-build-*.log
+.static-preview.log
+.npm-cache/
+
+# Local build output and temporary project reports
+artifacts/
+.tmp-*
+firestore-rules-audit.json
+.firebase/
+firestore-debug.log
+firebase-debug.log
+.runtimeconfig.json
+
+# macOS
+.DS_Store
+*.pem
+
+# Local environment files. Keep only the safe template in Git.
+.env
+.env.*
+!.env.example
+
+# Firebase and Google native credentials
+google-services.json
+**/google-services.json
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+service-account*.json
+serviceAccount*.json
+firebase-adminsdk*.json
+
+# typescript
+*.tsbuildinfo
+
+example
+
+# generated native folders
+/ios
+/android
+modules/**/android/build/
+
+# IDE and operating-system files
+.idea/
+Thumbs.db
+
+# Build outputs and emulator screenshots
+*.apk
+mumu-*.png
+mumu-*.xml
+smartlife-*.png
+# The owner's logo is the source every brand asset is generated from.
+!/assets/brand/smartlife-logo-source.png
+scripts/*.png
+diff_*.txt
+.codex-runtime/
+Claude outputs/
+
+# Local-only notes (may hold App Check debug tokens) and verify output
+docs/LOCAL-*.md
+verify-before-demo.log
+
+# ---- EAS-only additions ----
+# Screenshot fixtures that may be parked back in the repo (untracked).
+scripts/fixtures/*.jpg
+scripts/fixtures/pre*.png
+# Reports, decks and other large documents are not needed to build.
+docs/reports/
+# Any build output, local or downloaded.
+*.apk
+*.aab
+dist*/
+# Generated native projects (EAS runs prebuild itself). Anchored, so the
+# committed module modules/smartlife-line-listener/android is kept.
+/android
+/ios
+# Local logs and notes that may hold tokens.
+*.log
+.env*
+!.env.example
